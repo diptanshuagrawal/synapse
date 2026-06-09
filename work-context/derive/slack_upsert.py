@@ -709,7 +709,7 @@ No thread messsages
             id TEXT PRIMARY KEY, source TEXT, event_type TEXT, ts TEXT, actor TEXT,
             subject TEXT, title TEXT, body TEXT, url TEXT, raw_path TEXT,
             channel_id TEXT, thread_ts TEXT, edited_ts TEXT, deleted_ts TEXT,
-            reactions_json TEXT
+            reactions_json TEXT, reply_count INTEGER, files_json TEXT
         );
         CREATE TABLE event_refs (
             event_id TEXT NOT NULL, ref_type TEXT NOT NULL, ref_value TEXT NOT NULL,
@@ -757,7 +757,7 @@ No thread messsages
             id TEXT PRIMARY KEY, source TEXT, event_type TEXT, ts TEXT, actor TEXT,
             subject TEXT, title TEXT, body TEXT, url TEXT, raw_path TEXT,
             channel_id TEXT, thread_ts TEXT, edited_ts TEXT, deleted_ts TEXT,
-            reactions_json TEXT
+            reactions_json TEXT, reply_count INTEGER, files_json TEXT
         );
         CREATE TABLE event_refs (
             event_id TEXT NOT NULL, ref_type TEXT NOT NULL, ref_value TEXT NOT NULL,
