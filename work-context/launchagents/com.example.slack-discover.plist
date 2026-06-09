@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.slack-discover</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__REPO__/work-context/bin/run-slack-discover.sh</string>
+    </array>
+
+    <!-- Twice weekly: Wednesday 13:00 + Friday 13:00 local (IST).
+         launchd Weekday: Sun=0, Mon=1 … Wed=3, Fri=5, Sat=6. -->
+    <!-- Owner reviews JSON output via bin/cron-status.sh DISCOVERY block,
+         then manually re-runs the same script with apply flag to add. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Weekday</key><integer>3</integer>
+            <key>Hour</key><integer>13</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>5</integer>
+            <key>Hour</key><integer>13</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>__REPO__/work-context/logs/slack-discover.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__REPO__/work-context/logs/slack-discover.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__/work-context</string>
+</dict>
+</plist>

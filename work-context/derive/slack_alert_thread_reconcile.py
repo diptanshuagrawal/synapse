@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""slack_alert_thread_reconcile.py — daily team-reply capture on no_threads channels.
+
+`no_threads: true` channels (bot alert firehoses) skip per-fire reply reconcile
+to keep ingest fast. But their threads DO carry occasional team triage (who
+picked up an alert, "false positive", escalations) — measured ~1,325 team
+replies across the 14 such channels.
+
+This runs ONCE A DAY (gated by the wrapper). For each no_threads channel it
+re-scans threads whose parent alert fired in the last LOOKBACK_DAYS, fetches
+the replies, and upserts ONLY the team-involved ones (author ∈ team OR body
+@-mentions a team member OR pings a team subteam). Bot-ack/status replies are
+dropped — keeps the signal, not the noise.
+
+Cheap because: bounded to recent alert threads, runs 1×/day not 48×.
+
+Usage:
+    python derive/slack_alert_thread_reconcile.py            # all no_threads channels
+    python derive/slack_alert_thread_reconcile.py --days 3
+    python derive/slack_alert_thread_reconcile.py --channel example-recon --dry-run
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import yaml
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_REPO_ROOT))
+
+from ingest.common import get_db  # noqa: E402
+from ingest.slack_api_client import SlackClient, api_message_to_parsed  # noqa: E402
+from derive.slack_upsert import upsert_event  # noqa: E402
+from derive.slack_team import (  # noqa: E402
+    load_team_slack_ids, load_team_subteam_ids, is_team_involved,
+)
+
+CHANNELS_YAML = _REPO_ROOT / "config" / "slack_channels.yaml"
+LOOKBACK_DAYS = 2          # parent-alert activity window (slight overlap for safety)
+PARENT_CAP = 300           # max alert threads scanned per channel per day
+
+
+def _no_threads_channels() -> list[tuple[str, str]]:
+    cfg = yaml.safe_load(CHANNELS_YAML.read_text())
+    out = []
+    for c in cfg.get("channels", []):
+        if str(c.get("no_threads", "false")).lower() == "true":
+            out.append((c["id"], c.get("name", c["id"])))
+    return out
+
+
+def _recent_alert_parents(conn, channel_id: str, since_iso: str) -> list[str]:
+    """Slack-epoch parent_ts for thread_started alerts with replies in window.
+
+    Parent slack-ts is embedded in the row id: slack:<channel>:<parent_ts>.
+    """
+    rows = conn.execute(
+        """SELECT id FROM events
+           WHERE source='slack' AND channel_id=? AND event_type='thread_started'
+             AND reply_count > 0 AND ts >= ?
+           ORDER BY ts DESC LIMIT ?""",
+        (channel_id, since_iso, PARENT_CAP),
+    ).fetchall()
+    parents = []
+    for (eid,) in rows:
+        parts = eid.split(":")
+        if len(parts) >= 3:
+            parents.append(parts[2])
+    return parents
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--days", type=int, default=LOOKBACK_DAYS)
+    ap.add_argument("--channel", help="single channel name/id; default = all no_threads")
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args()
+
+    team_ids = set(load_team_slack_ids().keys())
+    team_subteam_ids = load_team_subteam_ids()
+    if not team_ids:
+        print("[err] no team slack_ids resolved", file=sys.stderr)
+        return 2
+
+    channels = _no_threads_channels()
+    if args.channel:
+        channels = [(cid, nm) for cid, nm in channels
+                    if args.channel in (cid, nm)]
+        if not channels:
+            print(f"[err] {args.channel} not a no_threads channel", file=sys.stderr)
+            return 2
+
+    print(f"[alert-threads] {len(channels)} no_threads channels · "
+          f"team={len(team_ids)} subteams={len(team_subteam_ids)} · "
+          f"window={args.days}d dry_run={args.dry_run}", flush=True)
+
+    client = SlackClient()
+    users_cache = client.build_users_cache()
+    name_resolver = getattr(client, "name_resolver", None)
+    subteams_cache = client.build_subteams_cache()
+
+    conn = get_db()
+    since_iso = (datetime.now(tz=timezone.utc) - timedelta(days=args.days)) \
+        .isoformat().replace("+00:00", "Z")
+
+    grand_team = grand_scanned = grand_parents = 0
+    for cid, name in channels:
+        parents = _recent_alert_parents(conn, cid, since_iso)
+        team_kept = scanned = 0
+        for pts in parents:
+            try:
+                for msg in client.iter_replies(cid, pts):
+                    # iter_replies yields the parent first — skip it (ts == pts)
+                    if msg.get("ts") == pts:
+                        continue
+                    scanned += 1
+                    author = msg.get("user") or msg.get("bot_id")
+                    text = msg.get("text", "")
+                    if not is_team_involved(author, text, team_ids, team_subteam_ids):
+                        continue
+                    if args.dry_run:
+                        team_kept += 1
+                        continue
+                    pm = api_message_to_parsed(msg, users_cache, name_resolver, subteams_cache)
+                    outcome = upsert_event(conn, pm, cid, thread_parent_ts=pts,
+                                           slack_users_cache=users_cache)
+                    if outcome in ("inserted", "updated"):
+                        team_kept += 1
+            except RuntimeError as e:
+                print(f"  {name[:32]:32} parent {pts} ERR {e}", file=sys.stderr)
+        if not args.dry_run:
+            conn.commit()
+        grand_team += team_kept
+        grand_scanned += scanned
+        grand_parents += len(parents)
+        if parents:
+            print(f"  {name[:34]:34} parents={len(parents):>3} "
+                  f"scanned_replies={scanned:>5} team_kept={team_kept:>4}", flush=True)
+
+    print(f"\n[done] {grand_parents} alert threads · {grand_scanned} replies scanned "
+          f"· {grand_team} team replies {'(dry)' if args.dry_run else 'upserted'}",
+          flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

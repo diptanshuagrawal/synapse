@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.codegraph</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__REPO__/work-context/bin/run-codegraph.sh</string>
+    </array>
+
+    <!-- Daily at 18:00 local (IST). git fetch + ff-if-clean + full code-graph
+         rebuild for service-a + service-c (~90s). Feeds /ask code-logic
+         queries with current code. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>18</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <!-- launchd default PATH is minimal; add homebrew + local bin so git, ssh
+         and the code-review-graph CLI resolve. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.local/bin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__REPO__/work-context/logs/codegraph.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__REPO__/work-context/logs/codegraph.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__/work-context</string>
+</dict>
+</plist>

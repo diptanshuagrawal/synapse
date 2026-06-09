@@ -1,0 +1,29 @@
+# Leak denylist — extended-regex (ERE) patterns, one per line.
+# Lines starting with '#' or blank are ignored.
+# The pre-commit hook fails the commit if any STAGED file matches any pattern,
+# unless the matching line also contains an allow-marker (see ALLOW_RE in
+# .githooks/pre-commit): EXAMPLE / PLACEHOLDER / yourorg / yourcompany / sample.
+#
+# This shipped copy is intentionally GENERIC — it carries no real org's
+# identifiers. Strict org-token checking is layered on locally via the
+# gitignored .publish-denylist.txt (the hook reads both if present).
+# EDIT THIS for your org: add your real email domain, employee names, repo /
+# project keys you must never publish.
+
+# --- Generic secrets -------------------------------------------------------
+-----BEGIN ([A-Z]+ )?PRIVATE KEY-----
+xox[baprs]-[0-9A-Za-z-]{10,}
+ghp_[0-9A-Za-z]{30,}
+github_pat_[0-9A-Za-z_]{30,}
+AKIA[0-9A-Z]{16}
+AIza[0-9A-Za-z_-]{30,}
+
+# --- Identity / PII --------------------------------------------------------
+@yourcompany\.com
+/Users/[A-Za-z0-9._-]+/
+/home/[A-Za-z0-9._-]+/
+
+# --- Platform IDs that tie to a real workspace -----------------------------
+\b[UCS]0[A-Z0-9]{8,9}\b
+[0-9]{6}:[0-9a-f]{8}-[0-9a-f]{4}
+\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b

@@ -1,0 +1,121 @@
+# ──────────────────────────────────────────────────────────────────────
+# Python
+# ──────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+
+# ──────────────────────────────────────────────────────────────────────
+# Node
+# ──────────────────────────────────────────────────────────────────────
+node_modules/
+
+# ──────────────────────────────────────────────────────────────────────
+# Runtime locks
+# ──────────────────────────────────────────────────────────────────────
+.claude/scheduled_tasks.lock
+*.lock
+
+# ──────────────────────────────────────────────────────────────────────
+# OS / editor
+# ──────────────────────────────────────────────────────────────────────
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# ──────────────────────────────────────────────────────────────────────
+# Databases (regenerable from raw/ ingest)
+# ──────────────────────────────────────────────────────────────────────
+*.db
+*.db-journal
+*.db.bak.*
+work-context/index/
+
+# ──────────────────────────────────────────────────────────────────────
+# Backups
+# ──────────────────────────────────────────────────────────────────────
+*.bak
+*.bak.*
+*.original.md
+config/*.bak.*
+
+# ──────────────────────────────────────────────────────────────────────
+# Runtime state (regenerable)
+# ──────────────────────────────────────────────────────────────────────
+work-context/state/
+work-context/raw/
+
+# ──────────────────────────────────────────────────────────────────────
+# Derived artifacts (regenerable from events.db via /rollup + skills)
+# ──────────────────────────────────────────────────────────────────────
+work-context/derived/
+
+# ──────────────────────────────────────────────────────────────────────
+# Drafts (scratch per PRD discipline; narratives/ + retros/ stay tracked)
+# ──────────────────────────────────────────────────────────────────────
+management/drafts/
+
+# ──────────────────────────────────────────────────────────────────────
+# Per-user Claude settings (paths + bypass-perm mode)
+# ──────────────────────────────────────────────────────────────────────
+.claude/settings.local.json
+*/.claude/settings.local.json
+
+# ──────────────────────────────────────────────────────────────────────
+# Claude session artifacts (high churn)
+# ──────────────────────────────────────────────────────────────────────
+.claude/audit/
+*/.claude/audit/
+.claude/sessions/
+*/.claude/sessions/
+.claude/wiki/
+*/.claude/wiki/
+.claude/worktrees/
+*/.claude/worktrees/
+
+# ──────────────────────────────────────────────────────────────────────
+# Code-review-graph local cache
+# ──────────────────────────────────────────────────────────────────────
+.code-review-graph/
+
+# ──────────────────────────────────────────────────────────────────────
+# Secrets (defense in depth; real secrets live in ~/.secrets/)
+# ──────────────────────────────────────────────────────────────────────
+*.env
+.env*
+*.pem
+*.key
+secrets/
+.secrets/
+*credentials*
+*token*.json
+
+# ──────────────────────────────────────────────────────────────────────
+# Private config — real values must never be tracked. Keep on disk only.
+# (Untracked via `git rm --cached`; *.example.yaml templates stay tracked.)
+# ──────────────────────────────────────────────────────────────────────
+work-context/config/*.yaml
+!work-context/config/*.example.yaml
+
+# ──────────────────────────────────────────────────────────────────────
+# Private work output (narratives, retros, sessions, handoffs) — sensitive.
+# Kept on disk only; never tracked.
+# ──────────────────────────────────────────────────────────────────────
+management/
+work-context/management/
+handoff/
+handoff-*.md
+
+# Publish-time real-token denylist (never ship). Read by the local leak hook.
+.publish-denylist.txt
+
+# Private publish tooling + planning — keep local, never ship.
+PUBLISH_PLAN.md
+bin/publish-synapse.sh
+bin/leak-patterns.public.txt
+PUBLISH_PLAN.md
+

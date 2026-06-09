@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# pre-commit leak guard.
+# Blocks a commit if any staged file matches a denylist pattern.
+# Enable once per clone:   git config core.hooksPath .githooks
+# Bypass in a true emergency: git commit --no-verify  (avoid — it defeats the guard)
+# Portable to bash 3.2 (macOS default): no mapfile / no bash-4 features.
+set -uo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+PATTERNS_FILE="$REPO_ROOT/.githooks/leak-patterns.txt"
+
+# Lines containing any of these markers are treated as intentional placeholders.
+# Add your own placeholder tokens here (e.g. fake demo names used in docs).
+ALLOW_RE='EXAMPLE|PLACEHOLDER|yourorg|yourcompany|sample|noreply|OWNER|ALICE|BOB|CAROL|DAN|EVE|FRANK|GRACE|HENRY|IVAN'
+
+if [ ! -f "$PATTERNS_FILE" ]; then
+  echo "leak-guard: patterns file missing ($PATTERNS_FILE) — skipping." >&2
+  exit 0
+fi
+
+# Load active patterns (strip comments + blanks) — portable, no mapfile.
+# Source 1: the tracked generic patterns (ships with the repo).
+# Source 2: an OPTIONAL gitignored real-token denylist (.publish-denylist.txt)
+#           — local-only; keeps strict org-token checking without shipping the
+#           real names. Absent on public clones (they get generic-only).
+PATTERNS=()
+while IFS= read -r line; do
+  [ -n "$line" ] && PATTERNS+=("$line")
+done < <(grep -hvE '^[[:space:]]*(#|$)' "$PATTERNS_FILE" "$REPO_ROOT/.publish-denylist.txt" 2>/dev/null)
+[ ${#PATTERNS[@]} -eq 0 ] && exit 0
+
+# Staged, added/copied/modified files.
+FILES=()
+while IFS= read -r line; do
+  [ -n "$line" ] && FILES+=("$line")
+done < <(git diff --cached --name-only --diff-filter=ACM)
+[ ${#FILES[@]} -eq 0 ] && exit 0
+
+fail=0
+for f in "${FILES[@]}"; do
+  [ -f "$f" ] || continue
+  # Never scan the denylist file itself (its patterns would self-match).
+  case "$f" in */leak-patterns.txt|.githooks/leak-patterns.txt) continue;; esac
+  # Skip binary files (numstat shows "-" for added/deleted lines on binaries).
+  if git diff --cached --numstat -- "$f" | grep -q '^-'; then continue; fi
+  for pat in "${PATTERNS[@]}"; do
+    hits="$(grep -nIE "$pat" "$f" 2>/dev/null | grep -vE "$ALLOW_RE" || true)"
+    if [ -n "$hits" ]; then
+      if [ "$fail" -eq 0 ]; then
+        echo "" >&2
+        echo "leak-guard: commit blocked — potential sensitive data:" >&2
+      fi
+      fail=1
+      while IFS= read -r hl; do
+        echo "   $f:$hl   [pattern: $pat]" >&2
+      done <<EOF
+$hits
+EOF
+    fi
+  done
+done
+
+# Optional: run gitleaks if installed.
+if command -v gitleaks >/dev/null 2>&1; then
+  if ! gitleaks protect --staged --redact --no-banner >/dev/null 2>&1; then
+    echo "   gitleaks flagged staged changes (run: gitleaks protect --staged --verbose)" >&2
+    fail=1
+  fi
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo "" >&2
+  echo "Fix the lines above, or add an allow-marker if it's a real placeholder." >&2
+  echo "Patterns live in .githooks/leak-patterns.txt" >&2
+  exit 1
+fi
+exit 0

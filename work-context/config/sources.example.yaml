@@ -1,0 +1,32 @@
+# Generic org-identity template. COMMITTED + published — no real identifiers.
+# Copy to sources.yaml and fill in real values (sources.yaml is gitignored).
+# Per-key env overrides: JIRA_DOMAIN, ATLASSIAN_EMAIL, JIRA_PROJECT_KEYS,
+# GITHUB_ORG, GITHUB_REPOS.
+org:
+  email_domain: "example.com"
+  owner_email: "owner@example.com"
+  owner_handle: "owner"
+atlassian:
+  host: "your-org.atlassian.net"
+jira:
+  project_keys: ["EX"]
+github:
+  org: "example-org"
+  repos:
+    - "example-org/service-a"
+    - "example-org/service-b"
+  handle_prefixes: ["example-", "org-"]
+  matterai_bot: "matterai-example[bot]"
+  codegraph_repos: ["service-a", "service-c", "service-b"]
+teams:
+  home: "home-team"
+  coowner: "payments-team"
+slack:
+  workspace: "example"
+  mom_channels: ["C0EXAMPLE"]
+launchd:
+  prefix: "com.example"
+match:
+  tokens: ["ex"]
+recurring:
+  prefixes: []

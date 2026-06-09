@@ -1,0 +1,9 @@
+raw/
+index/
+state/
+logs/
+derived/
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
