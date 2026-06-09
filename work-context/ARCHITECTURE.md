@@ -535,7 +535,7 @@ Idle-guard via `state/last_rollup_success.date`. Strips auth same as manual-roll
 
 `reconcile_window(conn, channel_id, window_start_iso, api_msgs, thread_parent_ts_map, slack_users_cache)` — two-phase: (1) upsert every api_msg, (2) tombstone (`deleted_ts = now`) any DB row in window whose ts not in api_ts_set. Used by Phase 2.7 in `slack_ingest_app`.
 
-`_url(channel_id, ts, thread_parent_ts=None)` — emits browser-clickable `https://example.slack.com/archives/<ch>/p<ts-no-dot>` (workspace const `_SLACK_WORKSPACE`). Reply form appends `?thread_ts=<parent>&cid=<ch>` for in-thread scroll.
+`_url(channel_id, ts, thread_parent_ts=None)` — emits browser-clickable `https://<workspace>.slack.com/archives/<ch>/p<ts-no-dot>` (workspace from `sources_config.slack_workspace()`). Reply form appends `?thread_ts=<parent>&cid=<ch>` for in-thread scroll.
 
 ### 5.17 `derive/slack_validate.py` — Slack health validator
 
@@ -786,6 +786,7 @@ Owner extends `projects.yaml` (new slug, or keywords on existing slug) and re-ru
 
 | File | Schema | Purpose |
 |------|--------|---------|
+| `sources.yaml` | `{org, atlassian, jira, github, teams, slack, launchd}` | **Central org-identity config (gitignored; `sources.example.yaml` is the committed generic template).** Loaded by `derive/sources_config.py` → falls back to the example → per-key env overrides. Single source for host / owner email / repos / project keys / slack workspace / team slugs / launchd prefix — **no org identity is hardcoded in code.** |
 | `people.yaml` | `{people: [{name, canonical, scope, github, github_aliases, email, jira_id, git_names, slack_id, slack_handle}]}` | Cross-source identity map. `scope` ∈ {team, org, external} — `team` counted in analysis, `org`/`external` silenced. Replaced `known_externals.yaml` (deleted 2026-05-26). Self-healed by `identity_reconcile.py` (see §7). |
 | `projects.yaml` | `{projects: [{slug, name, keywords, jira_epics, confluence_pages}]}` | Domain → keywords/epics/pages. **85 slugs as of 2026-05-15** after the epic-`*` rename backfill (see open thread #2). `jira_prefixes` field removed 2026-05-15 — was over-tagging since 2026-05-13. |
 | `slack_channels.yaml` | `{channels: [{id, name, allow_mpim?, ingest_mode?, compaction_policy?}]}` | 51 rows (14 manual + 37 auto-discovered via `slack_discover_channels.py`). `ingest_mode: team_involved` triggers team-membership filter at ingest; default omitted = `full`. `allow_mpim: true` unlocks MPIM channels (default skip). |

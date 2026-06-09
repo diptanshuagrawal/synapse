@@ -113,42 +113,26 @@ Required fields: `canonical`, `github`, `jira_id`. Others improve attribution.
 
 ---
 
-### Step 4 — Configure GitHub repos
+### Step 4 — Configure your org (one file, no code edits)
 
-Open `ingest/github.py` and edit the default repo list near the top:
+All org-specific values live in `work-context/config/sources.yaml` (gitignored —
+real values never tracked). Copy the template and fill it in:
 
-```python
-DEFAULT_REPOS = ["your-org/repo1", "your-org/repo2"]
+```bash
+cp work-context/config/sources.example.yaml work-context/config/sources.yaml
+$EDITOR work-context/config/sources.yaml
 ```
 
-This is what all ingest runs and the LaunchAgent will use by default. You can override per-run with `--repo your-org/repo3` but the default is what matters for cron.
+Set `github.repos` + `github.org`, `jira.project_keys`, `atlassian.host`,
+`slack.workspace`, `teams.home`/`coowner`, `launchd.prefix`, etc.
+`derive/sources_config.py` loads it (falling back to `sources.example.yaml`
+generic placeholders, with per-key env overrides: `GITHUB_ORG`, `JIRA_DOMAIN`,
+`JIRA_PROJECT_KEYS`, `SLACK_WORKSPACE`, `ATLASSIAN_EMAIL`).
 
----
+Per-run overrides still work: `ingest/github.py --repo your-org/other`,
+`ingest/jira.py --project PLAT`. Confluence shares `atlassian.host`.
 
-### Step 5 — Configure Jira board
-
-Open `ingest/jira.py` and edit the defaults near the top:
-
-```python
-DEFAULT_PROJECTS = ["EX"]          # Jira project key(s) to ingest
-DEFAULT_DOMAIN   = "yourorg.atlassian.net"
-```
-
-You can add multiple projects: `DEFAULT_PROJECTS = ["EX", "PLAT", "INFRA"]`. Each is ingested separately. Override per-run with `--project EX`.
-
-Also update `ingest/run-jira.sh` if `JIRA_DOMAIN` env var is not set — it inherits from `DEFAULT_DOMAIN` in the script.
-
----
-
-### Step 6 — Configure Confluence domain
-
-Open `ingest/confluence.py` and verify:
-
-```python
-DEFAULT_DOMAIN = "yourorg.atlassian.net"
-```
-
-Or set `JIRA_DOMAIN` env var in `ingest/run-confluence.sh` to override without touching code.
+See `work-context/README.md` → "Configuration" for the full field reference.
 
 ---
 
@@ -210,10 +194,10 @@ Expect this to take **5–30 minutes** depending on repo/project size.
 ```bash
 cd ~/context/work-context
 
-# GitHub — full history, all repos in DEFAULT_REPOS
+# GitHub — full history, all repos from config (sources.yaml github.repos)
 .venv/bin/python ingest/github.py --reset-cursor
 
-# Jira — full history, all projects in DEFAULT_PROJECTS
+# Jira — full history, all projects from config (sources.yaml jira.project_keys)
 .venv/bin/python ingest/jira.py --reset-cursor
 
 # Confluence — full history, team members only (requires jira_id in people.yaml)
@@ -276,7 +260,7 @@ Superseded by `/ask person_range` + `/retro` (see "Per-person signals + retros" 
 
 #### Background workflow — daily cron
 
-**Rollup is currently MANUAL** — no background LaunchAgent installed as of 2026-05-12. `derive/run-rollup.sh` exists as a wrapper but no plist + no install-script entry. To re-enable daily rollup: create `launchagents/com.example.rollup.plist` + add to `bin/install-agents.sh::AGENTS`. Until then, EM invokes `/rollup` interactively (weekly cadence in practice).
+**Rollup is currently MANUAL** — no background LaunchAgent installed as of 2026-05-12. `derive/run-rollup.sh` exists as a wrapper but no plist + no install-script entry. To re-enable daily rollup: create `launchagents/com.example.rollup.plist` + add to `bin/install-agents.sh::SERVICES`. Until then, EM invokes `/rollup` interactively (weekly cadence in practice).
 
 #### Removed (2026-05-12)
 
@@ -314,7 +298,7 @@ Replaced `derive/narrative.py` on 2026-05-22. See `work-context/README.md` "Per-
 /ask what <person> worked on between <since> and <until>
 ```
 
-Routes to `derive/person_deepread.py` (one-shot bundle, disk-cached) → `derive/person_profile.py` (deterministic signals: contribution / behavioral / throughput / quality / fate / lookahead) → renders TL;DR-first prose. Output saved to `management/narratives/per-person/slice-<handle>-<since>-to-<until>.md`.
+Routes to `derive/person_deepread.py` (one-shot bundle, disk-cached) → `derive/person_profile.py` (deterministic signals: contribution / behavioral / throughput / quality / fate / lookahead) → renders TL;DR-first prose. Output saved to `management/narratives/per-person/<handle>-<since>-to-<until>.md`.
 
 **Stakeholder retro (`/retro` and `/ask highs_lows`):**
 
@@ -349,7 +333,7 @@ tables (see `SCHEMA.md`). Refresh incrementally after new ingest with
 ./bin/install-agents.sh
 ```
 
-Installs macOS LaunchAgents (see `bin/install-agents.sh::AGENTS`). Survive sleep/wake. (Rollup is currently manual — no LaunchAgent.)
+Installs macOS LaunchAgents (see `bin/install-agents.sh::SERVICES`). Survive sleep/wake. (Rollup is currently manual — no LaunchAgent.)
 
 | Agent | Schedule (IST) | Idle gate |
 |-------|---------------|-----------|

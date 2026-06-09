@@ -32,45 +32,66 @@ Every event is normalised to the same schema at ingest time and enriched with cr
 
 ## Configuration (before first run)
 
-### GitHub repos
+**No org-specific values are hardcoded in code.** Everything resolves at runtime
+from `config/sources.yaml` (gitignored — real values never tracked) via
+`derive/sources_config.py`, which falls back to `config/sources.example.yaml`
+(generic placeholders) and allows per-key env overrides. A fresh clone with
+neither set resolves entirely to harmless placeholders — it leaks nothing.
 
-Edit the constant near the top of `ingest/github.py`:
+Copy the template and fill in your values:
 
-```python
-DEFAULT_REPOS = ["your-org/repo1", "your-org/repo2"]
+```bash
+cp config/sources.example.yaml config/sources.yaml
+$EDITOR config/sources.yaml
 ```
 
-Override per-run: `--repo your-org/other-repo` (repeatable).
-
-### Jira project + domain
-
-Edit `ingest/jira.py`:
-
-```python
-DEFAULT_PROJECTS = ["EX"]                        # one or more Jira project keys
-DEFAULT_DOMAIN   = "yourorg.atlassian.net"
+```yaml
+# config/sources.yaml  (gitignored)
+org:
+  email_domain: "yourco.com"
+  owner_email:  "you@yourco.com"
+  owner_handle: "you"                  # canonical slug for the repo owner
+atlassian:
+  host: "yourorg.atlassian.net"        # env JIRA_DOMAIN overrides
+jira:
+  project_keys: ["EX"]                 # env JIRA_PROJECT_KEYS overrides
+github:
+  org:   "your-org"                    # env GITHUB_ORG overrides
+  repos: ["your-org/repo1", "your-org/repo2"]
+  handle_prefixes: ["your-org-"]       # logins that mark a repo owner as "ours"
+  matterai_bot: "matterai-yourorg[bot]"
+  codegraph_repos: ["repo1", "repo2"]  # mirror short-names for the code-graph build
+teams:
+  home:    "your-team"                 # owner's team slug (matches an id in teams.yaml)
+  coowner: "sister-team"
+slack:
+  workspace: "yourco"                  # → https://yourco.slack.com/... permalinks
+  mom_channels: ["C0EXAMPLE"]          # weekly-sync MoM channel ids
+launchd:
+  prefix: "com.you"                    # reverse-DNS label prefix for your launchd agents
 ```
 
-Override per-run: `--project PLAT`. Domain also overridable via `JIRA_DOMAIN` env var.
+Per-run + env overrides still apply: `ingest/jira.py --project PLAT`,
+`ingest/github.py --repo your-org/other-repo`; env `JIRA_DOMAIN`,
+`JIRA_PROJECT_KEYS`, `GITHUB_ORG`, `GITHUB_REPOS`, `ATLASSIAN_EMAIL`, `SLACK_WORKSPACE`.
 
-### Confluence domain
+**Confluence** filters pages to team members via `jira_id` in `config/people.yaml` —
+populate it before first Confluence ingest, or those pages are silently skipped.
 
-Edit `ingest/confluence.py`:
+### Slack token + channels
 
-```python
-DEFAULT_DOMAIN = "yourorg.atlassian.net"
-```
-
-Or set `JIRA_DOMAIN` in the environment.
-
-**Important:** Confluence filters pages to team members only, using `jira_id` from `config/people.yaml`. If a person's `jira_id` is missing, their pages are silently skipped. Populate people.yaml before first Confluence ingest.
-
-### Slack workspace + channels
-
-1. Generate Slack User OAuth Token (`xoxp-…`) via Slack admin. Scopes documented in `runbook/slack-token-rotate.md`.
+1. Generate a Slack User OAuth Token (`xoxp-…`) via Slack admin. Scopes documented in `runbook/slack-token-rotate.md`.
 2. Save to `~/context/.env` as `SLACK_USER_TOKEN=xoxp-…` (gitignored).
-3. Edit channel allow-list in `config/slack_channels.yaml`. Auto-populated via `python derive/slack_discover_channels.py --auto-mode --apply` (scans team-active channels you're a member of, decides ingest_mode, appends). New channels with null cursor auto-bootstrap from `now − 365d` on first ingest fire — no manual `/slack-backfill` needed for typical adds.
-4. Workspace prefix used in permalinks: `_SLACK_WORKSPACE = "example"` in `derive/slack_upsert.py`. Change if migrating workspaces.
+3. Edit the channel allow-list in `config/slack_channels.yaml`. Auto-populated via `python derive/slack_discover_channels.py --auto-mode --apply` (scans team-active channels you're a member of, decides ingest_mode, appends). New channels with null cursor auto-bootstrap from `now − 365d` on first ingest fire — no manual `/slack-backfill` needed for typical adds.
+
+(The permalink workspace prefix comes from `slack.workspace` in `config/sources.yaml` — no code edit.)
+
+### Scheduled ingest (launchd)
+
+Run `bin/install-agents.sh` — it materialises the generic plist templates in
+`launchagents/` (label prefix `com.example`, `__REPO__`/`__HOME__` paths) with
+your real `launchd.prefix` + machine paths and loads them. Re-run after editing
+schedules.
 
 **Channel yaml schema (`config/slack_channels.yaml`):**
 
