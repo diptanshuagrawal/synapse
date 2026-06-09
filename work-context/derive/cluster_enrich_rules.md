@@ -116,7 +116,7 @@ Then run: `.venv/bin/python derive/enrich_clusters.py apply`
 
 ## Notes
 
-- Apply is idempotent (INSERT OR REPLACE on cluster_id). Partial batches OK.
+- Apply is idempotent (UPDATE on cluster_id; rows are created by Phase B). Partial batches OK.
 - The script does NOT mutate cluster_id, label, summary — those come from Phase B.
 - If you change your mind on a status/decision after running apply, edit the
   verdicts file and re-run apply.

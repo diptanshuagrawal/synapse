@@ -82,10 +82,7 @@ After the wrapper completes, surface a one-screen verdict. Read `OUT_PATH` and e
    Conversely, a cluster where every member is from one source and shares high lexical overlap (same emoji header, same templated phrasing) is the **weaker** signal — could be format-clustering even after the prefix fix. Eyeball before trusting.
 
 4. **Near-duplicate count** (section 4):
-   - Many `sim=1.000` pairs all from one channel → empty-content embeddings leaked in (the stale-bot bug). Recommend running:
-     ```bash
-     .venv/bin/python derive/embed_subjects.py --purge-empty
-     ```
+   - Many `sim=1.000` pairs all from one channel → empty-content embeddings leaked in (the stale-bot bug). `embed_subjects.py` skips empty content at embed time (`skipped_no_content`), so leaked rows mean `subject_content.get_content` is returning boilerplate, not empty. Recommend investigating the content-extraction path in `derive/subject_content.py` and re-embedding affected subjects with `--force`.
    - Otherwise: 0.92–0.97 = re-filed tickets / reposts; 0.97–1.00 = true duplicates worth merging.
 
 5. **Outliers** (section 5): least-connected subjects. Expected = bot pings, join-channel messages, short acks. Unexpected = content-extraction bug.
@@ -147,7 +144,7 @@ READ THESE to verify clustering quality:
 
 - Read-only. NEVER write to `embedding` table from this skill — that's `embed_subjects.py`'s job.
 - NO LLM calls. Wrapper is pure numpy/sklearn + sqlite reads.
-- If `embed_subjects.py --purge-empty` is recommended, DO NOT run it from this skill — surface the recommendation, let owner decide.
+- If a re-embed (`embed_subjects.py --force`) or a content-extraction fix is recommended, DO NOT run it from this skill — surface the recommendation, let owner decide.
 - Wrapper output may be long (3–5 KB for 50 subjects, 30–50 KB for 5k). The report file is the canonical record; stdout is the live view.
 
 ## After write

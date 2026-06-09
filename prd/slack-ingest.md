@@ -13,7 +13,7 @@
 
 > **Auth model: Slack MCP only in v1.** Direct HTTP token paths (bot `xoxb`, user `xoxp`, browser `xoxc`) are deferred to v3 as a cost / reliability optimisation. Decision recorded 2026-05-13 — see §16.
 
-> Companion: [`USER-JOURNEYS.md`](USER-JOURNEYS.md) — every journey marked 🔵 BLOCKED-ON-SLACK depends on this landing. Includes DR-drill visibility, on-call rotation context, incident-thread RCA reconstruction.
+> Status: Slack ingest has since shipped (see [`slack-app-migration.md`](slack-app-migration.md) for the as-shipped record). This doc is the v1 design + the canonical reference for the ops-pattern enum (§7.2), compaction (§11.1), and open-items (§16) cited by the slack skill specs.
 
 ---
 
@@ -865,7 +865,7 @@ LLM digest budget for compaction:
 - Existing ingest patterns (shape this PRD follows — but `ingest/` Python scripts are replaced by `.claude/commands/` skills in v1): `ingest/jira.py`, `ingest/github.py`, `ingest/confluence.py`
 - Handoff trail: `work-context/handoff-2026-05-12-2239.md` §7 "Open backlog — Slack ingest strategy decision"
 - Parent PRD: [`PRD.md`](PRD.md) (§13 Story index)
-- USER-JOURNEYS impact: [`USER-JOURNEYS.md`](USER-JOURNEYS.md) — all 🔵 BLOCKED-ON-SLACK markers
+- Impact: unblocks DR-drill visibility, on-call rotation context, and incident-thread RCA reconstruction (now shipped).
 - Module integration target: `derive/jira_metrics.py::detect_ops_tickets` + `OPS_PATTERNS`
 - Session pivot rationale (MCP over bot): chat 2026-05-13 — owner chose MCP-only to skip Slack app provisioning + workspace admin approval cost
 

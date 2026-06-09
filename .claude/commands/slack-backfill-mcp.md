@@ -22,7 +22,7 @@ User input: `$ARGUMENTS`. Accepted forms:
 | _(empty)_ | error — must specify channel(s) |
 | `<channel-name>` | one channel, default window = 365 days |
 | `<channel-name>,<channel-name>` | multiple channels |
-| `all` | all 8 channels in yaml (heavy — run overnight) |
+| `all` | every channel in yaml (78 as of this writing — heavy, run overnight) |
 | `<channel-name> days=N` | explicit window |
 | `<channel-name> days=all` | full channel history (uses channel.created_at) |
 
@@ -101,7 +101,7 @@ mcp__<slack>__slack_read_channel(
 
 **Pagination orientation (important):** when `oldest=X` is set, Slack returns messages **oldest-first within a page**, and the `pagination_info.cursor` cursor advances **forward in time** (next page covers newer messages). `latest` defaults to "now"; iteration ends when the response omits a cursor. Expect 5-15 pages for a 365-day window depending on channel activity.
 
-**Tool result shape:** the `PostToolUse` hook `slack-mcp-persist.sh` (registered in `$HOME/context/.claude/settings.json`) intercepts every `slack_read_channel` / `slack_read_thread` response and persists the byte-faithful body to `/tmp/slack_mcp_cache/<channel>_<unix_ms>.txt`. Claude sees only the stub:
+**Tool result shape:** the `PostToolUse` hook `bin/slack-mcp-persist.sh` (registered in `$HOME/context/.claude/settings.local.json`) intercepts every `slack_read_channel` / `slack_read_thread` response and persists the byte-faithful body to `/tmp/slack_mcp_cache/<channel>_<unix_ms>.txt`. Claude sees only the stub:
 
 ```json
 {
@@ -272,7 +272,7 @@ This skill is expensive. Per channel:
 - ~50-300 `slack_read_channel` calls (one per page)
 - ~100-500 `slack_read_thread` calls (one per thread parent)
 - ~$0.50-2.00 in Claude turns per channel
-- 8 channels = ~$4-16 total
+- full yaml set (~78 channels) = many hours; budget accordingly
 
 Run when you have time + budget. Owner pays the cost.
 

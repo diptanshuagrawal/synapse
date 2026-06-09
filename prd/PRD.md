@@ -2,7 +2,7 @@
 
 **Owner:** Owner · **Status:** Live (v1 shipped) · **Last revised:** 2026-05-12
 
-> Companion docs: [`USER-JOURNEYS.md`](USER-JOURNEYS.md) (per-journey audit) · [`work-context/README.md`](../work-context/README.md) (run guide) · [`work-context/ARCHITECTURE.md`](../work-context/ARCHITECTURE.md) (code graph) · [`management/build-notes/README.md`](../management/build-notes/README.md) (build log).
+> Companion docs: [`work-context/README.md`](../work-context/README.md) (run guide) · [`work-context/ARCHITECTURE.md`](../work-context/ARCHITECTURE.md) (code graph) · [`management/build-notes/README.md`](../management/build-notes/README.md) (build log).
 >
 > **Per-story detail docs:** see [Section 13 — Story index](#13-story-index) below for links to detailed PRDs of each user-facing skill.
 
@@ -128,7 +128,7 @@ This project is the corpus + the reasoning loop, end to end, running on one lapt
 
 | ID | Requirement | Source of truth |
 |----|-------------|-----------------|
-| F23 | macOS LaunchAgent per source; survive sleep/wake; replay missed fires on wake | `launchagents/*.plist` + `bin/install-agents.sh` |
+| F23 | macOS LaunchAgent per source; survive sleep/wake; replay missed fires on wake. Plists are org-agnostic templates (label prefix `com.example`, paths `__REPO__` / `__HOME__`); `bin/install-agents.sh` substitutes the real prefix + paths at install via its `SERVICES` array | `work-context/launchagents/com.example.*.plist` + `bin/install-agents.sh` |
 | F24 | Cadence: github / jira on `:00, :30` of every 12-22 IST hour; confluence on `:05, :35`. **Rollup is currently MANUAL via `/rollup` slash command — no background LaunchAgent installed.** | LaunchAgent plists |
 | F25 | Cron-status dashboard reports last success (IST), today status, next fire, retry policy, 24h event counts, DB totals, rollup classify breakdown | `bin/cron-status.sh` |
 | F26 | SessionStart hook in both `context/` and `management/` runs cron-status and injects output as system reminder | `.claude/settings.json` hooks |
@@ -219,7 +219,7 @@ Six SQLite tables in `index/events.db` (see `ARCHITECTURE.md` §6.1 for full DDL
 
 - `config/people.yaml` — manual; ~6 entries; required `canonical`/`github`; `jira_id` mandatory for Confluence team filter.
 - `config/projects.yaml` — manual + auto-grown; 88 entries as of 2026-05-12 (53 hand-curated + 35 auto-generated Epic slugs). Append-only via `_persist_auto_slugs`.
-- `launchagents/*.plist` — 4 plists, owner-private user agents.
+- `work-context/launchagents/com.example.*.plist` — 8 org-agnostic plist templates (github-ingest, jira-ingest, confluence-ingest, slack-ingest, slack-discover, leaves, housekeeping, codegraph); `bin/install-agents.sh` materialises them as owner-private user agents at install time.
 
 ---
 

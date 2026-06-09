@@ -87,7 +87,7 @@ chmod 600 ~/.secrets/*
 **Slack token is separate** — Slack ingest reads `SLACK_USER_TOKEN` (a `xoxp-…`
 user token) from `~/context/.env` (gitignored), **not** `~/.secrets/`. Slack
 scripts fail-loud if `ANTHROPIC_API_KEY` is also in env (chat-only-classification
-policy). See Step 6b + `runbook/slack-token-rotate.md`.
+policy). See Step 5 + `runbook/slack-token-rotate.md`.
 
 ---
 
@@ -136,7 +136,7 @@ See `work-context/README.md` → "Configuration" for the full field reference.
 
 ---
 
-### Step 6b — Configure Slack workspace + channels
+### Step 5 — Configure Slack workspace + channels
 
 Slack is the 4th ingest source (direct Web API; the older MCP path is legacy).
 Full setup detail lives in `work-context/README.md` → "Slack workspace + channels".
@@ -160,7 +160,7 @@ always skipped; MPIMs need `allow_mpim: true`. New channels auto-bootstrap from
 
 ---
 
-### Step 7 — Configure projects.yaml (domain taxonomy)
+### Step 6 — Configure projects.yaml (domain taxonomy)
 
 `config/projects.yaml` defines the domains that events get tagged to. This drives all per-project and per-person rollup output.
 
@@ -185,7 +185,7 @@ Start with the epics your team owns. Keywords can be refined after first rollup.
 
 ---
 
-### Step 8 — First ingest
+### Step 7 — First ingest
 
 Run each source with `--reset-cursor` to pull full history. GitHub fetches all PRs/commits/reviews since the repo's beginning. Jira fetches all issues ever updated in the project. Confluence fetches all pages authored by team members.
 
@@ -228,7 +228,7 @@ sqlite3 index/events.db "SELECT source, event_type, count(*) FROM events GROUP B
 
 ---
 
-### Step 9 — First rollup
+### Step 8 — First rollup
 
 Rollup reads `index/events.db` and regenerates all `derived/` markdown. **Policy as of 2026-05-12: all semantic classification flows through chat.** Scripts strip Anthropic auth before invoking `rollup.py` — they only run keyword fallback against `config/projects.yaml`. Any subject without a clean keyword hit lands in pending and gets chat-classified.
 
@@ -288,7 +288,7 @@ cat derived/alerts.md
 
 ---
 
-### Step 9b — Per-person signals + retros (new pipeline)
+### Step 8b — Per-person signals + retros (new pipeline)
 
 Replaced `derive/narrative.py` on 2026-05-22. See `work-context/README.md` "Per-person signals + retros" section for full architecture.
 
@@ -327,7 +327,7 @@ tables (see `SCHEMA.md`). Refresh incrementally after new ingest with
 
 ---
 
-### Step 10 — Install LaunchAgents (scheduler)
+### Step 9 — Install LaunchAgents (scheduler)
 
 ```bash
 ./bin/install-agents.sh
@@ -343,6 +343,7 @@ Installs macOS LaunchAgents (see `bin/install-agents.sh::SERVICES`). Survive sle
 | `slack-ingest` | :00 and :30, 12h–22h | **none** — ingests every fire (volume) |
 | `slack-discover` | Wed + Fri 13:00 | — auto-discovers new team channels |
 | `leaves` | daily 04:00 | — regex prefilter + render (chat steps manual) |
+| `codegraph` | daily 18:00 | — git fetch + full code-graph rebuild (feeds `/ask` code-logic) |
 | `housekeeping` | Sun 03:00 | — log rotation / cache cleanup |
 | rollup | **manual** (no LaunchAgent) | — invoke `/rollup` in chat |
 
@@ -355,7 +356,7 @@ Check health:
 
 ---
 
-### Step 11 — Wire management copilot
+### Step 10 — Wire management copilot
 
 Verify the symlink exists:
 ```bash
@@ -390,7 +391,7 @@ Open `~/context/management/` in Claude Code. `CLAUDE.md` auto-loads and reads `c
 # force idle guard to allow wrapper re-run today
 echo "2000-01-01" > state/last_github_success.date
 
-# ingest specific repos only (without changing DEFAULT_REPOS)
+# ingest specific repos only (per-run override of config sources.yaml github.repos)
 .venv/bin/python ingest/github.py --repo your-org/other-repo
 
 # ingest specific Jira project

@@ -822,10 +822,11 @@ All markdown, regenerated from `events.db` — **never hand-edited**.
 | `/dev-style <person>` | `.claude/commands/dev-style.md` | Narrates a person's working style from `state/actor_behavior_report.json` (built by `derive/actor_behavior.py report`): first-responder rate, resolver rate, reply latency, domain spread across incident-flavored clusters. Invoked standalone or routed from `/ask dev_style`. |
 | `/refresh-embeddings` | `.claude/commands/refresh-embeddings.md` | Incremental embedding + cluster refresh (§5.29): detect drift → embed → cluster → relabel via `cluster_diff` → re-link to projects. |
 | `/embed-validate` | `.claude/commands/embed-validate.md` | Runs `derive/validate_embeddings.py` sanity battery + cluster-quality report over the `embedding` table. |
-| `/slack-reconcile` | `.claude/commands/slack-reconcile.md` | Nightly edit/delete reconcile — re-fetch a trailing window per channel, apply edits + tombstones (`deleted_ts`) via `slack_upsert`. |
 | `/slack-compact` | `.claude/commands/slack-compact.md` | Chat-driven thread compaction — reads `state/slack_compact_pending.json`, writes 1-line digests back to `thread_summary`. |
 
 Removed 2026-05-12: `/bulk-rollup` (algorithmic path killed). See [`project_chat_only_classification.md`](~/.claude/projects/-home-context/memory/project_chat_only_classification.md).
+
+Removed: `/slack-reconcile` — the trailing-window edit/delete reconcile is now inline in the steady-state ingest path (`slack_ingest_app` Phase 2.7 / 2.7b, §5.5c), so the standalone slash command was dropped.
 
 Removed 2026-05-22: `/narrative` (Option K1 consolidation). `/ask person_range` is the sole entry point for per-person narratives. Memory at `feedback_retro_stakeholder_format.md` + `feedback_ask_output_shape.md` carries operating norms.
 

@@ -10,7 +10,7 @@
 **Owner:** owner · **Status:** ~~Live (iterating)~~ → Superseded by `/ask person_range` · **Last revised:** 2026-05-13
 **Parent:** [`PRD.md`](PRD.md) · **Skill source:** ~~`.claude/commands/narrative.md`~~ (removed) → `.claude/commands/ask.md` · **Module:** `$HOME/context/work-context/derive/jira_metrics.py`
 
-> Companion: [`USER-JOURNEYS.md`](USER-JOURNEYS.md) — Journey 1 (1:1 prep), Journey 4 (perf-review draft), Journey 5 (cycle retro) all consume `/narrative` output.
+> Note: live per-person narratives now run via `/ask person_range` (see `.claude/commands/ask.md`); this PRD is the design record.
 
 ---
 
@@ -346,7 +346,7 @@ Bottleneck: chat-driven narrative drafting (~180s), not SQL. Each query <100ms a
 - [ ] Per-window cache of `compute_done_credits` for whole-team runs.
 - [ ] `person_narrative` cache table — hydrate so the same window doesn't recompute.
 - [ ] `cycle_hours` column on `events` for direct cycle-time queries (no `julianday` per-row).
-- [ ] Slack ingest landing → `detect_ops_tickets` extension to scan Slack threads, not just Jira titles. Unblocks DR-drill visibility (USER-JOURNEYS.md 🔵 markers).
+- [ ] Slack ingest landing → `detect_ops_tickets` extension to scan Slack threads, not just Jira titles. Unblocks DR-drill visibility.
 
 ### Long-term
 

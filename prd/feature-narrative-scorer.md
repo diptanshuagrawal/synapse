@@ -141,12 +141,12 @@ FeatureScore = Σ ( w_i · subscore_i )   over metrics with sufficient data
 
 ## 7. Data model additions
 
-New tables (migration `0NN_feature_score.sql`), mirroring the `pr_*` table pattern:
+New tables mirroring the `pr_*` table pattern. `feature_release` (011) and `feature_stage` (012) are built; `feature_score` and `feature_bug_link` remain Phase 2 (future migration). DDL is the canonical reference under `derive/migrations/`; the applied copy lives in `ingest/common.py::_ensure_schema` (no external migration runner):
 
-- **`feature_stage`** (keyed by `slug, stage`): `entered_at`, `detection_source`, `confidence`, `artefact_count`, `computed_at`. One row per stage per feature.
+- **`feature_stage`** (keyed by `slug, scope, stage` — DONE, migration `012_feature_stage.sql`): `entered_at`, `detection_source`, `confidence`, `artefact_count`, `detail_json`, `computed_at`. One row per stage per feature; `scope=''` is the whole-slug domain rollup, a non-empty `scope` is an anchor epic key (epic-bounded journey).
 - **`feature_score`** (keyed by `slug, snapshot`): `composite` (0–100), `band`, `subscores_json` ({metric: {raw, normalized, weight, n, excluded}}), `metrics_present_json`, `window_days`, `computed_at`.
 - **`feature_bug_link`** (keyed by `bug_subject`): `slug`, `linked_via` (epic_child | keyword | cluster), `created_at`, `severity`, `days_after_rollout`. Feeds M3.
-- **`feature_release`** (keyed by `cmr_subject`): `slug`, `linked_via` (pr_in_body | impacted_areas | cluster), `service`, `impacted_areas`, `pr_urls_json`, `release_owner`, `approval_requested_at`, `approved_at`, `approved_by`, `released_at`, `outcome` (released | emergency | rolled_back | cancelled), `is_feature_release` (false for DB-ops/balance/config CMRs). Feeds M7, the rollout stage, and M3/M4 anchoring.
+- **`feature_release`** (keyed by `cmr_subject, slug` — DONE, migration `011_feature_release.sql`): `slug`, `linked_via` (project_ref | impacted_areas | none), `service`, `impacted_areas`, `pr_urls_json`, `release_owner`, `created_at`, `approval_requested_at`, `approved_at`, `approved_by`, `released_at`, `outcome` (released | emergency | rolled_back | cancelled | pending), `is_feature_release` (0 for DB-ops/balance/config CMRs). A release touching N features yields N rows; unattributed CMRs get a single `slug=''` row. Feeds M7, the rollout stage, and M3/M4 anchoring.
 
 Reuse existing `pr_meta`, `pr_comment_class`, `pr_friction` for M1/M2 — no duplication.
 

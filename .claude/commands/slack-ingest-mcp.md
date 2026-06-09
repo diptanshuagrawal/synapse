@@ -76,9 +76,9 @@ Capture full response (results + pagination_info).
 
 ### 2c. Hand response to runner
 
-**Tool result shape:** the `PostToolUse` hook `slack-mcp-persist.sh` (registered in `$HOME/context/.claude/settings.json`) intercepts every `slack_read_channel` / `slack_read_thread` response over ~8KB and persists the byte-faithful body to `/tmp/slack_mcp_cache/<channel>_<unix_ms>.txt`. Claude sees a stub `{file_saved, channel_id, body_bytes, ...}`. Bodies ≤8KB come inline — `Write` them to `/tmp/slack_ingest_<channel>_p1.txt` as before.
+**Tool result shape:** the `PostToolUse` hook `bin/slack-mcp-persist.sh` (registered in `$HOME/context/.claude/settings.local.json`) intercepts every `slack_read_channel` / `slack_read_thread` response and persists the byte-faithful body to `/tmp/slack_mcp_cache/<channel>_<unix_ms>.txt`. Claude sees a stub `{file_saved, channel_id, body_bytes, ...}`. If persisting fails (write error / short write / non-text response), the hook passes the original body through inline — `Write` it to `/tmp/slack_ingest_<channel>_p1.txt` as a fallback.
 
-Never re-emit a >8KB body through `Write` — transcription corruption risk. Use `file_saved` directly.
+Never re-emit a persisted body through `Write` — transcription corruption risk. Use `file_saved` directly.
 
 ```bash
 .venv/bin/python derive/slack_ingest_runner.py upsert \
@@ -107,7 +107,7 @@ mcp__<slack>__slack_read_thread(
 )
 ```
 
-Hook persists the response if >8KB (typical for active threads). Inline-only path: `Write` to `/tmp/slack_ingest_<channel>_<thread_ts>.txt`. Either way, hand to runner with `--thread-parent-ts`:
+Hook persists the response to `/tmp/slack_mcp_cache/`. Inline fallback path (only if persist fails): `Write` to `/tmp/slack_ingest_<channel>_<thread_ts>.txt`. Either way, hand to runner with `--thread-parent-ts`:
 
 ```bash
 .venv/bin/python derive/slack_ingest_runner.py upsert \
@@ -182,7 +182,7 @@ total new events:  <sum>
 total thread refs: <sum from runner reports>
 threads built:     <build_thread_summary inserted+updated>
 
-Cursor advanced for: <N>/8 channels
+Cursor advanced for: <N>/<total channels> channels
 ```
 
 ## Hard constraints

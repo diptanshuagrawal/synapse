@@ -26,7 +26,7 @@ as the architectural seam.
 - MCP not removed. Retained for exploration + as `/slack-{ingest,backfill}-mcp`
   fallback skills.
 - `events.db` schema mostly preserved. Additive migrations only:
-  `files_json` column (Migration 007).
+  `files_json` column (in `ingest/common.py`).
 - Zero LLM calls in fetch scripts. Scripts fail-loud on accidental
   `ANTHROPIC_API_KEY` presence (mirrors rollup-auth-strip rule).
 
@@ -115,7 +115,7 @@ work-context/
 │                                    extras (channels w/ laggiest age, DM-skip,
 │                                    validate findings + cache age) below.
 ├── config/
-│   └── slack_channels.yaml        # 51 channels (14 manual + 37 auto-discovered);
+│   └── slack_channels.yaml        # 78 channels (manual + auto-discovered);
 │                                    rows carry optional `ingest_mode: team_involved`
 │                                    + `allow_mpim: true` for MPIM rows.
 ├── state/
@@ -191,8 +191,9 @@ work-context/
   with `--confirm-mpim`. Optional `--persist-cursor` writes cursor for
   recurring (pair with yaml row + `allow_mpim: true`).
 
-Currently 20 MPIMs in yaml (1 original working-group + 19 auto-discovered team
-DMs surfaced by `slack_discover_channels.py`). MPIM hygiene maintained by
+Currently 14 MPIMs in yaml (`allow_mpim: true`) — original working-group(s)
+plus auto-discovered team DMs surfaced by `slack_discover_channels.py`. MPIM
+hygiene maintained by
 `slack_prune_stale_mpims.py` (drops rows quiet >30d; events.db rows preserved
 so re-discovery cleanly re-adds).
 

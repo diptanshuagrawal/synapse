@@ -338,7 +338,7 @@ Verdicts persist to `subject_summary` cache. Subsequent `rollup.py` runs hit cac
 
 | Command | Purpose |
 |---------|---------|
-| `/ask <route> <args>` | Sole router for narrative/analytical questions. Routes: `person_range`, `highs_lows` (→ `/retro`), `cluster_pulse`, `signals`. See "Per-person signals + retros" section. |
+| `/ask <route> <args>` | Sole router for narrative/analytical questions. Routes: `summarize`, `person_range`, `team_range`, `attention`, `ticket_gaps`, `rootcauses`, `dev_style` (→ `/dev-style`), `highs_lows` (→ `/retro`), `feature_logic`. See "Per-person signals + retros" section. |
 | `/retro since=<iso> until=<iso>` | Stakeholder-facing retrospective. Team-level voice, deliveries-only Highs, measured impact from slack. |
 | `/rollup [days]` | Full chat-classify cycle: dump → classify in chat → apply. Default 240 days. |
 | `/classify` | Phase 2 only — re-classify pending without re-dumping (use when `verdicts.json` got wiped). |
@@ -358,15 +358,16 @@ Verdicts persist to `subject_summary` cache. Subsequent `rollup.py` runs hit cac
 
 | Command | Purpose |
 |---------|---------|
-| `/slack-ingest` | Steady-state Slack ingest via direct Slack Web API (current path). |
+| `/slack-ingest` | Steady-state Slack ingest via direct Slack Web API (current path). Includes the trailing-window edit/delete reconcile inline (no separate command). |
 | `/slack-backfill` | One-time channel backfill via direct Web API. Owner-invoked. |
-| `/slack-discover` | Look up channel IDs + discover new team-active channels; writes verdicts to `slack_channels.yaml`. |
-| `/slack-reconcile` | Nightly edit/delete reconcile — re-fetch trailing window, apply edits + tombstones. |
 | `/slack-compact` | Chat-driven Slack thread compaction (reads `state/slack_compact_pending.json`). |
 | `/slack-ingest-mcp` | **Legacy** — steady-state ingest via Slack MCP. Superseded by `/slack-ingest`. |
 | `/slack-backfill-mcp` | **Legacy** — chunked backfill via Slack MCP. Superseded by `/slack-backfill`. |
 
+Channel discovery is no longer a slash command — it runs on cron (`bin/run-slack-discover.sh` → `derive/slack_discover_channels.py`, Wed+Fri 13:00 IST) and can be run manually via the discovery scripts in the "Slack token + channels" section above.
+
 Removed 2026-05-22: `/narrative` (folded into `/ask person_range`).
+Removed: `/slack-discover` (now cron-only) and `/slack-reconcile` (folded into `/slack-ingest`).
 
 ---
 

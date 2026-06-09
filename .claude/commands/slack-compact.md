@@ -107,7 +107,7 @@ For each thread, produce **one** verdict object:
 
 ### ops_pattern classification
 
-Match against PRD §8 OPS_PATTERNS:
+Match against the `ops_pattern_match` enum (PRD `slack-ingest.md` §7.2):
 - `incident` — thread starts with or pivots to a P0/P1/outage discussion
 - `drill` — DR drill / fire drill / gameday
 - `rca` — explicit root cause / post-mortem in the thread (separate from the actual incident thread)

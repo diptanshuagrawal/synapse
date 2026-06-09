@@ -87,12 +87,12 @@ Ownership constraints (from rules.md — see team-id enum + author→team table 
 - `co_owners`: zero+ team ids that collaborate. Drop unknown ids.
 - `owned_by_confidence`: 0–1. Below 0.6 → `apply_verdicts` nulls the ownership fields (domain classification still kept).
 - `ownership_reasoning`: ≤300 chars, cites the signal (author identity, subteam ping, epic owner, thread context).
-- Deterministic overrides (author-on-team, channel-join→external, payments-author, etc.) re-apply automatically in apply via `ownership_corrections.py` — don't hand-tune those; focus ownership judgement on the ambiguous cross-team cases.
+- Deterministic overrides (author-on-team, channel-join→external, co-owner-team author attribution, etc.) re-apply automatically in apply via `ownership_corrections.py` — don't hand-tune those; focus ownership judgement on the ambiguous cross-team cases.
 
 Write the complete JSON array to:
 `$HOME/context/work-context/state/verdicts.json`
 
-Print: total classified / stored / deferred (low-conf) / deferred (needs_diff).
+Print: total classified / stored / deferred (low-conf).
 
 ## Phase 3 — Apply + final rollup
 

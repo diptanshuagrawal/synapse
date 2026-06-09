@@ -239,12 +239,12 @@ Three new tables in `events.db` (additive, via `_add_column_if_missing` /
 
 ### Phase 4 — `/pr-quality` skill: classify (dump → chat → apply)
 Standalone skill (not a `/rollup` sub-phase); reuses the rollup harness.
-- **Dump** (`derive/pr-quality.sh dump`): emit unclassified review/comment
+- **Dump** (`derive/pr_quality_dump.py`): emit unclassified review/comment
   bodies (human + matterai) → `state/pending_pr_comments.json` +
-  `state/pending_pr_comments.json.rules.md` (the taxonomy). No API key in script.
+  `state/pending_pr_comments.rules.md` (the taxonomy). No API key in script.
 - **Classify** (chat turn): tag each comment with taxonomy category →
   `state/verdicts.pr_comments.json`.
-- **Apply** (`derive/pr-quality.sh apply`): upsert `pr_comment_class`, then
+- **Apply** (`derive/apply_pr_classes.py`): upsert `pr_comment_class`, then
   recompute `pr_friction` (mechanical + category-weighted, human > matterai).
 - Rules file: `config/pr_review_rules.md` (taxonomy + weights, peer to rules.md).
 

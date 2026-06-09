@@ -28,9 +28,9 @@ open PRs from this skill.
 
 - **Two-phase maker-checker.** DETECT never writes to Jira. APPLY is the only writer,
   and only for candidates the owner explicitly marked `approve`. No auto-create.
-- **Roster = `scope: team` reports** (same as `/standup`): the 7 entries in
-  `work-context/config/people.yaml` with `scope: team`, EXCLUDING the owner/manager.
-  A non-roster assignee in a candidate is a bug.
+- **Roster = `scope: team` reports** (same as `/standup`): the `scope: team` entries in
+  `work-context/config/people.yaml`, EXCLUDING the owner/manager (`standup_gather.py`
+  drops `owner_handle()`). A non-roster assignee in a candidate is a bug.
 - **Backlog only.** Every created ticket lands in the backlog (no sprint field). The
   owner promotes to a sprint manually. Never set sprint/board.
 - **Conservative detection.** False positives are costly (noise). When unsure whether

@@ -40,7 +40,7 @@ Check `state/actor_behavior_report.json` exists. If missing OR older than the mo
 .venv/bin/python derive/actor_behavior.py report
 ```
 
-The rebuild is cheap (~2 sec for 377-subject corpus, ~30 sec at 5k scale). Always safe to rerun.
+The rebuild is cheap (a few seconds at ~30k-subject corpus scale). Always safe to rerun.
 
 ## Phase 2 — Resolve person
 

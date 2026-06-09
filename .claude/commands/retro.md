@@ -79,7 +79,7 @@ conn = sqlite3.connect('$HOME/work-context/index/events.db')
 people = load_people_lookup()
 ```
 
-Module contracts in §narrative.md Phase 0 (same module). Key for retro:
+Module contracts in `ask.md` Phase 0 (same module). Key for retro:
 - `team_velocity_baseline(conn, start, end)` → for retro's "Metrics" + "Lows" sections (top deliverers, sprint pacing).
 - `compute_done_credits(...)` → use for shipped epic / per-domain SP totals.
 - `detect_ops_tickets(...)` per top actor → ops-incident-response items per-person.

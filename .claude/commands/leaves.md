@@ -2,7 +2,9 @@ Classify and apply team leave mentions from Slack.
 
 This is the chat-classify half of the leave-tracking pipeline. Phase 1
 (regex prefilter + render of already-classified rows) runs nightly via
-`launchagents/com.example.leaves.plist`. This skill runs the LLM half.
+`work-context/launchagents/com.example.leaves.plist` (a generic template;
+`bin/install-agents.sh` substitutes the real prefix + paths at install).
+This skill runs the LLM half.
 
 ## Usage — `/leaves [days]`
 
