@@ -5,16 +5,22 @@
 # staging, no copy — against the leak denylists, checks filenames, and
 # py_compiles all Python. With --push, pushes to origin/main only if clean.
 #
-# Denylist sources (both used if present):
-#   .githooks/leak-patterns.txt   generic, tracked, ships
-#   .publish-denylist.txt         real org tokens, gitignored, local-only
+# Denylist sources (all used if present):
+#   .githooks/leak-patterns.txt      generic + structural, tracked, ships
+#   .publish-denylist.txt            hand-curated real org tokens, gitignored
+#   .publish-denylist.generated.txt  AUTO-derived from config/* (regenerated below)
 set -uo pipefail
 
 REPO="$(git rev-parse --show-toplevel)"
 cd "$REPO"
 DO_PUSH=0; [ "${1:-}" = "--push" ] && DO_PUSH=1
 
-PATS="$(grep -hvE '^[[:space:]]*(#|$)' .githooks/leak-patterns.txt .publish-denylist.txt 2>/dev/null || true)"
+# Refresh the config-derived denylist so every real identifier in config/* (emails,
+# repos, host, full names, channel/MCP ids) is blocked — no hand-maintenance, no
+# chat session in the loop. Best-effort: a failure here never blocks the scan.
+[ -x "$REPO/bin/gen-denylist.sh" ] && "$REPO/bin/gen-denylist.sh" >/dev/null 2>&1 || true
+
+PATS="$(grep -hvE '^[[:space:]]*(#|$)' .githooks/leak-patterns.txt .publish-denylist.txt .publish-denylist.generated.txt 2>/dev/null || true)"
 [ -z "$PATS" ] && { echo "preflight: no denylist patterns found (.githooks/leak-patterns.txt)"; exit 1; }
 
 # Lines carrying an intentional-placeholder marker are allowed.
@@ -32,6 +38,20 @@ if [ -n "$HITS" ]; then echo "$HITS" | head -40; fail=1; else echo "   clean"; f
 echo "==> filename scan"
 FHITS="$(echo "$FILES" | grep -iE -f <(echo "$PATS") 2>/dev/null || true)"
 if [ -n "$FHITS" ]; then echo "$FHITS" | head -20; fail=1; else echo "   clean"; fi
+
+# Template placeholder lint: in PUBLISHED templates (scheduled-tasks/** + *.example.*)
+# a Slack channel mention must be a placeholder, never a real channel name. This
+# catches NEW/unregistered channels (the #standup-updates class) that the denylist
+# can't know about. Scoped to template files only → no CSS/markdown false positives.
+echo "==> template placeholders"
+TFILES="$(echo "$FILES" | grep -E '(^|/)scheduled-tasks/|\.example\.' || true)"
+THITS="$(echo "$TFILES" | while IFS= read -r f; do
+           [ -f "$f" ] && grep -HnoE '#[a-z][a-z0-9_-]{2,}' "$f" 2>/dev/null
+         done | grep -vE '#example|#!' || true)"
+if [ -n "$THITS" ]; then
+  echo "   real-looking #channel in a template — use a __PLACEHOLDER__ or #example*:"
+  echo "$THITS" | head -20; fail=1
+else echo "   clean"; fi
 
 echo "==> py_compile"
 PYF="$(echo "$FILES" | grep -E '\.py$' || true)"

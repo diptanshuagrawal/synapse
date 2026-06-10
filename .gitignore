@@ -112,6 +112,8 @@ handoff-*.md
 
 # Publish-time real-token denylist (never ship). Read by the local leak hook.
 .publish-denylist.txt
+# auto-generated from config by bin/gen-denylist.sh
+.publish-denylist.generated.txt
 
 # Private publish tooling + planning — keep local, never ship.
 PUBLISH_PLAN.md
