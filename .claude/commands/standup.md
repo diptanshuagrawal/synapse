@@ -84,7 +84,7 @@ else they go silently empty on a quiet day:
 | **Done** | window events | a real ship that happened *in* the window (PR merged, ticket → terminal, doc authored) |
 | **In progress** | current board state | latest status ∈ In Progress/In Review for the assignee (§3b) + open authored PRs — regardless of window |
 | **Up next** | current state | currently-open assigned To-Do/Open tickets + open asks + pending reviews + Slack self-commitments & unanswered @-asks (§4b) — not "changed today" |
-| **Blockers** | currently-open | unresolved threads / firing alerts that are STILL open, even if started before the window (bound to ~last 7d for recency) |
+| **Blockers** | currently-open | unresolved threads / firing alerts that are STILL open, even if started before the window (bound to ~last 2 days for recency) |
 
 So the window scopes *Done* and *what changed*; everything else is "what is true on
 the board right now". Never report In-progress/Up-next/Blockers as empty just because
