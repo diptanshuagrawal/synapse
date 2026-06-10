@@ -86,6 +86,18 @@ populate it before first Confluence ingest, or those pages are silently skipped.
 
 Run `bin/install-agents.sh` — it materialises the generic plist templates in `launchagents/` (label prefix `com.example`, `__REPO__`/`__HOME__` paths) with your real `launchd.prefix` + machine paths and loads them. Re-run after editing schedules.
 
+### Scheduled routines (Claude Code /schedule agents)
+
+A separate scheduler: Claude Code **routines** (scheduled remote agents) live in `~/.claude/scheduled-tasks/<id>/SKILL.md` and are registered through the scheduled-tasks MCP, not launchd. Their templates + cron manifest are committed under `scheduled-tasks/` (`routines.yaml` holds the cron expression + enabled flag — those aren't in SKILL.md).
+
+Bootstrap a new machine with `bin/install-routines.sh`:
+
+```bash
+SLACK_MCP_SERVER=<id> STANDUP_CHANNEL=<channel> bin/install-routines.sh
+```
+
+It materialises the templated SKILL.md files (substituting `__REPO__`/`__HOME__` + the env vars; a routine whose `needs` env var is unset is skipped, never blanked) and prints the `create_scheduled_task` payloads for Claude to register via MCP (a shell script can't call MCP). Both `cron-status.sh` and `dashboard.py` show a **ROUTINES** section with each routine's cadence, last run, and next fire — read from the app's `scheduled-tasks.json` registry via `bin/_routines.py`.
+
 **Channel yaml schema (`config/slack_channels.yaml`):**
 
 ```yaml
@@ -428,6 +440,8 @@ Precedent: owner's `#example-monthly-update` Feb + March 2026 posts (slack:`C0EX
 work-context/
 ├── bin/
 │   ├── install-agents.sh              # install / reload all LaunchAgents
+│   ├── install-routines.sh            # bootstrap Claude Code /schedule routines
+│   ├── _routines.py                   # routine status (cadence/last/next) for cron-status + dashboard
 │   ├── cron-status.sh                 # show ingest scheduler health
 │   ├── backfill-confluence-titles.py  # one-time: fetch missing page titles
 │   ├── backfill-jira-epics.py         # one-time: fetch epic links for issues

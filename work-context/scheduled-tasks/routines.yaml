@@ -1,0 +1,39 @@
+# Routine manifest — source of truth for bootstrapping Claude Code scheduled
+# agents ("routines") on a new owner's machine. The SKILL.md bodies live in
+# scheduled-tasks/<id>/SKILL.md (templated with __REPO__ / __SLACK_MCP__ /
+# __STANDUP_CHANNEL__ placeholders).
+#
+# install-routines.sh materialises the SKILL.md files into
+#   ~/.claude/scheduled-tasks/<id>/SKILL.md
+# then emits the create_scheduled_task registration payloads from this manifest
+# for Claude to register via the scheduled-tasks MCP (a shell script cannot call
+# MCP itself). The cron expression + enabled flag below ARE the schedule —
+# they are NOT stored in SKILL.md, only in the app's registry.
+#
+# Cron expressions are 5-field and evaluated in the machine's local timezone
+# (the owner runs IST).
+
+routines:
+  - id: daily-standup
+    cron: "45 11 * * 1-5"        # weekdays 11:45 IST
+    enabled: true
+    needs: [standup_channel]      # __STANDUP_CHANNEL__ must be set
+    permissions: []
+
+  - id: service-brief-daily
+    cron: "30 18 * * *"           # daily 18:30 IST
+    enabled: true
+    needs: []
+    permissions: []
+
+  - id: slack-ingest
+    cron: "0,30 12-22 * * *"      # every 30 min, 12:00–22:30 IST
+    enabled: false                # off by default — owner enables after backfill
+    needs: [slack_mcp]            # __SLACK_MCP__ must be set
+    permissions: [Bash]
+
+  - id: slack-reconcile
+    cron: "0 2 * * *"             # nightly 02:00 IST
+    enabled: false                # off by default
+    needs: [slack_mcp]
+    permissions: []

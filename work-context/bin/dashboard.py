@@ -35,6 +35,7 @@ from urllib.parse import urlparse, parse_qs
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _run_health as rh
 import _codegraph_status as cg
+import _routines as rt
 
 PLIST_DIR = Path.home() / "Library/LaunchAgents"
 _WD_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
@@ -269,6 +270,7 @@ def get_snapshot() -> dict:
     snap["last_run_ts"] = get_last_run_ts()
     snap["run_health"] = get_run_health()
     snap["codegraph"] = cg.read_status(STATE, PLIST_DIR)
+    snap["routines"] = rt.load_routines()
     snap["slack_cursors"] = _read_json(STATE / "slack_cursors.json")
     snap["slack_channel_meta"] = _read_json(STATE / "slack_channel_meta.json").get("channels", {})
     # Slack discover summary + schedule.
@@ -821,6 +823,32 @@ async function refresh() {
         <span>success.date</span><b>${sd || "—"}</b>
         <span>repos</span><b>${repos || "—"}</b>
       </div>`));
+  }
+
+  // ROUTINES lane (Claude Code /schedule agents — distinct from launchd crons)
+  if (s.routines && s.routines.length) {
+    const rs = s.routines;
+    const nOn = rs.filter(r => r.enabled).length;
+    const rState = nOn ? "ok" : "warn";
+    const rows = rs.map(r => {
+      const dot = r.enabled
+        ? `<span class="pill">on</span>`
+        : `<span class="pill warn">off</span>`;
+      const next = r.enabled ? (r.next_fire_rel || "—") : "—";
+      return `<tr><td>${dot}</td>
+              <td><b>${r.id}</b></td>
+              <td>${r.sched_human}</td>
+              <td class="muted">${r.last_run_rel || "—"}</td>
+              <td class="muted">${next}</td></tr>`;
+    }).join("");
+    lanes.push(laneFor("ROUTINES", rState, `
+      <div class="kv">
+        <span>active</span><b>${nOn} of ${rs.length} scheduled agent(s)</b>
+        <span>policy</span><b class="muted">Claude Code /schedule · cron in IST · MCP-registered</b>
+      </div>
+      <table><tr><th></th><th>routine</th><th>cadence</th>
+                  <th>last run</th><th>next fire</th></tr>
+        ${rows}</table>`));
   }
 
   document.getElementById("lanes").innerHTML = lanes.join("");

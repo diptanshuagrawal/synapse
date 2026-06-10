@@ -10,6 +10,7 @@ import json, plistlib, re, sqlite3, sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _run_health as rh
 import _codegraph_status as cg
+import _routines as rt
 
 ROOT      = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -2007,6 +2008,32 @@ if cgs.get("success_date") or cgs.get("start"):
     if rparts:
         print(kv("repos", "   ".join(rparts)))
 
+    print(rule())
+    print()
+
+# ─── ROUTINES lane ──────────────────────────────────────────────────────────────
+# Claude Code scheduled agents (the /schedule mechanism) — distinct from the
+# launchd LaunchAgents above. Read from the desktop app's scheduled-tasks.json
+# registry; cadence + next-fire parsed from each cron expression. See
+# bin/_routines.py. Bootstrap a new machine with bin/install-routines.sh.
+routines = rt.load_routines(now)
+if routines:
+    n_on = sum(1 for r in routines if r["enabled"])
+    head_pill = pill("●", f"{n_on} active", GREEN) if n_on \
+        else pill("○", "none active", YELLOW)
+    print(f"  {BOLD}{'ROUTINES':<13}{RESET}  {head_pill}  "
+          f"{DIM}{len(routines)} scheduled agent(s){RESET}")
+    print(kv("policy",   "Claude Code /schedule agents · cron in IST · MCP-registered"))
+    for r in routines:
+        if r["enabled"]:
+            r_pill = pill("●", "on", GREEN)
+            nxt = f"{DIM}next {r['next_fire_rel']}{RESET}"
+        else:
+            r_pill = pill("○", "off", DIM)
+            nxt = f"{DIM}—{RESET}"
+        last = f"{DIM}last {r['last_run_rel']}{RESET}" if r["last_run_rel"] else f"{DIM}last —{RESET}"
+        print(f"  {'':4}{r_pill}  {BOLD}{r['id']:<22}{RESET}  "
+              f"{CYAN}{r['sched_human']:<26}{RESET}  {last}  {nxt}")
     print(rule())
     print()
 
