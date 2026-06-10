@@ -4,10 +4,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TOKEN_FILE="$HOME/.secrets/github_pat"
-STATE_FILE="$ROOT/state/last_github_success.date"
 TODAY="$(date +%Y-%m-%d)"
 
-# Skip if already succeeded today (idempotent — cron retries until success)
+# Two ingest windows/day (see LaunchAgent schedule):
+#   morning (~11:00, 5-min retry) feeds the 11:45 standup with the FULL previous day;
+#   evening (18:00–23:00, 30-min retry) is a same-day safety net so the day's data
+#   through ~6pm is captured even if the next morning's run fails.
+# Window is picked by clock hour; each window has its own success marker so both
+# can succeed on the same calendar day. Boundary 17:00 is safe (no fires 12–16).
+if (( 10#$(date +%H) >= 17 )); then
+  STATE_FILE="$ROOT/state/last_github_evening_success.date"
+else
+  STATE_FILE="$ROOT/state/last_github_success.date"
+fi
+
+# Skip if this window already succeeded today (idempotent — cron retries until success)
 if [[ -f "$STATE_FILE" && "$(cat "$STATE_FILE")" == "$TODAY" ]]; then
   exit 0
 fi
