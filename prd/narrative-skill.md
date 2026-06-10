@@ -1,47 +1,43 @@
-# `/narrative` skill — detailed PRD
+# `/narrative` skill — PRD (design record)
 
-> ⚠️ **SUPERSEDED 2026-05-22.** The `/narrative` slash command was removed and
-> folded into **`/ask person_range`** (sole entry point for per-person
-> narratives). `.claude/commands/narrative.md` no longer exists. This doc is
-> retained for design history; for current behaviour see `work-context/README.md`
-> → "Per-person signals + retros" and `ARCHITECTURE.md` §5.8a–b. The
-> `jira_metrics.py` module reference below is still accurate.
+> ⚠️ **SUPERSEDED 2026-05-22 — design record only.**
+> `/narrative` was removed and folded into **`/ask person_range`** (sole entry point for per-person narratives).
+> **Live behavior now lives in `.claude/commands/ask.md`.** `.claude/commands/narrative.md` no longer exists.
+> Current docs: `work-context/README.md` → "Per-person signals + retros"; `ARCHITECTURE.md` §5.8a–b.
+> The `jira_metrics.py` module contract below is still accurate.
 
-**Owner:** owner · **Status:** ~~Live (iterating)~~ → Superseded by `/ask person_range` · **Last revised:** 2026-05-13
-**Parent:** [`PRD.md`](PRD.md) · **Skill source:** ~~`.claude/commands/narrative.md`~~ (removed) → `.claude/commands/ask.md` · **Module:** `$HOME/context/work-context/derive/jira_metrics.py`
-
-> Note: live per-person narratives now run via `/ask person_range` (see `.claude/commands/ask.md`); this PRD is the design record.
+**Owner:** owner · **Status:** Superseded by `/ask person_range` · **Last revised:** 2026-05-13
+**Parent:** [`PRD.md`](PRD.md) · **Skill source:** `.claude/commands/narrative.md` (removed) → `.claude/commands/ask.md` · **Module:** `$HOME/context/work-context/derive/jira_metrics.py`
 
 ---
 
 ## 1. Problem
 
-An EM running a 7-person team needs a defensible per-person narrative to:
-
+An EM with a 7-person team needs a defensible per-person narrative to:
 - Prep weekly 1:1s without re-reading every Jira ticket + PR.
 - Draft cycle-end performance notes from evidence, not vibes.
-- Spot drift early: a heavy reviewer suddenly going quiet, a top deliverer flipping to all-ops, a senior IC sliding into coordinator mode.
+- Spot drift early (heavy reviewer going quiet, top deliverer flipping to all-ops, senior IC sliding into coordinator mode).
 
-Manual synthesis is slow (~30 min / person / cycle) AND lossy: humans anchor on whoever was loudest in standup. Existing dashboards (Linear, Jellyfish) optimise for org-level rollups; they don't produce the **person × cycle × evidence-quoted** narrative an EM needs.
+Manual synthesis is slow (~30 min / person / cycle) and lossy (humans anchor on whoever was loudest in standup). Linear/Jellyfish optimise for org-level rollups — not the **person × cycle × evidence-quoted** narrative an EM needs.
 
-`/narrative` solves this by reading `events.db` + materialised views, computing a fixed set of attribution signals through `derive/jira_metrics.py`, and writing a markdown manager-note to `management/narratives/per-person/<handle>-<start>-to-<end>.md` (or `team/` for whole-team output).
+`/narrative` reads `events.db` + materialised views, computes attribution signals via `derive/jira_metrics.py`, and writes a markdown manager-note to `management/narratives/per-person/<handle>-<start>-to-<end>.md` (or `team/` for whole-team).
 
 ---
 
 ## 2. Goals
 
-- **G1.** One command produces one manager-note ≤ 5 minutes wall-clock.
-- **G2.** Every claim in the note traces to a Phase 1 query result — no fabrication.
-- **G3.** Attribution rules are single-sourced in `derive/jira_metrics.py`. Skills consume; never re-implement.
-- **G4.** Narrative wraps numbers; numbers don't wrap narrative. Headlines are sentences, not tier-name shouts.
-- **G5.** Output is durable in `management/narratives/` (referenced in 1:1 prep + trend comparison), not scratch.
+- **G1.** One command → one manager-note in ≤ 5 min wall-clock.
+- **G2.** Every claim traces to a Phase 1 query result — no fabrication.
+- **G3.** Attribution rules single-sourced in `derive/jira_metrics.py`. Skills consume, never re-implement.
+- **G4.** Narrative wraps numbers, not vice versa. Headlines are sentences, not tier-name shouts.
+- **G5.** Output durable in `management/narratives/` (1:1 prep + trend comparison), not scratch.
 
 ## 3. Non-goals
 
-- Not a dashboard. No charts; just markdown.
-- Not real-time. Runs against the latest ingest cursor; ~30 min staleness is acceptable.
-- Not a team-comparison tool. Per-person and whole-team views exist; cross-cycle trending is a separate skill (`/quarterly-retro`, future).
-- Not a performance verdict. Surfaces signals; manager interprets.
+- Not a dashboard — markdown only, no charts.
+- Not real-time — runs against latest ingest cursor; ~30 min staleness OK.
+- Not a team-comparison tool — cross-cycle trending is a separate skill (`/quarterly-retro`, future).
+- Not a performance verdict — surfaces signals; manager interprets.
 
 ---
 
@@ -57,13 +53,13 @@ so I can run 1:1s and cycle reviews from evidence instead of memory.
 
 **Acceptance tests:**
 
-1. `/narrative` (no args) → trailing 30-day whole-team note at `management/narratives/team/<start>-to-<end>.md`.
-2. `/narrative bob 60` → trailing 60-day single-person note at `management/narratives/per-person/bob-example-<start>-to-<end>.md`.
-3. `/narrative "Alice Example"` → resolves name → canonical → trailing 30-day note.
+1. `/narrative` (no args) → trailing 30d whole-team note at `management/narratives/team/<start>-to-<end>.md`.
+2. `/narrative bob 60` → trailing 60d single-person note at `management/narratives/per-person/bob-example-<start>-to-<end>.md`.
+3. `/narrative "Alice Example"` → resolves name → canonical → trailing 30d note.
 4. `/narrative 2026-04-01 2026-05-01` → explicit range, whole team.
-5. Every per-section claim cites the ticket / PR / page that backs it.
-6. Sections with zero signal print `_None observed in window._` — never padded.
-7. Output is recomputable: re-running same args overwrites previous file (idempotent).
+5. Every per-section claim cites the backing ticket / PR / page.
+6. Zero-signal sections print `_None observed in window._` — never padded.
+7. Idempotent: re-running same args overwrites previous file.
 
 ---
 
@@ -78,14 +74,9 @@ First token determines scope:
 | ISO date | window start | window end |
 | empty | trailing 30d whole team | nothing |
 
-Window guardrails:
-- `end < start` → error, stop.
-- `window > 365` days → confirm with user before proceeding.
-- `window < 7` days → confirm.
+**Window guardrails:** `end < start` → error, stop. `> 365` days → confirm. `< 7` days → confirm.
 
-Date math:
-- Explicit dates → `START = "<start>T00:00:00Z"`, `END = "<end>T23:59:59Z"`.
-- Integer N → `END = now UTC`, `START = END - N days at 00:00:00Z`.
+**Date math:** explicit dates → `START="<start>T00:00:00Z"`, `END="<end>T23:59:59Z"`. Integer N → `END = now UTC`, `START = END - N days at 00:00:00Z`.
 
 ---
 
@@ -108,7 +99,7 @@ Date math:
 | `detect_ops_tickets(conn, aliases, start, end)` | `list[OpsTicket]` | title-regex against `OPS_PATTERNS` |
 | `strip_epic_prefix(title)` | `str` | rendering helper |
 
-**Adding a new metric:** add to module first, then skill calls it. NEVER inline new SQL or new regex in skill body — breaks the contract.
+**Adding a metric:** add to module first, then skill calls it. NEVER inline new SQL or regex in skill body — breaks the contract.
 
 ---
 
@@ -122,7 +113,7 @@ Sixteen queries / module calls. All scoped to `aliases IN (...)` and `ts BETWEEN
 | 1b | PRs authored (`pr_opened` actor) | direct SQL |
 | 1c | PRs merged + cycle hours (open→merge) | direct SQL |
 | 1d | Reviews given | direct SQL |
-| 1e | Jira status_change events (transitions driven) | direct SQL — bucketed into `→ Done` vs other |
+| 1e | Jira status_change events (transitions driven) | direct SQL — bucketed `→ Done` vs other |
 | 1f | Jira issues created | direct SQL |
 | 1g | Jira comments | direct SQL |
 | 1h | Confluence pages (created / updated) | direct SQL |
@@ -146,11 +137,11 @@ Sixteen queries / module calls. All scoped to `aliases IN (...)` and `ts BETWEEN
 
 ## 8. Phase 2 — narrative inference labels
 
-Computed in this order; later labels can override earlier ones in headline construction:
+Computed in order; later labels can override earlier ones in headline construction:
 
 1. **TRD AUTHORED** — `trd_owners.owner = canonical`. Show owner_score + margin over next contributor.
 2. **OWNED domains** (1o, ≥40% share).
-3. **TECH LEAD domains** (top-1 reviewer in domain ∧ ≥3 distinct PR authors reviewed ∧ TRD authored). All-of, not any-of.
+3. **TECH LEAD domains** — top-1 reviewer in domain ∧ ≥3 distinct PR authors reviewed ∧ TRD authored. All-of, not any-of.
 4. **DROVE domains** (25-40% share, NOT owner).
 5. **CONTRIBUTED domains** (touched, <25% share).
 6. **Productivity tier** (from 1s + 1u — assigned-only, NOT transitioner):
@@ -166,14 +157,11 @@ Computed in this order; later labels can override earlier ones in headline const
 
 ## 9. Phase 3 — output
 
-### Paths
-
+**Paths:**
 - Single person: `management/narratives/per-person/<canonical>-<START_DATE>-to-<END_DATE>.md`
 - Whole team: `management/narratives/team/<START_DATE>-to-<END_DATE>.md`
 
-### Whole-team file opening
-
-Before per-person sections, the whole-team output MUST include:
+### Whole-team file opening (required before per-person sections)
 
 ```markdown
 # Engineering Narrative — <START_DATE> to <END_DATE>
@@ -192,30 +180,28 @@ concentrated. One sentence on cross-cutting risk.
 ---
 ```
 
-Per-person sections follow. A `## Cross-team contributors` appendix follows the last
-per-person section if any non-`people.yaml` actor has ≥20 events in window
-(see §9.3 below).
+Per-person sections follow. A `## Cross-team contributors` appendix follows the last per-person section if any non-`people.yaml` actor has ≥20 events in window (see §9.3).
 
 ### Per-person section structure
 
-1. **Blockquote headline** (1-2 sentences) — strongest signal the data supports. See §10 for headline patterns.
+1. **Blockquote headline** (1-2 sentences) — strongest signal the data supports (§10).
 2. **Domain ownership** — OWNED / DROVE / CONTRIBUTED / JIRA_ONLY bullets with evidence (PR numbers, ticket counts, share %).
 3. **Shipping cadence** — PRs merged with cycle times, top-signal ship called out.
 4. **Delivery velocity (assigned-and-shipped)** — SP delivered, productivity tier, attribution chain breakdown, per-sprint table, transitioner clerical signal kept separate.
 5. **Ticket authoring** — Jira issues created in window.
 6. **Design / docs participation** — TRDs owned / contributed, Confluence pages.
-7. **Ops & incident response** — section only if ≥3 hits; otherwise `_None observed in window._`.
+7. **Ops & incident response** — section only if ≥3 hits; else `_None observed in window._`.
 8. **Leadership signals** — TRD authorship, tech-lead labels, mentor signal.
 9. **Working hours** — weekend + after-hours counts with UTC caveat.
 10. **Open threads** — pending TRD response, stale PRs, sprint-active epics.
-11. **Caveats** — surface data-quality issues (ingest gaps, terminal-state rule, etc).
+11. **Caveats** — data-quality issues (ingest gaps, terminal-state rule, etc).
 12. **Activity (raw)** — event_type counts table as evidence.
 13. **1:1 prep candidates** — actionable questions for next conversation.
 
 ### 9.3 Section ordering + cross-team appendix (whole-team output)
 
-- **Section ordering**: strongest leadership signal first (TRD AUTHORED + OWNED ≥2 + TECH LEAD ≥1). Within tier, sort by total event volume descending.
-- **Cross-team contributors appendix**: actors with ≥20 events in window but NOT in `config/people.yaml`. Format:
+- **Ordering**: strongest leadership signal first (TRD AUTHORED + OWNED ≥2 + TECH LEAD ≥1). Within tier, sort by total event volume descending.
+- **Cross-team contributors appendix**: actors with ≥20 events but NOT in `config/people.yaml`. Format:
 
   ```markdown
   ## Cross-team contributors
@@ -230,7 +216,7 @@ per-person section if any non-`people.yaml` actor has ≥20 events in window
 
 ## 10. Headline construction rules
 
-The blockquote MUST surface the strongest signal. Patterns (use the strongest applicable):
+Blockquote MUST surface the strongest applicable signal. Patterns:
 
 - `Tech lead on <domain>. Authored the <X> TRD; drove <Y> design conversation. Delivered <N> SP this window (assigned-only).`
 - `Top deliverer this window — <N> SP across <M> assigned tickets, leading the team. Owns <domain>.`
@@ -244,22 +230,21 @@ The blockquote MUST surface the strongest signal. Patterns (use the strongest ap
 - `Lighter authoring + delivery window vs baseline — <X> SP vs team median <Y>. Flag for 1:1.`
 - `Mixed contributor — split across <domains>; no single ownership claim in this window. <X> SP assigned-and-shipped.`
 
-**NEVER** use TOP-DELIVERER framing when `sp_attributed` is mostly transitioner-credit. Reserve "deliverer" framings for `sp_attributed` (assigned-only) signal exclusively.
-
-**NEVER** write filler headlines ("did great work", "strong contributor"). Burns space, adds nothing.
+**NEVER** use TOP-DELIVERER framing when `sp_attributed` is mostly transitioner-credit. "Deliverer" framings are for `sp_attributed` (assigned-only) only.
+**NEVER** write filler headlines ("did great work", "strong contributor").
 
 ---
 
 ## 11. Hard constraints
 
 - **No fabrication.** Empty section → `_None observed in window._`, not padded prose.
-- **All claims trace to Phase 1 query results.** No interpretation without evidence.
+- **All claims trace to Phase 1 results.** No interpretation without evidence.
 - **Reviews count goes in activity table ONLY.** Never `"X reviewed N PRs by Y"` in prose — only "heavy reviewer" / "quality gate" qualitative framings.
-- **Significant ops items get own bullets** (DR drill, incident, deployment, on-call rotation) — never parenthetical inside another bullet.
+- **Significant ops items get own bullets** (DR drill, incident, deployment, on-call) — never parenthetical.
 - **Strip `[Epic EX-N]` prefixes** from rendered Jira titles.
 - **Strip `Comment on ` prefix** from rendered Jira comment titles.
-- **Inferred labels MUST show evidence** (OWNED / TECH LEAD / DESIGNED — show PR numbers + ticket count + share %).
-- **Output paths are durable** (`management/narratives/`), never `management/drafts/` (drafts is scratch only).
+- **Inferred labels MUST show evidence** (OWNED / TECH LEAD / DESIGNED — PR numbers + ticket count + share %).
+- **Output paths durable** (`management/narratives/`), never `management/drafts/` (scratch only).
 
 ---
 
@@ -267,52 +252,50 @@ The blockquote MUST surface the strongest signal. Patterns (use the strongest ap
 
 ### 12.1 `pr_opened` ingest gap — affects ownership share
 
-GitHub ingest started after some PRs were opened, so `pr_opened` events are missing for PRs that already existed at ingest-start. `compute_pr_author_ownership` joins on `pr_opened` actor → undercounts ownership for affected PRs.
+GitHub ingest started after some PRs were opened, so `pr_opened` events are missing for pre-existing PRs. `compute_pr_author_ownership` joins on `pr_opened` actor → undercounts ownership.
 
-**Observed cases:**
-- One dev's window: a `cash-withholding` domain reported `CONTRIBUTED (~17%)`; real share much higher from `pr_merged` actor count.
-- Another dev's window: a `service-b-refactor` domain reported `JIRA_ONLY (0%)`; real share much higher from `pr_merged` actor count.
+Observed: one dev's `cash-withholding` domain reported `CONTRIBUTED (~17%)`, real share much higher from `pr_merged` actor count; another dev's `service-b-refactor` domain reported `JIRA_ONLY (0%)`, likewise higher.
 
-**Fix:** extend `compute_pr_author_ownership` to fall back to `pr_merged` actor when `pr_opened` missing. Alternatively, backfill `pr_opened` from github API for affected PRs.
+**Fix:** fall back to `pr_merged` actor when `pr_opened` missing; or backfill `pr_opened` from github API.
 
 ### 12.2 Terminal-state rule narrow (handoff §6)
 
-`compute_done_credits` filters via `title LIKE '%→ Done%'`. The EX Jira workflow has 25 status names including `Released`, `Released and Reviewed`, `Released with Emergency`, `Change Released 🧩`, `Pending Release`. Tickets that go via Released path are not credited.
+`compute_done_credits` filters via `title LIKE '%→ Done%'`. The EX Jira workflow has 25 status names including `Released`, `Released and Reviewed`, `Released with Emergency`, `Change Released 🧩`, `Pending Release`. Tickets via the Released path aren't credited.
 
-**Three options** (pick one):
+**Pick one:**
 - **A** — Widen to `Done` + `Released*` + `Change Released*`. Risk: double-credit on `Pending Release → Done → Released`.
 - **B** — Use latest status_change per ticket as terminal-if-Done; verify against current Jira state. Most accurate, slowest.
-- **C** — Tight `Done` set + flag `Released` separately in narrative as "shipped to prod" vs "marked Done".
+- **C** — Tight `Done` set + flag `Released` separately as "shipped to prod" vs "marked Done".
 
-User has not picked yet; tracked in handoff `handoff-2026-05-12-2239.md` §6.
+Not yet picked; tracked in handoff `handoff-2026-05-12-2239.md` §6.
 
 ### 12.3 Review count inflation by self-review-comments
 
-Raw `review` event count includes every review-comment event, including self-iteration on own PRs. One dev's window showed ~110 raw reviews but only ~10 were peer reviews — the rest were self-comments on their own PRs (concentrated on a handful of PRs).
+Raw `review` count includes self-iteration on own PRs. One dev showed ~110 raw reviews, only ~10 peer reviews.
 
-**Fix:** module-level helper `compute_peer_review_count(conn, aliases, start, end)` that excludes reviews on PRs authored by aliases themselves. Plug into 1d output before tier inference.
+**Fix:** module helper `compute_peer_review_count(conn, aliases, start, end)` excluding reviews on PRs authored by aliases themselves. Plug into 1d before tier inference.
 
 ### 12.4 Working-hours UTC raw
 
-`hour_utc` bins assume IST (subtract 5:30 to get UTC). Hardcoded `hour_utc < 3 or > 14` as "outside 08:30–19:30 IST". Doesn't generalise for cross-timezone teams.
+`hour_utc` bins assume IST (subtract 5:30). Hardcoded `hour_utc < 3 or > 14` as "outside 08:30–19:30 IST". Doesn't generalise cross-timezone.
 
 **Fix:** add `timezone` field to `config/people.yaml`; module computes per-person bins.
 
 ### 12.5 Ingest scope gaps (data, not code)
 
-Some user-relevant work invisible to `events.db`:
-- Slack threads (DR drill coordination, incident war-rooms) — Slack ingest not built; planning thread in progress.
+Work invisible to `events.db`:
+- Slack threads (DR drill coordination, incident war-rooms) — Slack ingest not built; planning in progress.
 - Opsgenie rotations + drill metadata — no ingest.
-- Jira `labels` (`drill`, `p0`, `fy-end`) — not captured by ingest.
+- Jira `labels` (`drill`, `p0`, `fy-end`) — not captured.
 - Jira `priority` (P0 / P1 routing) — not captured.
 
-These show up as `_None observed in window._` for the ops section when the work actually happened in Slack. Surface as caveat when ops claims may undercount.
+These show as `_None observed in window._` for ops when the work happened in Slack. Surface as caveat when ops claims may undercount.
 
 ---
 
 ## 13. Performance baseline
 
-Measured wall-clock on a single-person 30-day window:
+Single-person 30-day window:
 
 | Phase | Time |
 |-------|------|
@@ -322,59 +305,53 @@ Measured wall-clock on a single-person 30-day window:
 | Phase 2 drafting + Write | ~180s |
 | **Total wall-clock** | **~7 min** |
 
-Bottleneck: chat-driven narrative drafting (~180s), not SQL. Each query <100ms against ~44k events. Module debug round-trip cost ~60s because `get_aliases_for(canonical, people)` signature changed and skill stub had stale 2-arg call.
+Bottleneck: chat-driven drafting (~180s), not SQL. Each query <100ms against ~44k events. Module debug round-trip cost ~60s because `get_aliases_for(canonical, people)` signature changed and skill stub had a stale 2-arg call.
 
 **Optimisations identified:**
 - Cache `compute_done_credits(window)` once per session; reuse across team narratives (currently recomputed per person).
-- Pre-compute `compute_peer_review_count` in module (kills self-review-comment inflation + the one-off filter dance).
+- Pre-compute `compute_peer_review_count` in module (kills self-review-comment inflation + the filter dance).
 - Module-signature contract test (`pytest test_jira_metrics_signatures.py`) — kills the debug-round-trip cost.
 
 ---
 
 ## 14. Roadmap
 
-### Short-term (next 1-2 weeks)
-
+**Short-term (1-2 weeks):**
 - [ ] Fix `pr_opened` ingest gap in `compute_pr_author_ownership` (12.1) — fallback to `pr_merged` actor.
 - [ ] Pick terminal-state rule (12.2 A / B / C) and apply.
 - [ ] Add `compute_peer_review_count` to module (12.3).
 - [ ] Add `timezone` to `config/people.yaml` (12.4).
-- [ ] Module signature contract test (kills debug overhead).
+- [ ] Module signature contract test.
 
-### Medium-term (next 1 cycle)
-
+**Medium-term (1 cycle):**
 - [ ] Per-window cache of `compute_done_credits` for whole-team runs.
-- [ ] `person_narrative` cache table — hydrate so the same window doesn't recompute.
-- [ ] `cycle_hours` column on `events` for direct cycle-time queries (no `julianday` per-row).
-- [ ] Slack ingest landing → `detect_ops_tickets` extension to scan Slack threads, not just Jira titles. Unblocks DR-drill visibility.
+- [ ] `person_narrative` cache table — same window doesn't recompute.
+- [ ] `cycle_hours` column on `events` (no `julianday` per-row).
+- [ ] Slack ingest → `detect_ops_tickets` extension to scan Slack threads. Unblocks DR-drill visibility.
 
-### Long-term
-
+**Long-term:**
 - [ ] `/quarterly-retro` skill consuming same module + four `/narrative` outputs.
 - [ ] `/boss-update` skill — same module, manager-of-EM scope.
-- [ ] Trend comparison across windows (e.g., "Bob SP this cycle 34 vs prior cycle 28 → ↑21%").
+- [ ] Trend comparison across windows (e.g., "Bob SP this cycle 34 vs prior 28 → ↑21%").
 
 ---
 
 ## 15. Test plan
 
-### Unit (`derive/jira_metrics.py`)
-
+**Unit (`derive/jira_metrics.py`):**
 - `compute_done_credits` dedups EX-2356 (two Done transitions → one credit, latest ts) — regression test.
 - `attribution_source_summary` reports correct chain split.
 - `compute_pr_author_ownership` returns `JIRA_ONLY` when person has 0 merged PRs but ≥1 Jira touch in domain.
-- `detect_ops_tickets` matches `OPS_PATTERNS` regex set; new patterns added there propagate to `/retro` + `/narrative` automatically.
+- `detect_ops_tickets` matches `OPS_PATTERNS`; new patterns propagate to `/retro` + `/narrative` automatically.
 
-### Integration
+**Integration:**
+- `/narrative` smoke: `alice 30` → output file with all 13 sections; no fabricated claims; reviews stay in activity table.
+- `/narrative` idempotence: re-run same args overwrites prior file; stable except `Generated:` timestamp.
 
-- `/narrative` smoke test: `alice 30` produces output file with all 13 sections; no fabricated claims; reviews stay in activity table.
-- `/narrative` idempotence: re-running same args overwrites prior file; output stable except for `Generated:` timestamp.
-
-### Data-quality assertions (run before narrative)
-
+**Data-quality assertions (run before narrative):**
 - `compute_done_credits` returns no negative SP.
-- `attribution_source_summary['unknown']` < 5% of total credits → if higher, surface coverage caveat in headline.
-- Every credit has either `sprint_name` set or `sprint_name = None` (no garbage).
+- `attribution_source_summary['unknown']` < 5% of total credits → else surface coverage caveat in headline.
+- Every credit has `sprint_name` set or `None` (no garbage).
 
 ---
 

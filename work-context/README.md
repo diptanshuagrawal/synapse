@@ -1,8 +1,8 @@
 # work-context
 
-Personal engineering intelligence warehouse. Ingests GitHub PRs, Jira issues, Confluence pages, and Slack threads into a unified SQLite event index. Derives markdown rollups (per-person, per-project, weekly) plus an embedding/topic-cluster layer for use by AI agents and manual review.
+Personal engineering intelligence warehouse. Ingests GitHub PRs, Jira issues, Confluence pages, and Slack threads into a unified SQLite event index, then derives markdown rollups (per-person, per-project, weekly) plus an embedding/topic-cluster layer for AI agents and manual review.
 
-> **Codebase tour:** see [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full code graph — community breakdown, execution flows, per-module reference. This README covers **how to run**; that doc covers **how the code is wired**. (Regenerate the graph + counts via `mcp__code-review-graph__build_or_update_graph_tool(full_rebuild=true)` after structural changes — the doc's node/flow counts are only as fresh as the last rebuild.)
+This README = **how to run**. [`ARCHITECTURE.md`](ARCHITECTURE.md) = **how the code is wired** (code graph, communities, execution flows, per-module reference). Regenerate the graph + counts via `mcp__code-review-graph__build_or_update_graph_tool(full_rebuild=true)` after structural changes — its node/flow counts are only as fresh as the last rebuild.
 
 ---
 
@@ -26,17 +26,13 @@ GitHub / Jira / Confluence / Slack
                 └─► derived/alerts.md                 stale PRs + anti-patterns
 ```
 
-Every event is normalised to the same schema at ingest time and enriched with cross-source `refs` (people, projects, Jira tickets, Confluence pages). The `derived/` tree is agent-readable markdown regenerated on demand from the SQLite index — do not edit by hand.
+Every event is normalised to the same schema at ingest time and enriched with cross-source `refs` (people, projects, Jira tickets, Confluence pages). The `derived/` tree is agent-readable markdown regenerated on demand from the index — **do not edit by hand.**
 
 ---
 
 ## Configuration (before first run)
 
-**No org-specific values are hardcoded in code.** Everything resolves at runtime
-from `config/sources.yaml` (gitignored — real values never tracked) via
-`derive/sources_config.py`, which falls back to `config/sources.example.yaml`
-(generic placeholders) and allows per-key env overrides. A fresh clone with
-neither set resolves entirely to harmless placeholders — it leaks nothing.
+**No org-specific values are hardcoded.** Everything resolves at runtime from `config/sources.yaml` (gitignored) via `derive/sources_config.py`, which falls back to `config/sources.example.yaml` (generic placeholders) and allows per-key env overrides. A fresh clone with neither set resolves entirely to placeholders — leaks nothing.
 
 Copy the template and fill in your values:
 
@@ -80,18 +76,15 @@ populate it before first Confluence ingest, or those pages are silently skipped.
 
 ### Slack token + channels
 
-1. Generate a Slack User OAuth Token (`xoxp-…`) via Slack admin. Scopes documented in `runbook/slack-token-rotate.md`.
+1. Generate a Slack User OAuth Token (`xoxp-…`) via Slack admin. Scopes in `runbook/slack-token-rotate.md`.
 2. Save to `~/context/.env` as `SLACK_USER_TOKEN=xoxp-…` (gitignored).
 3. Edit the channel allow-list in `config/slack_channels.yaml`. Auto-populated via `python derive/slack_discover_channels.py --auto-mode --apply` (scans team-active channels you're a member of, decides ingest_mode, appends). New channels with null cursor auto-bootstrap from `now − 365d` on first ingest fire — no manual `/slack-backfill` needed for typical adds.
 
-(The permalink workspace prefix comes from `slack.workspace` in `config/sources.yaml` — no code edit.)
+(Permalink workspace prefix comes from `slack.workspace` in `config/sources.yaml` — no code edit.)
 
 ### Scheduled ingest (launchd)
 
-Run `bin/install-agents.sh` — it materialises the generic plist templates in
-`launchagents/` (label prefix `com.example`, `__REPO__`/`__HOME__` paths) with
-your real `launchd.prefix` + machine paths and loads them. Re-run after editing
-schedules.
+Run `bin/install-agents.sh` — it materialises the generic plist templates in `launchagents/` (label prefix `com.example`, `__REPO__`/`__HOME__` paths) with your real `launchd.prefix` + machine paths and loads them. Re-run after editing schedules.
 
 **Channel yaml schema (`config/slack_channels.yaml`):**
 
@@ -112,15 +105,14 @@ channels:
     ingest_mode: full
 ```
 
-Mode semantics:
+**Mode semantics:**
 
 - `full` (default) — every message stored.
-- `team_involved` — keep only threads where the team participates. A thread is team-involved if ANY of: author is on team.md, body @-mentions a team UID (`<@U…>`), body pings a team subteam handle (`<!subteam^S…>` from `config/team_subteams.yaml`), OR any reply satisfies the same. Whole-thread keep: a single team-involved reply pulls the whole thread including non-team replies and bot-authored incident-alert roots (PagerDuty / OpsGenie / "Alert Incident Commander" templates). Logic: `derive/slack_team.py::is_team_involved`.
+- `team_involved` — keep only threads where the team participates. Team-involved = ANY of: author on team.md · body @-mentions a team UID (`<@U…>`) · body pings a team subteam handle (`<!subteam^S…>` from `config/team_subteams.yaml`) · OR any reply satisfies the same. **Whole-thread keep:** one team-involved reply pulls the whole thread, including non-team replies and bot-authored incident-alert roots (PagerDuty / OpsGenie / "Alert Incident Commander" templates). Logic: `derive/slack_team.py::is_team_involved`.
 
-Extra per-channel flag:
-- `no_threads: true` — skip the per-fire stale-thread reply reconcile (Phase 2.5) for that channel. Top-level messages + edit/delete reconcile still run. Use for bot alert firehoses where reply threads are acks/status noise and re-fetching them every fire dominates ingest wall-time (e.g. `service-a-alerts`, `example-tracker`, `example-recon`). The discovery alert-channel branch sets this automatically. Do NOT set it on channels where threads carry real discussion (incident rooms, CMR-approval channels).
+**Extra per-channel flag — `no_threads: true`:** skip the per-fire stale-thread reply reconcile (Phase 2.5) for that channel. Top-level messages + edit/delete reconcile still run. Use for bot alert firehoses where reply threads are acks/status noise and re-fetching them every fire dominates ingest wall-time (e.g. `service-a-alerts`, `example-tracker`, `example-recon`). The discovery alert-channel branch sets this automatically. Do NOT set it where threads carry real discussion (incident rooms, CMR-approval channels).
 
-`config/team_subteams.yaml` lists the Slack user-group ids the team is paged via — e.g. `S0EXAMPLE` for `service-c-team-devs` / `example-team`, `S0EXAMPLE` for `service-c-oncall`. Add ids manually (the bot's `usergroups:read` scope is often unavailable, so `usergroups.list` returns empty). Without these ids listed, threads pinged via subteam handle silently get filtered out as "not team involved".
+`config/team_subteams.yaml` lists the Slack user-group ids the team is paged via — e.g. `S0EXAMPLE` for `service-c-team-devs` / `example-team`, `S0EXAMPLE` for `service-c-oncall`. Add ids manually (the bot's `usergroups:read` scope is often unavailable, so `usergroups.list` returns empty). Without these ids, threads pinged via subteam handle silently filter out as "not team involved".
 
 **DM/MPIM invariants:**
 - 1:1 DMs (`is_im=true`) hard-skipped always — no override.
@@ -145,9 +137,11 @@ Extra per-channel flag:
 .venv/bin/python derive/slack_prune_stale_mpims.py --apply
 ```
 
-Discovery uses `management/context/team.md` (7 direct reports) as the team-set source of truth — NOT people.yaml (broader cross-team identity map). Activity floor: 5 team msgs/90d for non-MPIM, 1 for MPIM. MPIM auto_full requires ≥3 team handles in the channel name.
+Discovery facts:
 
-Team-activity scoring counts a message if author ∈ team OR body @-mentions a team member OR body pings a team subteam handle (`config/team_subteams.yaml`) — the subteam coverage surfaces oncall/incident channels.
+- Team-set source of truth = `management/context/team.md` (7 direct reports), NOT people.yaml (broader cross-team map).
+- Activity floor: 5 team msgs/90d for non-MPIM, 1 for MPIM. MPIM auto_full requires ≥3 team handles in the channel name.
+- A message counts toward team-activity if author ∈ team OR body @-mentions a team member OR body pings a team subteam handle (`config/team_subteams.yaml`) — subteam coverage surfaces oncall/incident channels.
 
 **Alert-channel branch:** bot-authored alert firehoses for team-owned systems (e.g. `service-a-alerts`, `example-tracker`, `example-txn-alerts`) auto-add as `full` even when team authorship is ~0, bypassing the floor. Gate = alert-named or ≥80% bot-authored AND name carries a team-domain keyword (`accounting`, `recon`, `service-c`/`EX`, `transaction(s)`, `txn`, `service-a`, `account-freeze`, `ledger-balance`, `pending_txn`; `deposits`/`td` excluded as liabilities-domain). Token-aware match — won't mis-fire on `gl` inside `breakglass`.
 
@@ -155,28 +149,7 @@ Team-activity scoring counts a message if author ∈ team OR body @-mentions a t
 
 ## Event model
 
-### Unified event shape
-
-```json
-{
-  "id": "github:example-org/service-a:pr:847:pr_merged",
-  "source": "github",
-  "event_type": "pr_merged",
-  "ts": "2026-05-05T11:02:00Z",
-  "actor": "org-eve03",
-  "subject": "example-org/service-a#847",
-  "title": "feat: charge_rules table migration",
-  "body": "Adds the charge_rules table per TRD section 4.2…",
-  "url": "https://github.com/example-org/service-a/pull/847",
-  "refs": {
-    "people": ["org-eve03"],
-    "projects": ["counter-charge-engine"],
-    "tickets": ["EX-1284"],
-    "pages": []
-  },
-  "raw_path": "raw/github/2026/05/05.jsonl#12"
-}
-```
+**Canonical event shape + SQLite DDL live in [`SCHEMA.md`](SCHEMA.md)** — go there for the full field reference. Below are only the run-guide bits: the per-source `event_type` enum and how `refs` is populated.
 
 ### Event types per source
 
@@ -234,11 +207,13 @@ Slack uses **per-channel cursors** in `state/slack_cursors.json` (Slack-epoch fl
 }
 ```
 
-On each run: fetch only items newer than cursor. On clean exit: advance cursor to newest seen ts (Slack: per-channel, never-go-backwards check). `--reset-cursor` (gh/jira/confluence) or `--cursor-mode fresh` (Slack) ignores cursor — idempotent (duplicates skipped via `INSERT OR IGNORE` / `_event_id` PK).
+- On each run: fetch only items newer than cursor.
+- On clean exit: advance cursor to newest seen ts (Slack: per-channel, never-go-backwards check).
+- `--reset-cursor` (gh/jira/confluence) or `--cursor-mode fresh` (Slack) ignores cursor — idempotent (duplicates skipped via `INSERT OR IGNORE` / `_event_id` PK).
 
 ### Idle guard
 
-github/jira/confluence: each ingest script writes `state/last_<source>_success.date` (local date, `YYYY-MM-DD`) on clean exit. Shell wrappers (`run-*.sh`) check this file: if today's date is present, exit 0 immediately.
+github/jira/confluence: each ingest script writes `state/last_<source>_success.date` (local date, `YYYY-MM-DD`) on clean exit. Wrappers (`run-*.sh`) check it: if today's date is present, exit 0 immediately.
 
 - LaunchAgent fires every 30 min — retries until first success, then idles for the day.
 - Direct invocations also write the gate file on clean exit, so `cron-status.sh` always reflects the true last success.
@@ -249,13 +224,7 @@ github/jira/confluence: each ingest script writes `state/last_<source>_success.d
 
 ### MatterAI signal
 
-Every PR gets a bot (`matterai[bot]`) review:
-
-```
-🧪 PR Review is completed: <summary text>
-```
-
-`rollup.py` extracts this and bakes it into `derived/people/` and `derived/projects/`. Instant triage: domain + risk keywords (`critical`, `panic`, `race condition`, `security`) without reading diffs.
+Every PR gets a bot (`matterai[bot]`) review (`🧪 PR Review is completed: <summary text>`). `rollup.py` extracts it and bakes it into `derived/people/` + `derived/projects/`. Instant triage on domain + risk keywords (`critical`, `panic`, `race condition`, `security`) without reading diffs.
 
 ### SQLite setup
 
@@ -276,8 +245,8 @@ WAL mode + 30s busy timeout on every connection.
 
 `derive/rollup.py` reads `index/events.db` and regenerates all `derived/` markdown.
 
-**Default rollup window:** 30 days (bare `python rollup.py`).
-**`run-rollup.sh` (cron wrapper):** always runs `--days 240 --week`.
+- **Default window:** 30 days (bare `python rollup.py`).
+- **`run-rollup.sh` (cron wrapper):** always `--days 240 --week`.
 
 ### Rollup flags
 
@@ -308,7 +277,7 @@ WAL mode + 30s busy timeout on every connection.
 
 ### Session-mode rollup (manual-rollup.sh)
 
-When running inside a Claude Code session (no `anthropic_api_key`, or to avoid 429s from OAuth quota):
+Use inside a Claude Code session (no `anthropic_api_key`, or to avoid 429s from OAuth quota):
 
 ```bash
 DAYS=90 ./derive/manual-rollup.sh           # phase 1: dump pending subjects
@@ -317,9 +286,9 @@ DAYS=90 ./derive/manual-rollup.sh           # phase 1: dump pending subjects
 ./derive/manual-rollup.sh apply             # phase 2: apply + rerun rollup
 ```
 
-Verdicts persist to `subject_summary` cache. Subsequent `rollup.py` runs hit cache — identical output, zero LLM cost.
+Verdicts persist to `subject_summary` cache; subsequent `rollup.py` runs hit cache — identical output, zero LLM cost.
 
-**Legacy narrate-dump / narrate-apply path** (`NARRATIVE=1 ./derive/manual-rollup.sh narrate-dump` + `narrate-apply`) is **off by default** as of 2026-05-22. Superseded by `/ask person_range` (see "Per-person signals + retros" section below). Old `derive/narrative.py` + `person_narrative` cache table still present for back-compat with `derived/people/*.md` outputs but will be removed after consumers migrate.
+**Legacy narrate-dump / narrate-apply** (`NARRATIVE=1 ./derive/manual-rollup.sh narrate-dump` + `narrate-apply`) **off by default** since 2026-05-22. Superseded by `/ask person_range` (see below). Old `derive/narrative.py` + `person_narrative` cache table remain for back-compat with `derived/people/*.md`; removed once consumers migrate.
 
 ### Domain classification
 
@@ -417,11 +386,11 @@ management/retros/              ← monthly stakeholder retros
 
 ### Pace signal: PR cycle time, NOT ticket lead time
 
-Team workflow creates and Dones tickets the same day (recorded post-hoc), so per-ticket `lead_time_days` collapses to ~1 and is bogus as a pace signal. **Use PR cycle time** (`pr_cycle_median_days`, `slow_pr_count_over_14d`, `same_day_pr_count`) from `person_profile.fate.pr_fate_summary` — sourced from real PR opened→merged timestamps.
+Team creates+Dones tickets the same day (recorded post-hoc), so per-ticket `lead_time_days` collapses to ~1 and is bogus as a pace signal. **Use PR cycle time** (`pr_cycle_median_days`, `slow_pr_count_over_14d`, `same_day_pr_count`) from `person_profile.fate.pr_fate_summary` — sourced from real PR opened→merged timestamps.
 
 ### Cluster status vs window_state
 
-`topic_brief.status` reflects NOW, not the asked window. For windows ≥30 days old (historical retros), render against `window_state` (derived per query from lifetime timestamps), NOT against `status`. `ask_engine.py` returns both; `ask.md` + `retro.md` enforce the rule.
+`topic_brief.status` reflects NOW, not the asked window. For windows ≥30 days old (historical retros), render against `window_state` (derived per query from lifetime timestamps), NOT `status`. `ask_engine.py` returns both; `ask.md` + `retro.md` enforce the rule.
 
 ### Stakeholder retro rules (locked)
 
@@ -581,7 +550,7 @@ chmod 600 ~/.secrets/*
 
 ## Scheduler
 
-Ingest runs on macOS LaunchAgents. Survive sleep/wake; replay missed fires on wake.
+Ingest runs on macOS LaunchAgents — survive sleep/wake, replay missed fires on wake.
 
 | Source | Schedule (IST) | Idle gate |
 |--------|---------------|-----------|
@@ -652,8 +621,7 @@ DAYS=90 ./derive/manual-rollup.sh narrate-dump    # generate per-person narrativ
 
 ### `config/people.yaml`
 
-Single cross-source identity map. The `scope` field replaces the old
-`known_externals.yaml` (deleted): one file, one source of truth.
+Single cross-source identity map. The `scope` field replaces the deleted `known_externals.yaml` — one file, one source of truth.
 
 ```yaml
 people:
@@ -678,15 +646,9 @@ people:
 | `org` | broader org (cross-team, EMs, PMs) | no — silenced |
 | `external` | bots, automation, vendors | no — silenced |
 
-An actor in **no** people.yaml entry → flagged `unmapped` (WARN/FAIL) by the
-validators. Legacy entries with no `scope` default to `team`.
+An actor in **no** people.yaml entry → flagged `unmapped` (WARN/FAIL) by the validators. Legacy entries with no `scope` default to `team`.
 
-**Self-healing** — missing fields fill automatically. Each ingest emits
-observed identity pairs (`derive/identity_signals.py`) to the
-`identity_signals` table; `derive/identity_reconcile.py` runs after every
-fire (wired in `ingest/run-*.sh`) and back-fills `jira_id`, `slack_id`,
-`github_aliases`, etc. onto matching entries. Generic, eventual, no batch.
-See `cron-status identity` for live status.
+**Self-healing** — missing fields fill automatically. Each ingest emits observed identity pairs (`derive/identity_signals.py`) to the `identity_signals` table; `derive/identity_reconcile.py` runs after every fire (wired in `ingest/run-*.sh`) and back-fills `jira_id`, `slack_id`, `github_aliases`, etc. onto matching entries. Generic, eventual, no batch. See `cron-status identity`.
 
 ### `config/projects.yaml`
 
@@ -701,8 +663,7 @@ projects:
 
 ### Ownership + team configs
 
-The team-attribution layer. Ownership is **content-first** — resolved from a
-subject's classified `domains`, not from who posted it.
+Team-attribution layer. Ownership is **content-first** — resolved from a subject's classified `domains`, not who posted it.
 
 | File | Purpose | Consumed by |
 |------|---------|-------------|
@@ -711,9 +672,7 @@ subject's classified `domains`, not from who posted it.
 | `config/team_subteams.yaml` | Slack user-group (subteam) IDs that represent this team — so `ingest_mode=team_involved` keeps threads that page the team via `<!subteam^S…>` instead of individual `@UID` mentions. | `derive/slack_team.load_team_subteam_ids()`, `ingest/slack_*_app.py` |
 | `config/tier_expectations.yaml` | Per-tier throughput/quality ranges + sprint cadence + work-window (for `after_hours_share`). Surfaces deviation, not a verdict. | `/ask person_range` |
 
-Cluster-level ownership is **derived** by aggregating per-subject ownership —
-see `derive/cluster_ownership_rollup.py`. Unmapped domain slugs surface as yaml
-gaps in the census reconciliation each run.
+Cluster-level ownership is **derived** by aggregating per-subject ownership — see `derive/cluster_ownership_rollup.py`. Unmapped domain slugs surface as yaml gaps in the census reconciliation each run.
 
 ```yaml
 # config/domain_team_map.yaml
@@ -736,23 +695,11 @@ Per-lane dashboard: github / jira / confluence / slack (last run, cursor age,
 next fire, validate findings, 24h counts) + ROLLUP, PIPELINE, HOUSEKEEPING,
 IDENTITY, EMBEDDING, CODE-GRAPH + DB snapshot + recent runs + HEALTH footer.
 
-**CODE-GRAPH lane:** status of the daily 18:00 `com.example.codegraph` rebuild
-(`bin/run-codegraph.sh`) — schedule/next-fire, last-run ok/fail, per-repo ✓/✗
-with node/edge totals. Reads `state/last_codegraph_success.date` +
-`state/codegraph_<date>.log`; parser shared via `bin/_codegraph_status.py`.
+**CODE-GRAPH lane:** status of the daily 18:00 `com.example.codegraph` rebuild (`bin/run-codegraph.sh`) — schedule/next-fire, last-run ok/fail, per-repo ✓/✗ with node/edge totals. Reads `state/last_codegraph_success.date` + `state/codegraph_<date>.log`; parser shared via `bin/_codegraph_status.py`.
 
-**Severity:** a lane shows red `✗ INGEST DOWN` (not yellow WARN) when its last
-run logged `Cursor NOT updated` — distinguishes a total auth/network outage
-from a transient flake. Ingest scripts exit `2` on 100%-source failure, `1` on
-partial, `0` clean.
+**Severity:** a lane shows red `✗ INGEST DOWN` (not yellow WARN) when its last run logged `Cursor NOT updated` — distinguishes a total auth/network outage from a transient flake. Ingest scripts exit `2` on 100%-source failure, `1` partial, `0` clean.
 
-**Overrun detection:** each lane shows a `runtime` flag when a run takes (or is
-taking) longer than the gap to its next scheduled fire — `⚠ near-limit` at ≥80%
-of the interval, `✗ OVERRUN` at ≥100% (the run collides with the next fire and
-gets SIGTERMed by launchd). Interval is read from the plist; in-flight flags are
-gated on `pgrep` so a mis-attributed open start can't false-alarm. Surfaced
-per-lane and in the HEALTH footer (cron-status) and as a `runtime` badge on each
-card (web dashboard). Logic lives in `bin/_run_health.py`, shared by both.
+**Overrun detection:** each lane shows a `runtime` flag when a run takes (or is taking) longer than the gap to its next scheduled fire — `⚠ near-limit` at ≥80% of the interval, `✗ OVERRUN` at ≥100% (run collides with the next fire and gets SIGTERMed by launchd). Interval read from the plist; in-flight flags gated on `pgrep` so a mis-attributed open start can't false-alarm. Surfaced per-lane + in the HEALTH footer (cron-status) and as a `runtime` badge on each card (web dashboard). Logic in `bin/_run_health.py`, shared by both.
 
 ### Drill-downs
 
@@ -774,12 +721,7 @@ bin/dashboard.py [--port 8765]
 open http://127.0.0.1:8765
 ```
 
-Stdlib-only HTTP server (no Flask/FastAPI). Auto-refresh 30min. Per-lane cards,
-D3 circle-pack of top clusters (area ∝ member_count, color by status, click for
-detail), identity-signals 7d time-series (Chart.js), log-tail picker, expandable
-slack per-channel + discovered-channel tables. Routes: `/api/snapshot`,
-`/api/slack-channels`, `/api/discover`, `/api/clusters`, `/api/identity-timeseries`,
-`/api/log-tail`.
+Stdlib-only HTTP server (no Flask/FastAPI). Auto-refresh 30min. Per-lane cards, D3 circle-pack of top clusters (area ∝ member_count, color by status, click for detail), identity-signals 7d time-series (Chart.js), log-tail picker, expandable slack per-channel + discovered-channel tables. Routes: `/api/snapshot`, `/api/slack-channels`, `/api/discover`, `/api/clusters`, `/api/identity-timeseries`, `/api/log-tail`.
 
 ---
 
@@ -802,7 +744,7 @@ Cause: zombie Python processes from prior background runs.
 
 ### Rollup 429s
 
-OAuth quota shared between interactive Claude sessions and rollup. If rollup fails with 429:
+OAuth quota is shared between interactive Claude sessions and rollup. If rollup fails with 429:
 
 ```bash
 DAYS=90 ./derive/manual-rollup.sh    # skips LLM entirely
@@ -826,10 +768,7 @@ echo "2000-01-01" > state/last_github_success.date            # reset idle guard
 
 ---
 
-## Schema
+## Schema + Architecture
 
-See `SCHEMA.md` for full event shape and SQLite DDL.
-
-## Architecture
-
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full code graph: communities, execution flows, per-module function reference, data layer, and cross-community coupling. Regenerate via `mcp__code-review-graph__build_or_update_graph_tool(full_rebuild=true)` after structural changes.
+- **[`SCHEMA.md`](SCHEMA.md)** — full event shape + SQLite DDL.
+- **[`ARCHITECTURE.md`](ARCHITECTURE.md)** — full code graph: communities, execution flows, per-module function reference, data layer, cross-community coupling. Regenerate via `mcp__code-review-graph__build_or_update_graph_tool(full_rebuild=true)` after structural changes.

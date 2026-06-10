@@ -1,6 +1,6 @@
 # context
 
-Personal engineering management copilot. Pulls real activity from GitHub, Jira, and Confluence into a local warehouse, derives markdown rollups, and feeds them to a Claude Code agent that answers EM questions grounded in what the team actually shipped.
+Personal engineering-management copilot. Pulls real activity from GitHub, Jira, Confluence, and Slack into a local warehouse, derives markdown rollups, and feeds them to a Claude Code agent that answers EM questions grounded in what the team actually shipped.
 
 ---
 
@@ -18,10 +18,9 @@ context/
     ├── drafts/
     ├── audit/
     └── build-notes/       design decisions, build log, original handoff doc
-
 ```
 
-**See [`work-context/ARCHITECTURE.md`](work-context/ARCHITECTURE.md) for the full code-graph tour** — community map, execution flows, per-module function reference, cross-community coupling. Regenerated via `mcp__code-review-graph__build_or_update_graph_tool(full_rebuild=true)` after structural changes.
+**Full code-graph tour** → [`work-context/ARCHITECTURE.md`](work-context/ARCHITECTURE.md): community map, execution flows, per-module function reference, cross-community coupling. Regenerate via `mcp__code-review-graph__build_or_update_graph_tool(full_rebuild=true)` after structural changes.
 
 ---
 
@@ -49,9 +48,11 @@ GitHub / Jira / Confluence / Slack
         Claude Code (management/)           answers EM questions, drafts docs
 ```
 
+The unified `Event` schema, event-type tables, classification mechanics, and identity unification are documented in `work-context/ARCHITECTURE.md` + `work-context/README.md` → SCHEMA. Setup is below.
+
 ---
 
-## Fresh machine setup — step by step
+## Fresh machine setup
 
 ### Step 1 — Python env
 
@@ -61,8 +62,6 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
----
-
 ### Step 2 — Secrets
 
 All tokens at `~/.secrets/` (mode 600, never committed):
@@ -71,9 +70,9 @@ All tokens at `~/.secrets/` (mode 600, never committed):
 |------|---------|------------|
 | `github_pat` | GitHub ingest | GitHub → Settings → Developer settings → Personal access tokens → `repo` + `read:org` scopes |
 | `atlassian_token` | Jira + Confluence ingest | https://id.atlassian.com/manage-profile/security/api-tokens |
-| `atlassian_email` | same | your Atlassian login email (optional — defaults to `owner@example.com`) |
+| `atlassian_email` | same | Atlassian login email (optional — defaults to `owner@example.com`) |
 | `anthropic_api_key` | rollup LLM classifier | optional — see Rollup section |
-| `openai_api_key` | embedding pipeline (`embed_subjects.py`) | OpenAI platform key. **Embeddings only** (`text-embedding-3-*`) — never used for chat/LLM work |
+| `openai_api_key` | embedding pipeline (`embed_subjects.py`) | OpenAI key. **Embeddings only** (`text-embedding-3-*`) — never chat/LLM |
 
 ```bash
 mkdir -p ~/.secrets
@@ -84,18 +83,13 @@ echo "sk-..." > ~/.secrets/openai_api_key       # optional — only if running e
 chmod 600 ~/.secrets/*
 ```
 
-**Slack token is separate** — Slack ingest reads `SLACK_USER_TOKEN` (a `xoxp-…`
-user token) from `~/context/.env` (gitignored), **not** `~/.secrets/`. Slack
-scripts fail-loud if `ANTHROPIC_API_KEY` is also in env (chat-only-classification
-policy). See Step 5 + `runbook/slack-token-rotate.md`.
+**Slack token is separate.** Slack ingest reads `SLACK_USER_TOKEN` (a `xoxp-…` user token) from `~/context/.env` (gitignored), **not** `~/.secrets/`. Slack scripts fail-loud if `ANTHROPIC_API_KEY` is also in env (chat-only-classification policy). See Step 5 + `runbook/slack-token-rotate.md`.
 
----
+### Step 3 — Populate people.yaml (before any ingest)
 
-### Step 3 — Populate people.yaml (do this before any ingest)
+`config/people.yaml` is the cross-source identity map.
 
-`config/people.yaml` is the cross-source identity map. **Must be populated before running Confluence ingest** — Confluence filters pages to team members only using `jira_id`. If no jira_ids are present, no Confluence events will be ingested.
-
-Add every team member:
+**Must be populated before Confluence ingest** — Confluence filters pages to team members by `jira_id`. No jira_ids → no Confluence events.
 
 ```yaml
 people:
@@ -107,44 +101,30 @@ people:
     git_name: "Alice Example"   # matches git commit author field
 ```
 
-**How to find jira_id:** In Jira, open any issue the person created or commented on → click their avatar → "View Profile" → the URL contains their accountId (format: `NNNNNN:xxxx-xxxx-...`). Or use the Atlassian MCP tool `lookupJiraAccountId`.
-
-Required fields: `canonical`, `github`, `jira_id`. Others improve attribution.
-
----
+- Required fields: `canonical`, `github`, `jira_id`. Others improve attribution.
+- **Find jira_id:** Jira → open any issue the person created/commented on → avatar → "View Profile" → accountId is in the URL (format `NNNNNN:xxxx-xxxx-...`). Or Atlassian MCP `lookupJiraAccountId`.
 
 ### Step 4 — Configure your org (one file, no code edits)
 
-All org-specific values live in `work-context/config/sources.yaml` (gitignored —
-real values never tracked). Copy the template and fill it in:
+All org-specific values live in `work-context/config/sources.yaml` (gitignored). Copy the template and fill it in:
 
 ```bash
 cp work-context/config/sources.example.yaml work-context/config/sources.yaml
 $EDITOR work-context/config/sources.yaml
 ```
 
-Set `github.repos` + `github.org`, `jira.project_keys`, `atlassian.host`,
-`slack.workspace`, `teams.home`/`coowner`, `launchd.prefix`, etc.
-`derive/sources_config.py` loads it (falling back to `sources.example.yaml`
-generic placeholders, with per-key env overrides: `GITHUB_ORG`, `JIRA_DOMAIN`,
-`JIRA_PROJECT_KEYS`, `SLACK_WORKSPACE`, `ATLASSIAN_EMAIL`).
-
-Per-run overrides still work: `ingest/github.py --repo your-org/other`,
-`ingest/jira.py --project PLAT`. Confluence shares `atlassian.host`.
-
-See `work-context/README.md` → "Configuration" for the full field reference.
-
----
+- Set `github.repos` + `github.org`, `jira.project_keys`, `atlassian.host`, `slack.workspace`, `teams.home`/`coowner`, `launchd.prefix`, etc.
+- `derive/sources_config.py` loads it (falls back to `sources.example.yaml` placeholders; per-key env overrides: `GITHUB_ORG`, `JIRA_DOMAIN`, `JIRA_PROJECT_KEYS`, `SLACK_WORKSPACE`, `ATLASSIAN_EMAIL`).
+- Per-run overrides still work: `ingest/github.py --repo your-org/other`, `ingest/jira.py --project PLAT`. Confluence shares `atlassian.host`.
+- Full field reference: `work-context/README.md` → "Configuration".
 
 ### Step 5 — Configure Slack workspace + channels
 
-Slack is the 4th ingest source (direct Web API; the older MCP path is legacy).
-Full setup detail lives in `work-context/README.md` → "Slack workspace + channels".
-Minimum:
+Slack is the 4th ingest source (direct Web API; the older MCP path is legacy). Full detail: `work-context/README.md` → "Slack workspace + channels". Minimum:
 
 1. Generate a Slack **User OAuth token** (`xoxp-…`) — scopes in `runbook/slack-token-rotate.md`.
 2. Save to `~/context/.env` (gitignored): `SLACK_USER_TOKEN=xoxp-…`
-3. Set the channel allow-list — auto-populate it instead of hand-editing:
+3. Auto-populate the channel allow-list (don't hand-edit):
 
 ```bash
 cd ~/context/work-context
@@ -152,17 +132,15 @@ cd ~/context/work-context
 .venv/bin/python derive/slack_discover_channels.py --auto-mode --top 200 --apply
 ```
 
-Per-channel `ingest_mode`: `full` (store every message, default) or
-`team_involved` (keep only threads the team participates in — by author, `@UID`
-mention, or `<!subteam^S…>` ping from `config/team_subteams.yaml`). 1:1 DMs are
-always skipped; MPIMs need `allow_mpim: true`. New channels auto-bootstrap from
-`now − 365d` on first ingest, so no manual backfill is needed for typical adds.
+Per-channel `ingest_mode`:
+- `full` — store every message (default)
+- `team_involved` — keep only threads the team participates in (by author, `@UID` mention, or `<!subteam^S…>` ping from `config/team_subteams.yaml`)
 
----
+1:1 DMs are always skipped; MPIMs need `allow_mpim: true`. New channels auto-bootstrap from `now − 365d` on first ingest — no manual backfill for typical adds.
 
 ### Step 6 — Configure projects.yaml (domain taxonomy)
 
-`config/projects.yaml` defines the domains that events get tagged to. This drives all per-project and per-person rollup output.
+`config/projects.yaml` defines the domains events get tagged to. Drives all per-project and per-person rollup output.
 
 ```yaml
 projects:
@@ -179,17 +157,12 @@ projects:
       - EXAMPLE_PAGE_ID
 ```
 
-Start with the epics your team owns. Keywords can be refined after first rollup. You don't need to cover everything — the LLM classifier handles the rest.
-
-**Classification priority:** jira_epics match → LLM classifier (two-pass) → keyword fallback.
-
----
+- Start with the epics your team owns; refine keywords after first rollup. The LLM classifier handles the rest.
+- **Classification priority:** jira_epics match → LLM classifier (two-pass) → keyword fallback.
 
 ### Step 7 — First ingest
 
-Run each source with `--reset-cursor` to pull full history. GitHub fetches all PRs/commits/reviews since the repo's beginning. Jira fetches all issues ever updated in the project. Confluence fetches all pages authored by team members.
-
-Expect this to take **5–30 minutes** depending on repo/project size.
+Run each source with `--reset-cursor` to pull full history. GitHub = all PRs/commits/reviews since repo start; Jira = all issues ever updated; Confluence = all pages by team members. Expect **5–30 min** by repo/project size.
 
 ```bash
 cd ~/context/work-context
@@ -208,33 +181,21 @@ cd ~/context/work-context
 env -u ANTHROPIC_API_KEY .venv/bin/python ingest/slack_ingest_app.py
 ```
 
-For an explicit historical backfill of a specific channel, use
-`ingest/slack_backfill_app.py` (or the `/slack-backfill` command) — see
-`work-context/README.md`.
+- Explicit historical backfill of one channel: `ingest/slack_backfill_app.py` (or `/slack-backfill`) — see `work-context/README.md`.
+- Dry run (preview, no writes): add `--dry-run`, e.g. `.venv/bin/python ingest/github.py --reset-cursor --dry-run`.
+- Verify counts: `sqlite3 index/events.db "SELECT source, event_type, count(*) FROM events GROUP BY source, event_type ORDER BY source, event_type;"`
 
-Do a dry run first if you want to preview without writing:
-
-```bash
-.venv/bin/python ingest/github.py --reset-cursor --dry-run
-```
-
-After each run, verify event counts:
-
-```bash
-sqlite3 index/events.db "SELECT source, event_type, count(*) FROM events GROUP BY source, event_type ORDER BY source, event_type;"
-```
-
-**Note:** `--reset-cursor` does NOT write the idle gate file (`state/last_*_success.date`). This is intentional — backfill runs don't count as "today's incremental succeeded", so the LaunchAgent can still run today's incremental pass.
-
----
+**Note:** `--reset-cursor` does NOT write the idle gate file (`state/last_*_success.date`). Intentional — backfill doesn't count as "today's incremental succeeded", so the LaunchAgent can still run today's incremental.
 
 ### Step 8 — First rollup
 
-Rollup reads `index/events.db` and regenerates all `derived/` markdown. **Policy as of 2026-05-12: all semantic classification flows through chat.** Scripts strip Anthropic auth before invoking `rollup.py` — they only run keyword fallback against `config/projects.yaml`. Any subject without a clean keyword hit lands in pending and gets chat-classified.
+Rollup reads `index/events.db` and regenerates all `derived/` markdown.
+
+**Policy (2026-05-12): all semantic classification flows through chat.** Scripts strip Anthropic auth before invoking `rollup.py` — they only run keyword fallback against `config/projects.yaml`. Any subject without a clean keyword hit lands in pending and gets chat-classified.
 
 **Default window: 30 days.** Use `--days 90` (or `/rollup 90`) for a richer initial view.
 
-#### Primary workflow — `/rollup` slash command (chat-driven)
+#### Primary workflow — `/rollup` (chat-driven)
 
 In a Claude Code session at `~/context/work-context/`:
 
@@ -244,30 +205,24 @@ In a Claude Code session at `~/context/work-context/`:
 /classify         # phase 2 only — when verdicts.json got wiped
 ```
 
-`/rollup` runs three phases end-to-end:
+`/rollup` runs three phases:
 
-1. **Dump** — `manual-rollup.sh dump` → keyword pass → unclassified subjects land in `state/pending_classification.json` + sibling `.rules.md`.
+1. **Dump** — `manual-rollup.sh dump` → keyword pass → unclassified subjects → `state/pending_classification.json` + sibling `.rules.md`.
 2. **Classify** — chat reads `.rules.md` first (objectivity lock), then classifies the JSON. Thin GitHub PRs fetched inline via `gh pr diff <num> --repo <owner/repo>`. Output → `state/verdicts.json`.
 3. **Apply** — `manual-rollup.sh apply` validates (slug enum, conf threshold, risk-flag enum, epic anchor re-apply), inserts into `subject_summary` cache, archives verdicts, reruns rollup (full cache hit).
 
-Phase 3b — narratives (LEGACY, off by default since 2026-05-22):
-
-```bash
-# NARRATIVE=1 ./derive/manual-rollup.sh narrate-dump   # legacy path
-```
-
-Superseded by `/ask person_range` + `/retro` (see "Per-person signals + retros" section below).
+Phase 3b — narratives (LEGACY, off by default since 2026-05-22): `# NARRATIVE=1 ./derive/manual-rollup.sh narrate-dump`. Superseded by `/ask person_range` + `/retro` (Step 8b).
 
 #### Background workflow — daily cron
 
-**Rollup is currently MANUAL** — no background LaunchAgent installed as of 2026-05-12. `derive/run-rollup.sh` exists as a wrapper but no plist + no install-script entry. To re-enable daily rollup: create `launchagents/com.example.rollup.plist` + add to `bin/install-agents.sh::SERVICES`. Until then, EM invokes `/rollup` interactively (weekly cadence in practice).
+**Rollup is currently MANUAL** — no LaunchAgent as of 2026-05-12. `derive/run-rollup.sh` exists as a wrapper but has no plist + no install-script entry. To re-enable daily: create `launchagents/com.example.rollup.plist` + add to `bin/install-agents.sh::SERVICES`. Until then EM invokes `/rollup` interactively (weekly in practice).
 
 #### Removed (2026-05-12)
 
 - `derive/algo_classify.py` — algorithmic bulk classifier with embedded `CMR_BODY_HINTS` dict
 - `.claude/commands/bulk-rollup.md` — `/bulk-rollup` slash command
 
-Replaced by chat-only flow above. Rationale: single source of truth, no embedded heuristics drifting from chat logic. New patterns get added to `config/projects.yaml` keywords, not code.
+Replaced by the chat-only flow. Rationale: single source of truth, no embedded heuristics drifting from chat logic. New patterns go in `config/projects.yaml` keywords, not code.
 
 #### Verify output
 
@@ -277,20 +232,18 @@ ls derived/projects/
 cat derived/alerts.md
 ```
 
-#### Rollup flags reference
+#### Rollup flags
 
 | Flag | Default | Effect |
 |------|---------|--------|
 | `--days N` | 30 | Lookback window in days |
 | `--week` | off | Also generate `derived/weekly/YYYY-Wnn.md` |
 | `--detail-summary` | off | Richer 3–5 sentence per-PR narrative (3× token cost) |
-| `--skip-narrative` | off | LEGACY — narrative.py path is off by default since 2026-05-22 |
+| `--skip-narrative` | off | LEGACY — narrative.py path off by default since 2026-05-22 |
 
----
+### Step 8b — Per-person signals + retros
 
-### Step 8b — Per-person signals + retros (new pipeline)
-
-Replaced `derive/narrative.py` on 2026-05-22. See `work-context/README.md` "Per-person signals + retros" section for full architecture.
+Replaced `derive/narrative.py` on 2026-05-22. Full architecture: `work-context/README.md` → "Per-person signals + retros".
 
 **Per-IC narrative (`/ask person_range`):**
 
@@ -298,7 +251,7 @@ Replaced `derive/narrative.py` on 2026-05-22. See `work-context/README.md` "Per-
 /ask what <person> worked on between <since> and <until>
 ```
 
-Routes to `derive/person_deepread.py` (one-shot bundle, disk-cached) → `derive/person_profile.py` (deterministic signals: contribution / behavioral / throughput / quality / fate / lookahead) → renders TL;DR-first prose. Output saved to `management/narratives/per-person/<handle>-<since>-to-<until>.md`.
+Routes to `derive/person_deepread.py` (one-shot bundle, disk-cached) → `derive/person_profile.py` (deterministic signals: contribution / behavioral / throughput / quality / fate / lookahead) → renders TL;DR-first prose. Saved to `management/narratives/per-person/<handle>-<since>-to-<until>.md`.
 
 **Stakeholder retro (`/retro` and `/ask highs_lows`):**
 
@@ -307,25 +260,13 @@ Routes to `derive/person_deepread.py` (one-shot bundle, disk-cached) → `derive
 /ask highs and lows for April
 ```
 
-Stakeholder-facing: team-level voice (NEVER dev names), Highs = deliveries only (code-Done ≠ delivery), measurable impact from slack threads, no PR/ticket/cluster jargon. Output saved to `management/retros/<since>-to-<until>.md`.
+Stakeholder-facing: team-level voice (NEVER dev names), Highs = deliveries only (code-Done ≠ delivery), measurable impact from slack threads, no PR/ticket/cluster jargon. Saved to `management/retros/<since>-to-<until>.md`.
 
-**Config source of truth:** `work-context/config/tier_expectations.yaml` (reliability gates, work_hours 12-20 IST, lookahead 30d, fate_max 90d).
+- **Config source of truth:** `work-context/config/tier_expectations.yaml` (reliability gates, work_hours 12-20 IST, lookahead 30d, fate_max 90d).
+- **Pace signal:** PR cycle time only. Ticket lead-time is bogus here (same-day create+Done flips).
+- **Cluster status vs window:** for windows ≥30 days old, render against `window_state` (lifetime-overlap, derived per query in `derive/ask_engine.py`), NOT `topic_brief.status` (NOW-snapshot).
 
-**Pace signal:** PR cycle time only. Ticket lead-time is bogus for this team (same-day create+Done flips).
-
-**Cluster status vs window:** For windows ≥30 days old, render against `window_state` (lifetime-overlap derived per query in `derive/ask_engine.py`), NOT `topic_brief.status` (NOW-snapshot).
-
-**Embedding + topic clusters (feeds `cluster_pulse` / retro):** subjects are
-embedded (`derive/embed_subjects.py`, OpenAI `text-embedding-3-*` only) →
-clustered (`derive/cluster_subjects.py`) → LLM-enriched + named
-(`derive/enrich_clusters.py`, `derive/label_clusters.py`) → linked to
-`projects.yaml` slugs (`derive/link_clusters_to_projects.py`). Output lands in
-the `embedding` / `topic_brief` / `topic_brief_member` / `cluster_project_map`
-tables (see `SCHEMA.md`). Refresh incrementally after new ingest with
-`/refresh-embeddings`; sanity-check with `/embed-validate`. Requires
-`~/.secrets/openai_api_key`.
-
----
+**Embedding + topic clusters** (feeds `cluster_pulse` / retro): subjects embedded (`derive/embed_subjects.py`, OpenAI `text-embedding-3-*` only) → clustered (`derive/cluster_subjects.py`) → LLM-enriched + named (`derive/enrich_clusters.py`, `derive/label_clusters.py`) → linked to `projects.yaml` slugs (`derive/link_clusters_to_projects.py`). Output → `embedding` / `topic_brief` / `topic_brief_member` / `cluster_project_map` tables (see `SCHEMA.md`). Refresh incrementally with `/refresh-embeddings`; sanity-check with `/embed-validate`. Requires `~/.secrets/openai_api_key`.
 
 ### Step 9 — Install LaunchAgents (scheduler)
 
@@ -341,31 +282,23 @@ Installs macOS LaunchAgents (see `bin/install-agents.sh::SERVICES`). Survive sle
 | `jira-ingest` | :00 and :30, 12h–22h | `state/last_jira_success.date` |
 | `confluence-ingest` | :05 and :35, 12h–22h | `state/last_confluence_success.date` |
 | `slack-ingest` | :00 and :30, 12h–22h | **none** — ingests every fire (volume) |
-| `slack-discover` | Wed + Fri 13:00 | — auto-discovers new team channels |
-| `leaves` | daily 04:00 | — regex prefilter + render (chat steps manual) |
-| `codegraph` | daily 18:00 | — git fetch + full code-graph rebuild (feeds `/ask` code-logic) |
-| `housekeeping` | Sun 03:00 | — log rotation / cache cleanup |
-| rollup | **manual** (no LaunchAgent) | — invoke `/rollup` in chat |
+| `slack-discover` | Wed + Fri 13:00 | auto-discovers new team channels |
+| `leaves` | daily 04:00 | regex prefilter + render (chat steps manual) |
+| `codegraph` | daily 18:00 | git fetch + full code-graph rebuild (feeds `/ask` code-logic) |
+| `housekeeping` | Sun 03:00 | log rotation / cache cleanup |
+| rollup | **manual** (no LaunchAgent) | invoke `/rollup` in chat |
 
-**Retry policy (idle-gated agents):** fires every 30 min; checks gate file (YYYY-MM-DD local time). If today's date is present, exits immediately. First success writes today's date → idles rest of day. Auth/network failure → auto-retries at next fire. `slack-ingest` has no gate and ingests on every fire.
+**Retry policy (idle-gated agents):** fires every 30 min; checks gate file (YYYY-MM-DD local time). If today's date present → exits immediately. First success writes today's date → idles rest of day. Auth/network failure → auto-retries next fire. `slack-ingest` has no gate and ingests on every fire.
 
-Check health:
-```bash
-./bin/cron-status.sh
-```
-
----
+Check health: `./bin/cron-status.sh`
 
 ### Step 10 — Wire management copilot
 
-Verify the symlink exists:
 ```bash
+# verify the symlink exists — should point to: $HOME/context/work-context/derived
 ls -la ~/context/management/context/activity
-# should point to: $HOME/context/work-context/derived
-```
 
-If missing:
-```bash
+# if missing:
 ln -s ~/context/work-context/derived ~/context/management/context/activity
 ```
 
@@ -404,109 +337,33 @@ Same pattern for `jira.py` and `confluence.py`.
 
 ## Core logic
 
-### Unified event model
+Canonical detail (full `Event` shape, event-type tables, classification internals) lives in `work-context/ARCHITECTURE.md` + `work-context/README.md` → SCHEMA. Key behaviours:
 
-Every source normalises to the same `Event` shape before storage:
+**Unified event model** — every source normalises to the same `Event` (id, source, event_type, ts, actor, subject, title, body, url, refs `{people,projects,tickets,pages}`, raw_path) before storage. `pr_merged_by`: GitHub list API returns `merged_by: null`, so ingest fetches each merged PR individually to get the actual merger (idempotent — skips if event already in DB).
 
-```
-id          globally unique: github:example-org/service-a:pr:847:pr_merged
-source      github | jira | confluence
-event_type  see table below
-ts          ISO8601 UTC
-actor       source-native ID (GitHub login, Jira accountId)
-subject     human reference (example-org/service-a#847)
-title       one-line summary
-body        full text
-url         canonical URL
-refs        {people, projects, tickets, pages} — enriched at ingest
-raw_path    raw/github/2026/05/05.jsonl#12
-```
+**Identity unification** — at ingest, `actor` = source-native ID. Rollup builds an `alias_map` from every people.yaml field (github, email, jira_id, git_name) → canonical GitHub handle; all cross-source attribution collapses to it. Confluence uses `jira_id` as the actor field — pages by anyone whose `jira_id` isn't in people.yaml are silently skipped.
 
-| Source | event_type |
-|--------|------------|
-| github | `pr_opened`, `pr_merged`, `pr_closed`, `pr_merged_by`, `review`, `comment`, `commit_in_pr`, `commit_pushed` |
-| jira | `issue_created`, `status_change`, `assignment`, `comment` |
-| confluence | `page_created`, `page_updated`, `comment` |
+**Domain classification — five mechanisms, in priority order:**
 
-**`pr_merged_by` note:** GitHub list API always returns `merged_by: null`. Ingest fetches each merged PR individually to get the actual merger. Only fetches if event doesn't already exist in DB (idempotent).
+1. **Jira epic anchor (deterministic)** — if an issue's epic key matches `jira_epics` in projects.yaml, tag to that slug immediately (no LLM). Auto-applied via `llm_classifier._apply_epic_anchor`, even on chat-emitted verdicts.
+2. **Auto-slug from new in-window Epics** — `derive/dump_pending.py::_detect_new_epic_slugs` filters `issue_type == "Epic"` (added by `ingest/backfill-jira-issue-type.py` one-shot, maintained by `ingest/jira.py::normalize_issue_created`). For each unmapped Epic in the window: kebab-case slug from title + bigram-only keywords, appended via `_persist_auto_slugs`. **Only Epics** create new slugs; CMRs/Tasks/Bugs link to existing via keywords.
+3. **LLM slug synthesis for unmapped epics referenced by children (`/slug-epics`)** — when a child's `epic_key` is missing from projects.yaml AND the Epic is outside the dump window, `derive/rollup.py::_emit_pending_slug_creation` bundles the epic title+body + recent child titles/bodies into `state/pending_slug_creation.json`; `manual-rollup.sh dump` halts and prompts `/slug-epics`, which synthesises a slug + bigram keywords (optional `merge_into`). `apply-slugs` folds verdicts into projects.yaml and invalidates affected `subject_summary` rows. Replaces prior `epic-<key>` fabrication.
+4. **Chat classifier (`/rollup`)** — events with no epic/keyword match land in `state/pending_classification.json`; chat reads rules, writes `verdicts.json`. Thin GitHub PRs: inline `gh pr diff` (the `needs_diff: true` flag is dead in chat path; `apply_verdicts.py` rejects verdicts still setting it).
+5. **Keyword fallback (cron + script path)** — with auth stripped (always, per policy), `llm_classifier._fallback_classify` does case-insensitive substring match against projects.yaml keywords. Clean hits → `subject_summary` directly; misses stay pending. Cache keyed by `(subject, content_hash)`.
 
-### Identity unification
+Removed: `derive/algo_classify.py` (algorithmic bulk classifier w/ embedded `CMR_BODY_HINTS`). See `work-context/ARCHITECTURE.md` §3.2.
 
-At ingest: `actor` = source-native ID. Rollup builds an `alias_map` from every field in people.yaml (github, email, jira_id, git_name) → canonical handle. All cross-source attribution collapses to canonical GitHub handle in derived output.
+**MatterAI signal** — every PR gets a `matterai[bot]` review (`🧪 PR Review is completed: <one-line summary>`). Rollup extracts it into person + project files for instant risk triage (`critical`, `panic`, `race condition`, `security`) without reading diffs.
 
-**Confluence specifically:** uses `jira_id` as actor field. Must be present in people.yaml for person-level attribution and team filtering. Pages authored by anyone whose `jira_id` is not in people.yaml are silently skipped.
-
-### Domain classification — epic to slug
-
-Four mechanisms, in priority order:
-
-**1. Jira epic anchor (deterministic)**
-Every Jira issue carries an epic link. If the epic key matches `jira_epics` in projects.yaml, the event is tagged to that slug immediately — no LLM, no ambiguity. Auto-applied via `llm_classifier._apply_epic_anchor` even on chat-emitted verdicts.
-
-**2. Auto-slug from new in-window Epics**
-`derive/dump_pending.py::_detect_new_epic_slugs` filters `issue_type == "Epic"` (added via `ingest/backfill-jira-issue-type.py` one-shot, then maintained by `ingest/jira.py::normalize_issue_created`). For each unmapped Epic in the dump window: generate kebab-case slug from title, bigram-only keywords, append to `projects.yaml` via `_persist_auto_slugs`. **Only Epics** create new slugs — CMRs/Tasks/Bugs link to existing ones via keywords.
-
-**3. LLM slug synthesis for unmapped epics referenced by children (`/slug-epics`)**
-When a child subject's `epic_key` is missing from `projects.yaml` AND the Epic itself is outside the dump window, `derive/rollup.py::_emit_pending_slug_creation` bundles the epic's title + body + most recent child-ticket titles/bodies into `state/pending_slug_creation.json`. `manual-rollup.sh dump` halts and prompts the chat to run `/slug-epics`, which synthesises a human-readable slug + bigram keywords (with optional `merge_into` for existing slugs). `apply-slugs` folds verdicts into `projects.yaml` and invalidates affected `subject_summary` rows. Replaces the prior fabrication of `epic-<key>` slugs.
-
-**4. Chat classifier (`/rollup`)**
-For events without an epic match and no keyword hit: subject lands in `state/pending_classification.json`. Chat reads the rules file, classifies, writes `verdicts.json`. Thin GitHub PRs: inline `gh pr diff` (the `needs_diff: true` flag is dead in chat path; `apply_verdicts.py` rejects any verdict still setting it).
-
-**5. Keyword fallback (cron + manual-rollup script path)**
-When auth stripped (always, per chat-only policy): `llm_classifier._fallback_classify` does case-insensitive substring match against `projects.yaml` keywords. Clean hits emit verdicts directly to `subject_summary`. Misses stay pending for chat to handle. Cache: `subject_summary` table, keyed by `(subject, content_hash)`.
-
-Removed: `derive/algo_classify.py` (algorithmic bulk classifier with embedded `CMR_BODY_HINTS`). See `work-context/ARCHITECTURE.md` §3.2.
-
-### MatterAI signal
-
-Every PR gets a `matterai[bot]` review:
-```
-🧪 PR Review is completed: <one-line summary>
-```
-Rollup extracts this and bakes it into person + project files — instant risk triage (`critical`, `panic`, `race condition`, `security`) without reading diffs.
-
-### Auth resolution (LLM paths) — superseded
-
-**As of 2026-05-12, scripts never call Anthropic.** Both `derive/run-rollup.sh` (cron) and `derive/manual-rollup.sh` (slash-command-backed) explicitly export empty `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` before invoking `rollup.py`. The rollup script short-circuits to `_fallback_classify` keyword path. All semantic classification happens in the active Claude Code session via `/rollup` or `/classify`.
-
-Reason: scripts previously raced the chat session for OAuth quota, producing 429s. Defensive `_call_claude` now raises `RuntimeError` on retry exhaustion (fail-loud) so any accidental auth presence surfaces visibly.
-
-Historical resolution order (still implemented in code, never reached in practice):
-
-1. `~/.secrets/anthropic_api_key` — paid API
-2. Claude Code OAuth — Keychain (`Claude Code-credentials`) or `~/.claude/.credentials.json`
-3. Skip → keyword fallback (the only path that runs today)
+**Auth resolution (LLM paths) — superseded.** As of 2026-05-12 scripts never call Anthropic: both `derive/run-rollup.sh` (cron) and `derive/manual-rollup.sh` export empty `ANTHROPIC_API_KEY` + `ANTHROPIC_AUTH_TOKEN` before invoking `rollup.py`, which short-circuits to `_fallback_classify`. All semantic classification happens in the live Claude Code session via `/rollup` or `/classify`. Reason: scripts previously raced the chat session for OAuth quota → 429s; `_call_claude` now raises `RuntimeError` on retry exhaustion (fail-loud) so accidental auth presence surfaces. Historical resolution order (still coded, never reached): (1) `~/.secrets/anthropic_api_key`, (2) Claude Code OAuth (Keychain `Claude Code-credentials` or `~/.claude/.credentials.json`), (3) skip → keyword fallback (the only path that runs today).
 
 ---
 
 ## Config reference
 
-### `config/people.yaml`
+Full schemas: `work-context/README.md`.
 
-```yaml
-people:
-  - name: Eve Example
-    canonical: org-eve03     # GitHub handle = canonical everywhere
-    github: org-eve03
-    email: eve.e@yourorg.com
-    jira_id: "EXAMPLE_ACCOUNT_ID"      # required for Confluence
-    git_name: "Eve Example"       # matches git commit author field
-```
-
-### `config/projects.yaml`
-
-```yaml
-projects:
-  - slug: instant-pay-atm
-    name: Instant-Pay ATM Charges
-    keywords: [instantpay_atm, InstantPayAtm, purpose_code, atm_txn_counter]
-    jira_epics: [EX-2238, EX-185]    # matched first — authoritative
-    confluence_pages: [EXAMPLE_PAGE_ID]        # page IDs from URLs
-```
-
-### Other config files
-
-Full schemas in `work-context/README.md`.
+`config/people.yaml` and `config/projects.yaml` — see Steps 3 and 6 above.
 
 | File | Purpose |
 |------|---------|
@@ -520,43 +377,32 @@ Full schemas in `work-context/README.md`.
 
 ## Key design decisions
 
-**Cron + direct API tokens, not Claude Code routines.** Routines need interactive auth refresh. Cron + PAT/API token = headless, zero AI cost, deterministic.
-
-**JSONL + SQLite only.** No Postgres, no Elasticsearch, no vector DB. JSONL = append-only audit trail. SQLite = sufficient for all query patterns here.
-
-**Separate management/ and work-context/.** Different edit patterns, sizes, threat models. Backups: management/ → private git remote; work-context/ → local encrypted disk only.
-
-**Epic anchor first.** Jira epic link is deterministic. LLM only runs on items without an epic match.
-
-**Cache by content hash.** `subject_summary` keyed by `(subject, content_hash)`. ~3–6 LLM calls per steady-state nightly run.
-
-**WAL mode on SQLite.** Multiple ingest processes can run concurrently. 30s busy timeout. If locked: `lsof index/events.db` → `kill -9 <pid>` → `PRAGMA wal_checkpoint(TRUNCATE)`.
-
-**`--reset-cursor` does not write idle gate.** Backfill is not a "today's incremental succeeded" signal. Gate is only written on normal incremental runs.
+- **Cron + direct API tokens, not Claude Code routines.** Routines need interactive auth refresh. Cron + PAT/API token = headless, zero AI cost, deterministic.
+- **JSONL + SQLite only.** No Postgres/Elasticsearch/vector DB. JSONL = append-only audit trail; SQLite = sufficient for all query patterns here.
+- **Separate management/ and work-context/.** Different edit patterns, sizes, threat models. Backups: management/ → private git remote; work-context/ → local encrypted disk only.
+- **Epic anchor first.** Jira epic link is deterministic; LLM only runs on items without an epic match.
+- **Cache by content hash.** `subject_summary` keyed by `(subject, content_hash)`. ~3–6 LLM calls per steady-state nightly run.
+- **WAL mode on SQLite.** Concurrent ingest processes OK; 30s busy timeout. If locked: `lsof index/events.db` → `kill -9 <pid>` → `PRAGMA wal_checkpoint(TRUNCATE)`.
+- **`--reset-cursor` does not write idle gate.** Backfill isn't a "today's incremental succeeded" signal; the gate is written only on normal incremental runs.
 
 ---
 
 ## Debugging
 
-See `work-context/README.md` for:
-- DB locked / zombie process recovery
-- Auth failure diagnosis per source
-- Rollup 429s (OAuth quota exhaustion)
-- Verifying event counts
-- Resetting a source cursor
+See `work-context/README.md` for: DB locked / zombie process recovery; auth failure diagnosis per source; rollup 429s (OAuth quota exhaustion); verifying event counts; resetting a source cursor.
 
 ---
 
 ## Management copilot (`management/`)
 
-Open `~/context/management/` in Claude Code. On session start:
+Open `~/context/management/` in Claude Code. On session start it:
 
 1. Reads `context/activity/alerts.md` — stale PRs, drive-by merges
 2. Runs `tail -n 30 audit/log.jsonl` — recent agent actions
 3. Reads most recent `sessions/*.md` — prior session context
 4. Summarises open threads before taking new actions
 
-Hard rules baked into `management/CLAUDE.md`:
+Hard rules in `management/CLAUDE.md`:
 - Always pass Confluence cloudId explicitly: `YOUR_CONFLUENCE_CLOUD_ID`
 - Never paraphrase TRD/PRD from memory — fetch the page first
 - State intent before any mutation outside `drafts/`

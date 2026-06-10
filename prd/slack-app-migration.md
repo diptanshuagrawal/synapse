@@ -1,13 +1,10 @@
 # Slack App-Token Migration (Hybrid Fetch + Reason)
 
-**Status:** Shipped
-**Designed:** 2026-05-15
-**Shipped:** 2026-05-20
-**Owner:** owner@example.com
-**Driver:** MCP-based ingest hit two hard quirks (page-1 token cap, 1000-reply
-thread cap) and burned Claude-turn time on mechanical fetches. Admin approval
-for Slack app token in hand → built direct-API fetch path; retained MCP for
-exploration only.
+**Bottom line:** Slack ingest is now a two-layer system — headless Web-API fetch (no LLM) + chat-driven MCP reasoning. Shipped and fully operational.
+
+**Status:** Shipped · **Designed:** 2026-05-15 · **Shipped:** 2026-05-20 · **Owner:** owner@example.com
+
+**Driver:** MCP ingest hit two hard quirks (page-1 token cap, 1000-reply thread cap) and burned Claude-turn time on mechanical fetches. With admin approval for a Slack app token, built a direct-API fetch path; kept MCP for exploration only.
 
 ## Outcome (what shipped)
 
@@ -32,36 +29,17 @@ as the architectural seam.
 
 ## Quirks the migration solved
 
-1. **Page-1 oversize:** MCP capped responses at ~58k chars. API path has no
-   equivalent cap — `conversations.history` returns full pages cleanly with
-   `limit=200`. **Resolved.**
-2. **>1000-reply thread cap:** MCP `slack_read_thread` returned ≤1000 replies
-   and offered no cursor. `conversations.replies` returns
-   `response_metadata.next_cursor` — full pagination trivial.
-   example-dr-drill long thread spot-checked at 100% parity. **Resolved.**
-3. **Per-turn batch-8 ceiling:** MCP ran only during a live Claude turn, so a
-   5000-thread backfill cost ~7hr wall-clock + $X LLM tokens. API script
-   runs headless via launchd in ~5min/fire at $0 LLM cost.
-4. **Blocks user:** during MCP backfill, owner's session was owned by the firing
-   loop. Cron-fired API path runs in background — user free.
+1. **Page-1 oversize** (resolved): MCP capped responses at ~58k chars. API `conversations.history` has no cap — full pages clean at `limit=200`.
+2. **>1000-reply thread cap** (resolved): MCP `slack_read_thread` returned ≤1000 replies, no cursor. `conversations.replies` returns `response_metadata.next_cursor` — full pagination. example-dr-drill long thread spot-checked at 100% parity.
+3. **Per-turn batch-8 ceiling:** MCP ran only during a live Claude turn → a 5000-thread backfill cost ~7hr wall-clock + $X LLM tokens. API script runs headless via launchd in ~5min/fire at $0 LLM cost.
+4. **Blocks user:** MCP backfill owned the owner's session. Cron-fired API path runs in background — user free.
 
 ## Token + auth (as deployed)
 
-- **Type:** User OAuth Token (`xoxp-...`). User-token chosen over bot-token to
-  inherit owner's existing channel membership — no per-channel `/invite`,
-  private channels (`tmp-service-c-dr-drill`, MPIMs) accessible by default.
-  Trade: token tied to a human identity; rotate if owner offboards
-  (`runbook/slack-token-rotate.md`).
-- **Scopes:** `channels:history`, `groups:history`, `im:history`,
-  `mpim:history`, `users:read`, `users:read.email`, `channels:read`,
-  `groups:read`. `usergroups:read` optional (subteams cache returns empty if
-  absent).
-- **Storage:** `~/context/.env` (gitignored) under `SLACK_USER_TOKEN=...`.
-  Loaded via `_load_env()` in `ingest/slack_api_client.py`, never imported
-  by skills.
-- **Fail-loud guard:** every script asserts `SLACK_USER_TOKEN` present and
-  starts with `xoxp-`; refuses to run if `ANTHROPIC_API_KEY` is present in
-  same env.
+- **Type:** User OAuth Token (`xoxp-...`). Chosen over bot-token to inherit owner's channel membership — no per-channel `/invite`; private channels (`tmp-service-c-dr-drill`, MPIMs) accessible by default. Trade: tied to a human identity; rotate if owner offboards (`runbook/slack-token-rotate.md`).
+- **Scopes:** `channels:history`, `groups:history`, `im:history`, `mpim:history`, `users:read`, `users:read.email`, `channels:read`, `groups:read`. `usergroups:read` optional (subteams cache returns empty if absent).
+- **Storage:** `~/context/.env` (gitignored) under `SLACK_USER_TOKEN=...`. Loaded via `_load_env()` in `ingest/slack_api_client.py`; never imported by skills.
+- **Fail-loud guard:** every script asserts `SLACK_USER_TOKEN` present + starts with `xoxp-`; refuses to run if `ANTHROPIC_API_KEY` is in the same env.
 
 ## Final architecture (file inventory)
 
@@ -184,18 +162,11 @@ work-context/
 
 ## DM / MPIM gate
 
-- `is_im=true` (1:1 DM) → hard-skip always in `ingest_channel` and
-  `slack_backfill_app`. No override.
+- `is_im=true` (1:1 DM) → hard-skip always in `ingest_channel` + `slack_backfill_app`. No override.
 - `is_mpim=true` → hard-skip UNLESS yaml row has `allow_mpim: true`.
-- One-shot MPIM ingest without cron tracking: `ingest/slack_mpim_oneshot.py`
-  with `--confirm-mpim`. Optional `--persist-cursor` writes cursor for
-  recurring (pair with yaml row + `allow_mpim: true`).
+- One-shot MPIM ingest without cron tracking: `ingest/slack_mpim_oneshot.py --confirm-mpim`. Optional `--persist-cursor` writes cursor for recurring (pair with yaml row + `allow_mpim: true`).
 
-Currently 14 MPIMs in yaml (`allow_mpim: true`) — original working-group(s)
-plus auto-discovered team DMs surfaced by `slack_discover_channels.py`. MPIM
-hygiene maintained by
-`slack_prune_stale_mpims.py` (drops rows quiet >30d; events.db rows preserved
-so re-discovery cleanly re-adds).
+Currently **14 MPIMs** in yaml (`allow_mpim: true`) — original working-group(s) plus auto-discovered team DMs from `slack_discover_channels.py`. Hygiene via `slack_prune_stale_mpims.py` (drops rows quiet >30d; events.db rows preserved so re-discovery cleanly re-adds).
 
 ## Ingest-mode + discovery (Tier 3)
 
@@ -214,73 +185,34 @@ Consumers: `slack_ingest_app.py`, `slack_backfill_app.py`,
 
 1. Walks `users.conversations` for owner's membership.
 2. Skips channels already in yaml + bot-noise prefixes (opsgenie-, alert-, …).
-3. For each candidate, fetches last 90d of messages, counts **team-involved**
-   messages via `is_team_involved` — author ∈ team OR body @-mentions a team
-   member OR body pings a team subteam handle (e.g. `@service-c-txn-oncall`,
-   `@service-c-incident-comms` from `config/team_subteams.yaml`). Subteam-ping
-   coverage surfaces oncall/incident/alert channels where the team is paged
-   via user-group handle and authors almost nothing.
-4. Decision tree per candidate (top-down):
-   - **team-owned alert channel** (alert-named/bot-dominated AND name carries a
-     team-domain keyword) → `auto_full`, **bypasses the activity floor** —
-     captures bot-authored alert streams for team systems (accounting,
-     ledger-balance, txn, service-c, service-a, recon, account-freeze; deposits/withholding excluded)
+3. Per candidate: fetches last 90d, counts **team-involved** messages via `is_team_involved` — author ∈ team OR body @-mentions a team member OR body pings a team subteam handle (e.g. `@service-c-txn-oncall`, `@service-c-incident-comms` from `config/team_subteams.yaml`). Subteam-ping coverage surfaces oncall/incident/alert channels where the team is paged via user-group handle but authors almost nothing.
+4. Decision tree (top-down):
+   - **team-owned alert channel** (alert-named/bot-dominated AND name carries a team-domain keyword) → `auto_full`, **bypasses the activity floor** — captures bot-authored alert streams for team systems (accounting, ledger-balance, txn, service-c, service-a, recon, account-freeze; deposits/withholding excluded)
    - `team_msgs < floor` (`min_mpim_msgs`/`min_team_msgs`) → `needs_review`
    - MPIM with `≥ MPIM_TEAM_THRESHOLD` team handles in name → `auto_full`
    - other MPIM → `needs_review`
    - announcement-name pattern (`general`, `tech`, …) → `auto_team_involved`
    - non-MPIM with `team_ratio ≥ TEAM_RATIO_FULL_THRESHOLD` → `auto_full`
    - else → `auto_team_involved`
-5. `--apply` appends `auto_*` rows to yaml; `--json-out` writes proposals for
-   cron-status DISCOVERY block. Wrapper `bin/run-slack-discover.sh` invokes
-   both flags by default — auto-applying is the steady state (Wed+Fri 13:00
-   IST cron). Pre-apply yaml snapshot is retained at
-   `state/slack_channels.yaml.bak.<ts>` (last 4 kept) for rollback.
+5. `--apply` appends `auto_*` rows to yaml; `--json-out` writes proposals for cron-status DISCOVERY block. Wrapper `bin/run-slack-discover.sh` invokes both by default — auto-apply is steady state (Wed+Fri 13:00 IST cron). Pre-apply yaml snapshot kept at `state/slack_channels.yaml.bak.<ts>` (last 4) for rollback.
 
-**Auto-bootstrap:** new yaml rows with null cursor get seeded from
-`now − BOOTSTRAP_LOOKBACK_DAYS` on first ingest fire. Multi-fire catch-up
-absorbs the 365d window via PAGE_CAP=10 per channel per fire. No manual
-`/slack-backfill` required for typical auto-added channels.
+**Auto-bootstrap:** new yaml rows with null cursor seed from `now − BOOTSTRAP_LOOKBACK_DAYS` on first ingest fire. Multi-fire catch-up absorbs the 365d window via PAGE_CAP=10/channel/fire. No manual `/slack-backfill` for typical auto-added channels.
 
-**Pruner** (`slack_prune_stale_mpims.py`): walks MPIM yaml rows, queries
-`MAX(events.ts) per channel`, removes yaml row + cursor when quiet >
-`DEFAULT_QUIET_DAYS`. `events.db` rows preserved — re-discovery cleanly
-re-adds with fresh bootstrap. Wired into `bin/housekeeping.sh` step 7
-(Mon 03:00 IST weekly fire). GRACE-skip protects MPIMs that just got
-added and haven't yet been backfilled.
+**Pruner** (`slack_prune_stale_mpims.py`): walks MPIM yaml rows, queries `MAX(events.ts) per channel`, removes yaml row + cursor when quiet > `DEFAULT_QUIET_DAYS`. `events.db` rows preserved — re-discovery cleanly re-adds with fresh bootstrap. Wired into `bin/housekeeping.sh` step 7 (Mon 03:00 IST weekly). GRACE-skip protects just-added MPIMs not yet backfilled.
 
 ## Team leaves (Tier 4)
 
-Track direct reports' leave plans (OOO, WFH, sick, vacation, travel)
-extracted from Slack mentions. Mirrors `subject_summary` chat-classify
-pattern; no LLM in cron path.
+Track direct reports' leave plans (OOO, WFH, sick, vacation, travel) from Slack mentions. Mirrors `subject_summary` chat-classify pattern; no LLM in cron path.
 
 **Pipeline:**
 
-1. **Regex prefilter** (`derive/leaves_dump.py`) — pulls slack events
-   from last 60d authored by direct reports (owner email excluded),
-   matches against a leave-keyword regex, writes `state/pending_leaves.json`
-   + `.rules.md`. Idempotent — events already in `team_leaves_processed`
-   are skipped.
+1. **Regex prefilter** (`derive/leaves_dump.py`) — pulls last 60d slack events authored by direct reports (owner excluded), matches a leave-keyword regex, writes `state/pending_leaves.json` + `.rules.md`. Idempotent — events in `team_leaves_processed` skipped.
 
-2. **Chat classify** (`/leaves` slash skill) — reads pending JSON +
-   rules, emits per-event verdicts: `{event_id, is_leave, confidence,
-   leaves: [{actor, date_start, date_end, reason}, ...]}`. One event
-   can yield multiple leave rows (e.g. a "5-6 May leave, 7-8
-   WFH, 11-15 WFH" plan).
+2. **Chat classify** (`/leaves` slash skill) — reads pending JSON + rules, emits per-event verdicts: `{event_id, is_leave, confidence, leaves: [{actor, date_start, date_end, reason}, ...]}`. One event can yield multiple rows (e.g. "5-6 May leave, 7-8 WFH, 11-15 WFH").
 
-3. **Apply** (`derive/apply_leaves.py`) — validates verdicts
-   (`confidence ≥ 0.7`, actor ∈ team_canonical, date format,
-   `date_end ≥ date_start`), upserts into `team_leaves` table, marks
-   `team_leaves_processed` regardless of `is_leave` (so false
-   positives don't re-emerge in next dump). Verdicts file archived as
-   `verdicts.leaves.<ts>.json`.
+3. **Apply** (`derive/apply_leaves.py`) — validates (`confidence ≥ 0.7`, actor ∈ team_canonical, date format, `date_end ≥ date_start`), upserts into `team_leaves`, marks `team_leaves_processed` regardless of `is_leave` (false positives don't re-emerge). Verdicts archived as `verdicts.leaves.<ts>.json`.
 
-4. **Render** (`derive/render_leaves.py`) — SQL → `derived/team-leaves.md`
-   with sections Active today / Upcoming (next 30d) / Recent past (last
-   14d) / Ambiguous (date TBD). Dedupes via window function on
-   `(actor, date_start, date_end, reason)` so top-level + thread-context
-   duplicates collapse to one visible row.
+4. **Render** (`derive/render_leaves.py`) — SQL → `derived/team-leaves.md`, sections: Active today / Upcoming (30d) / Recent past (14d) / Ambiguous (date TBD). Dedupes via window function on `(actor, date_start, date_end, reason)` so top-level + thread-context duplicates collapse to one row.
 
 **Schema:**
 
@@ -303,31 +235,15 @@ CREATE TABLE team_leaves_processed (
 );
 ```
 
-**Cron:** `com.example.leaves` LaunchAgent fires daily 04:00 IST.
-Runs Phase 1 + Phase 4 only (regex dump + render of already-classified
-rows). Phase 2 chat-classify is owner-invoked via `/leaves` in a
-Claude session — preserves the chat-only-classification policy
-(`ANTHROPIC_API_KEY` stripped from cron env). Pending count surfaces
-in cron-status LEAVES block as `N pending /leaves` — owner sees the
-backlog and fires the skill when it grows.
+**Cron:** `com.example.leaves` LaunchAgent fires daily 04:00 IST. Runs Phase 1 + 4 only (regex dump + render of already-classified rows). Phase 2 chat-classify is owner-invoked via `/leaves` — preserves chat-only-classification policy (`ANTHROPIC_API_KEY` stripped from cron env). Pending count surfaces in cron-status LEAVES block as `N pending /leaves`.
 
-**Team set:** owner's direct reports (parsed from
-`management/context/team.md`, resolved to slack_ids via people.yaml).
-Owner email **excluded** — owner knows their own leaves; dashboard
-tracks the team they manage. This differs from
-`slack_team.load_team_emails()` (owner included for `is_team_involved`
-ingest filter); leaves uses its own private helper to enforce the
-reports-only invariant.
+**Team set:** owner's direct reports (parsed from `management/context/team.md`, resolved to slack_ids via people.yaml). Owner **excluded** — dashboard tracks the team they manage. Differs from `slack_team.load_team_emails()` (owner included for `is_team_involved` ingest filter); leaves uses its own private helper to enforce the reports-only invariant.
 
 ## Validator
 
-`derive/slack_validate.py` — exit 0 clean, 1 findings, 2 env error.
+`derive/slack_validate.py` — exit 0 clean, 1 findings, 2 env error. Cached per cron fire to `state/last_slack_validate.json`.
 
-Checks: counts, reply_drift, cursor_lag, orphan_replies (PK-based — earlier
-strftime-based query had a SQLite rounding bug on high-fraction-second ts),
-raw_mentions (regex-strict), bot_leaks, dup_ts (refined to same
-`(ts, event_type)` — thread_broadcast legitimately creates same-ts pair),
-summary_lag, success_marker. Cached per cron fire to `state/last_slack_validate.json`.
+Checks: counts, reply_drift, cursor_lag, orphan_replies (PK-based — earlier strftime-based query had a SQLite rounding bug on high-fraction-second ts), raw_mentions (regex-strict), bot_leaks, dup_ts (refined to same `(ts, event_type)` — thread_broadcast legitimately creates same-ts pair), summary_lag, success_marker.
 
 ## Cost vs estimate
 
@@ -350,34 +266,22 @@ summary_lag, success_marker. Cached per cron fire to `state/last_slack_validate.
 - Per-channel cursor-lag trend dashboard
 - Reactions full extraction (currently summarised in `reactions_json`)
 - PII redaction (PRD v2)
-- MCP-era skill removal (`*-mcp.md` files; remove after API path proves
-  stable for 2-4 weeks of cron fires)
-- Leaves Phase 2 autonomous-session firing — currently owner-invoked via
-  `/leaves`. Optional `scheduled-tasks` MCP could fire it autonomously
-  ~daily, but owner-gated is acceptable until backlog becomes a problem.
+- MCP-era skill removal (`*-mcp.md`; remove after API path proves stable 2-4 weeks of cron fires)
+- Leaves Phase 2 autonomous firing — currently owner-invoked via `/leaves`. `scheduled-tasks` MCP could fire it ~daily; owner-gated acceptable until backlog grows.
 
 ## Risk + rollback
 
 - **Token leak:** `.env` gitignored. Rotate via Slack admin per `runbook/slack-token-rotate.md`.
-- **Schema mismatch:** API path uses same `slack_upsert.py`. Verified via
-  parity test on `tmp-service-c-dr-drill` before broader rollout.
-- **Rate-limit:** tier-3 = 50/min; SlackClient throttles to 45/min.
-  Observed: never hit 429 across 12-channel fires.
-- **Private channel auth gaps:** `conversations.info` checked at fire start;
-  refuses ingest on `not_in_channel`.
+- **Schema mismatch:** API path uses same `slack_upsert.py`. Verified via parity test on `tmp-service-c-dr-drill` before broader rollout.
+- **Rate-limit:** tier-3 = 50/min; SlackClient throttles to 45/min. Never hit 429 across 12-channel fires.
+- **Private channel auth gaps:** `conversations.info` checked at fire start; refuses ingest on `not_in_channel`.
 - **Owner offboard:** documented in `runbook/slack-token-rotate.md`.
-- **Rollback:** every active skill has a `*-mcp.md` fallback. Invoke
-  `/slack-ingest-mcp` or `/slack-backfill-mcp` if API path breaks.
+- **Rollback:** every active skill has a `*-mcp.md` fallback. Invoke `/slack-ingest-mcp` or `/slack-backfill-mcp` if API path breaks.
 
 ## Decisions (resolved)
 
-1. **Token type:** User Token (`xoxp-...`). Inherits owner's channel
-   membership.
-2. **MCP hook (`slack-mcp-persist.sh`):** Kept. Exploration MCP calls
-   (`slack_search_*`, ad-hoc `slack_read_*`) still use it.
-3. **Tenancy:** Single-tenant (example workspace). Multi-workspace ingest
-   out of scope.
-4. **Edit/delete coverage:** trailing 24h window via Phase 2.7+2.7b. Weekly
-   deep sweep deferred until drift seen.
-5. **MPIM:** opt-in per channel via `allow_mpim: true` yaml flag. Default
-   skip preserves DM privacy invariant.
+1. **Token type:** User Token (`xoxp-...`). Inherits owner's channel membership.
+2. **MCP hook (`slack-mcp-persist.sh`):** Kept. Exploration calls (`slack_search_*`, ad-hoc `slack_read_*`) still use it.
+3. **Tenancy:** Single-tenant (example workspace). Multi-workspace out of scope.
+4. **Edit/delete coverage:** trailing 24h window via Phase 2.7+2.7b. Weekly deep sweep deferred until drift seen.
+5. **MPIM:** opt-in per channel via `allow_mpim: true`. Default skip preserves DM privacy invariant.

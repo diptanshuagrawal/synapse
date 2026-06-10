@@ -1,5 +1,7 @@
 # Slack User Token (xoxp-) Rotation Runbook
 
+**What to do:** generate a new `xoxp-` user token, install it in `.env`, test, then revoke the old one.
+
 ## When to rotate
 
 - Owner offboards
@@ -64,11 +66,11 @@ Failure modes:
 
 ## Revoke old
 
-After verifying the new token works:
+Only after the new token tests OK:
 
 1. https://api.slack.com/apps → OAuth & Permissions → **Revoke Token**
 2. Confirm in Slack admin audit log
-3. Update this runbook's "last rotated" line below
+3. Update the "last rotated" line below
 
 ---
 

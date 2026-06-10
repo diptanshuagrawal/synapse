@@ -1,49 +1,50 @@
 # Cluster-input noise filter
 
-## Problem it solves
+**What this is:** exclude high-volume automation channels from the clustering
+input so real engineering work resolves into fine workstreams instead of being
+swamped by recurring-noise clusters.
 
-The Slack backfill tripled the corpus (~12k → ~38k subjects). ~94% of that is
-recurring **automation** — alert/recon/digest/metrics bots posting into
-dedicated channels (`example-recon`, `*_alerts`, `example-tracker`,
-`example-txn-alerts`, …). Clustering the raw corpus at min-size 15 produced 606
-clusters of which ~560 were redundant recurring-noise clusters; the ~1,630
-members of real engineering work were squeezed into ~22 coarse buckets.
+**Nothing is deleted** — subjects stay in `events.db` + `embedding`; only the
+clustering input is filtered.
 
-Fix: exclude automation channels from the **clustering input only** (subjects
-stay in `events.db` + `embedding` — nothing is deleted), then cluster the
-remaining real work at a small min-cluster-size so workstreams resolve finely.
+## Why
 
-## How the decision is made
+Slack backfill tripled the corpus (~12k → ~38k subjects). ~94% is recurring
+automation (alert/recon/digest/metrics bots in dedicated channels like
+`example-recon`, `*_alerts`, `example-tracker`, `example-txn-alerts`).
 
-`derive/cluster_noise_filter.py` + `config/cluster_exclude.yaml`. Per channel,
-in order:
+At min-size 15 the raw corpus made 606 clusters — ~560 redundant noise clusters,
+and the ~1,630 members of real work were squeezed into ~22 coarse buckets.
 
-1. `force_include` → never excluded (owner override; rescue a triage channel).
-2. `force_exclude` → always excluded (owner override).
-3. `protect_classes` (team / cross-team / working-group) → never auto-excluded.
-4. **Measured ratio** — if the channel has ≥ `min_subjects_for_ratio` (20)
-   labeled subjects in `topic_brief`, exclude iff its RECURRING-share ≥
-   `noise_ratio_threshold` (0.90). This is the authority for data-rich channels.
-5. **Name bootstrap** — channels with too little data are excluded iff their
-   name matches `name_patterns` (catches brand-new alert channels pre-labeling).
+## How it decides
 
-The decision is snapshotted into the `cluster_excluded_channel` table by
-`refresh`, so exclusions stay stable after excluded subjects leave `topic_brief`.
+- Logic: `derive/cluster_noise_filter.py` + `config/cluster_exclude.yaml`.
+- The 5-step decision ladder (force_include → force_exclude → protect_classes →
+  measured ratio → name bootstrap) is documented in the
+  **`config/cluster_exclude.yaml` header** — not repeated here.
+- `refresh` snapshots the decision into the `cluster_excluded_channel` table, so
+  exclusions stay stable after excluded subjects leave `topic_brief`.
 
-Measured on the 2026-06-09 ground truth (size-15 RECURRING labels):
-**24 channels excluded · 92% of noise removed · 18% of real lost** (the residual
-loss is genuinely-mixed alert channels — `force_include` to rescue any).
-~11.8k subjects survive for clustering (from ~38.6k).
+**Measured on 2026-06-09 ground truth** (size-15 RECURRING labels):
+24 channels excluded · 92% of noise removed · 18% of real lost · ~11.8k subjects
+survive for clustering (from ~38.6k). Residual loss = genuinely-mixed alert
+channels → `force_include` to rescue any.
 
-## Automatic for future runs
+## Automatic upkeep
 
-`cluster_noise_filter.py refresh` is now Phase 4 of `/refresh-embeddings`, run
-before every re-cluster. So new automation channels are caught automatically:
-the measured ratio handles labeled channels; `name_patterns` bootstraps new
-ones. No re-labeling needed to maintain the filter — just occasionally groom
-`force_include` / `force_exclude`.
+`cluster_noise_filter.py refresh` runs as **Phase 4 of `/refresh-embeddings`**,
+before every re-cluster. New automation channels are caught automatically
+(measured ratio for labeled channels; `name_patterns` bootstraps new ones). No
+re-labeling needed — just occasionally groom `force_include` / `force_exclude`.
 
-## Run it (one-time correction — make the size-15 layout obsolete)
+## Tuning
+
+All in `config/cluster_exclude.yaml`:
+- raise `noise_ratio_threshold` → 0.95: keep more real, leak more noise.
+- lower → 0.85: kill more noise, lose more real.
+- add a channel id/name to `force_include` to keep its triage in clustering.
+
+## One-time correction (make the size-15 layout obsolete)
 
 ```bash
 cd $HOME/context/work-context
@@ -59,16 +60,16 @@ cp index/events.db "index/events.db.bak-pre-noisefilter-$(date +%Y%m%d%H%M)"
 .venv/bin/python derive/cluster_diff.py plan --min-cluster-size 6
 #   inspect state/cluster_diff_plan.json summary (preserve/relabel/new/dropped)
 
-# 3. apply the rebuild (DESTRUCTIVE: rewrites topic_brief; back up done in step 0)
+# 3. apply the rebuild (DESTRUCTIVE: rewrites topic_brief; backup done in step 0)
 .venv/bin/python derive/cluster_diff.py apply
 
 # 4. dump the new+relabel clusters for labeling
 .venv/bin/python derive/finalize_refresh.py dump
-#   IMPORTANT: dump reads topic_brief_member, which is correct ONLY after step 3.
+#   IMPORTANT: dump reads topic_brief_member, correct ONLY after step 3.
 
-# 5. label (parallel workflow recommended — see this session's transcript):
-#    shard state/pending_cluster_finalize.json → fan-out label agents using
-#    derive/cluster_finalize_rules.md → merge to state/verdicts.cluster_finalize.json
+# 5. label (parallel): shard state/pending_cluster_finalize.json → fan-out
+#    label agents using derive/cluster_finalize_rules.md →
+#    merge to state/verdicts.cluster_finalize.json
 
 # 6. apply labels
 .venv/bin/python derive/finalize_refresh.py apply
@@ -77,12 +78,5 @@ cp index/events.db "index/events.db.bak-pre-noisefilter-$(date +%Y%m%d%H%M)"
 .venv/bin/python derive/topic_brief_validate.py --json
 ```
 
-Expected after step 2: far fewer total clusters, dominated by REAL workstreams
-(not recurring noise), at finer granularity than the 22 size-15 buckets.
-
-## Tuning
-
-All in `config/cluster_exclude.yaml`:
-- raise `noise_ratio_threshold` toward 0.95 → keep more real, leak more noise.
-- lower toward 0.85 → kill more noise, lose more real.
-- add a channel id/name to `force_include` to keep its triage in clustering.
+Expected after step 2: far fewer total clusters, dominated by REAL workstreams,
+at finer granularity than the 22 size-15 buckets.

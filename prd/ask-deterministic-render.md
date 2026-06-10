@@ -1,44 +1,35 @@
 # Deterministic render for `/ask person_range` (and siblings)
 
-**Status:** DESIGN — not wired. Parallel version only. Wire after owner approval.
+**TL;DR:** Move the determinism boundary so scripts decide *what* to surface/cite/flag/rank; the model only phrases a fixed manifest, then a gate verifies every item landed. Same window → same facts. Parallel `ask-v2` only — wire live after owner approval.
+
+**Status:** DESIGN — not wired. Parallel version only.
 **Author:** generated 2026-06-09
-**Problem:** two runs of the same `/ask` over the same window produced different
-narratives (missed a "getting overwhelmed" workload quote, different cited
-tickets, different framing). Root cause: the scripts are deterministic, but the
-*synthesis* (what to surface, what to cite, what to read, how to phrase) happens
-in the chat model and is stochastic.
+
+**Problem.** Two runs of the same `/ask` over the same window gave different narratives (missed a "getting overwhelmed" workload quote, different cited tickets, different framing). Scripts are deterministic; the *synthesis* (what to surface/cite/read/phrase) happens in the chat model and is stochastic.
 
 ---
 
 ## 1. Goal + non-goal
 
-**Goal.** Make the *content* of every `/ask` output deterministic: same window →
-same facts, same flags, same citations, same section structure, same ordering.
-Two runs differ only in surface wording, never in substance.
+**Goal.** Make the *content* of every `/ask` deterministic: same window → same facts, flags, citations, section structure, ordering. Runs differ only in surface wording.
 
-**Non-goal.** Byte-identical prose. As long as an LLM writes the sentences,
-word choice varies. We do NOT template the prose (that kills the manager-quality
-narrative the skill exists for). We make every *decision* deterministic and leave
-only phrasing to the model.
+**Non-goal.** Byte-identical prose. We do NOT template prose (kills the manager-quality narrative the skill exists for). Make every *decision* deterministic; leave only phrasing to the model.
 
-**The determinism boundary moves** from:
+**Boundary moves from:**
 > scripts compute signals → model decides what to surface + cite + read + phrase
 
-to:
-> scripts compute signals AND decide what to surface + cite + flag + rank →
-> model only phrases a fixed manifest, then a gate verifies every item landed.
+**to:**
+> scripts compute signals AND decide what to surface + cite + flag + rank → model only phrases a fixed manifest, then a gate verifies every item landed.
 
 ---
 
 ## 2. The three deterministic layers
 
-### Layer A — Render manifest (selection becomes computed, not chosen)
+### Layer A — Render manifest (selection is computed, not chosen)
 
-A new deterministic stage emits the EXACT render plan: which artefacts to cite,
-in which section, in what order, capped. The model renders this list; it does not
-curate it. No run can pick a different "top 5" because the script already picked.
+A new deterministic stage emits the EXACT render plan: which artefacts to cite, in which section, what order, capped. The model renders the list; it does not curate it. The script already picked the "top 5".
 
-Proposed manifest schema (one JSON object, emitted by the new stage):
+Proposed schema (one JSON object from the new stage):
 
 ```jsonc
 {
@@ -66,7 +57,7 @@ Proposed manifest schema (one JSON object, emitted by the new stage):
     "workstreams":  [ { "name": "cash-on-service-a", "role": "led", "cites": [...], "rank": 1 }, ... ]
   },
 
-  "flags": [                         // Layer B output — see below. Deterministic.
+  "flags": [                         // Layer B output. Deterministic.
     { "kind": "workload_sentiment", "evidence": "slack:C0EXAMPLE:177...",
       "quote": "getting a little overwhelmed", "severity": "review-in-1:1" },
     { "kind": "commit_without_pr", "metric": { "commits_in_pr": 123, "own_prs": 0 } }
@@ -87,24 +78,17 @@ Proposed manifest schema (one JSON object, emitted by the new stage):
 }
 ```
 
-Selection rules (all deterministic, defined in code — examples):
-- `shipped` = tickets with terminal status in `shipped` class, assigned-at-close
-  to person, ranked by (epic-grouped, then story-points desc, then ticket id).
-- `designed` = Confluence pages authored/edited by person, ranked by body bytes,
-  capped at N.
-- `workstreams` = led-first (AUTHOR/RESOLVER/DECIDER window role), then
-  contributed, ranked by person-subject count. Cap each section.
-- `tldr_facts` = top 6 by a fixed priority order (own delivery > led design >
-  cross-team coordination > db/platform > ops). No model choice.
+**Selection rules** (deterministic, in code — examples):
+- `shipped` = tickets with terminal status in `shipped` class, assigned-at-close to person; ranked by (epic-grouped, then story-points desc, then ticket id).
+- `designed` = Confluence pages authored/edited by person; ranked by body bytes, capped at N.
+- `workstreams` = led-first (AUTHOR/RESOLVER/DECIDER window role), then contributed; ranked by person-subject count. Cap each section.
+- `tldr_facts` = top 6 by fixed priority: own delivery > led design > cross-team coordination > db/platform > ops. No model choice.
 
 ### Layer B — Deterministic body extraction (the "overwhelmed" fix, generalized)
 
-The missed quote happened because *reading bodies is a model judgment call*.
-Fix: extract body-level facts in code, emit as structured fields. The model never
-decides whether to open a thread — the facts are already on the table.
+The missed quote happened because *reading bodies is a model judgment call*. Fix: extract body-level facts in code, emit as structured fields — the model never decides whether to open a thread.
 
-`person_deepread` (parallel copy) gains a `body_facts` pass over every thread /
-ticket / PR / page body it already pulls:
+`person_deepread` (parallel copy) gains a `body_facts` pass over every thread/ticket/PR/page body it already pulls:
 
 | Extractor | What it pulls | How (deterministic) |
 |---|---|---|
@@ -116,44 +100,31 @@ ticket / PR / page body it already pulls:
 | `sentiment_flags` | overwhelmed, stretched, blocked, too much, can't keep up | phrase list, per person, own-authored only |
 | `risk_phrases` | race condition, data loss, panic, critical | keyword set |
 
-Each extractor emits `{ kind, evidence_subject, snippet }`. These become
-`flags[]` + `caveats[]` entries in the manifest. Phrase lists live in a config
-file (`config/body_extractors.yaml`) so they're auditable + tunable, not buried
-in code.
+Each extractor emits `{ kind, evidence_subject, snippet }`, becoming `flags[]` + `caveats[]` in the manifest. Phrase lists live in `config/body_extractors.yaml` (auditable + tunable, not buried in code).
 
-Key property: extraction is over the SAME bodies deepread already fetches — no
-new fetch, no new cost. We're just not leaving the reading to the model.
+Key property: extraction is over the SAME bodies deepread already fetches — no new fetch, no new cost.
 
 ### Layer C — Verify gate (guarantees the manifest landed)
 
-After the model writes the narrative, a deterministic post-check asserts every
-`verify_manifest` token appears in the output text:
+After the model writes the narrative, a deterministic post-check asserts every `verify_manifest` token appears in the output text:
 - every cited ticket id / PR / page
 - every `flag:*`
 - every `caveat:*`
 
-Missing token → the run is incomplete → regenerate (or the skill flags exactly
-which items were dropped). This makes "did all required facts land" deterministic
-even though the prose isn't. It also catches the silent-section-drop class of bug
-the render contract already warns about.
+Missing token → run is incomplete → regenerate (or flag exactly which items dropped). Makes "did all required facts land" deterministic even though prose isn't. Also catches the silent-section-drop bug the render contract warns about.
 
-Implementation: a tiny `derive/verify_render.py` that takes the manifest + the
-written `.md` and exits non-zero with the missing tokens listed.
+Implementation: a tiny `derive/verify_render.py` takes the manifest + written `.md`, exits non-zero with missing tokens listed.
 
 ---
 
 ## 3. What stays variable (honest boundary)
 
 - Sentence wording, paragraph flow, connective phrasing.
-- Which synonym, how a fact is framed in prose.
+- Which synonym; how a fact is framed in prose.
 
-These don't change the read. A manager gets the same facts, flags, citations,
-and structure every time. That is the achievable definition of "deterministic
-output" while keeping an LLM in the loop.
+These don't change the read. A manager gets the same facts, flags, citations, and structure every time.
 
-If true byte-determinism is ever required, Layer A's manifest is already a
-template-ready structure — a Jinja pass over it would produce identical bytes at
-the cost of prose quality. We keep that option open but do NOT take it now.
+If true byte-determinism is ever required, Layer A's manifest is already template-ready — a Jinja pass would produce identical bytes at the cost of prose quality. Option kept open; NOT taken now.
 
 ---
 
@@ -174,40 +145,26 @@ config/body_extractors.yaml       # NEW — phrase/regex lists for Layer B
 prd/ask-deterministic-render.md   # this doc
 ```
 
-`person_v3.py` / `person_deepread.py` / `.claude/commands/ask.md` are READ by the
-new code but NEVER edited in this phase.
+`person_v3.py` / `person_deepread.py` / `.claude/commands/ask.md` are READ by the new code, NEVER edited in this phase.
 
 ### Validation plan (before wiring)
 
-1. Run `ask-v2` for one person over a month 3× → assert the 3 outputs carry identical
-   manifests + identical verify-pass (prose may differ).
-2. Diff against the live `-2` / `-3` files → confirm the overwhelm flag + all
-   cited tickets now appear in EVERY run.
-3. Run for 2-3 other people (a feature dev, an ops-heavy IC) → confirm selection
-   rules generalize, not overfit to one person.
+1. Run `ask-v2` for one person over a month 3× → assert 3 outputs carry identical manifests + identical verify-pass (prose may differ).
+2. Diff against the live `-2` / `-3` files → confirm the overwhelm flag + all cited tickets now appear in EVERY run.
+3. Run for 2-3 other people (a feature dev, an ops-heavy IC) → confirm selection rules generalize, not overfit to one person.
 
 ---
 
 ## 5. Wiring plan (DEFERRED — only after owner approves the parallel version)
 
 1. Owner reviews `ask-v2` outputs side-by-side with live `/ask`.
-2. On approval: fold the manifest stage into `person_v3` (or keep as a wrapper),
-   replace `.claude/commands/ask.md` synthesis section with the manifest-render +
-   verify-gate flow, retire `ask-v2`.
-3. Apply the same manifest pattern to `/retro` and `team_range` (they share the
-   selection-is-stochastic weakness).
+2. On approval: fold the manifest stage into `person_v3` (or keep as wrapper); replace `.claude/commands/ask.md` synthesis section with the manifest-render + verify-gate flow; retire `ask-v2`.
+3. Apply the same manifest pattern to `/retro` and `team_range` (they share the selection-is-stochastic weakness).
 
 ---
 
 ## 6. Open questions for owner
 
-1. **Scope of v1:** person_range only, or also `summarize` / `rootcauses` in the
-   first parallel cut? (Recommend: person_range only first — highest value, the
-   one that showed the diff.)
-2. **Regenerate vs flag on verify-fail:** auto-regenerate silently, or surface
-   "these N items were dropped, rewriting"? (Recommend: surface — keeps it honest
-   and debuggable.)
-3. **Sentiment extractor sensitivity:** own-authored messages only, or also
-   "X seems stretched" said *about* the person by others? (Recommend: own-authored
-   only for v1 — lower false-positive risk.)
-```
+1. **Scope of v1:** person_range only, or also `summarize` / `rootcauses` in the first parallel cut? (Recommend: person_range only first — highest value, the one that showed the diff.)
+2. **Regenerate vs flag on verify-fail:** auto-regenerate silently, or surface "these N items were dropped, rewriting"? (Recommend: surface — honest + debuggable.)
+3. **Sentiment extractor sensitivity:** own-authored messages only, or also "X seems stretched" said *about* the person by others? (Recommend: own-authored only for v1 — lower false-positive risk.)
