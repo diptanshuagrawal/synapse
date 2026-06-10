@@ -90,13 +90,14 @@ Run `bin/install-agents.sh` — it materialises the generic plist templates in `
 
 A separate scheduler: Claude Code **routines** (scheduled remote agents) live in `~/.claude/scheduled-tasks/<id>/SKILL.md` and are registered through the scheduled-tasks MCP, not launchd. Their templates + cron manifest are committed under `scheduled-tasks/` (`routines.yaml` holds the cron expression + enabled flag — those aren't in SKILL.md).
 
-Bootstrap a new machine with `bin/install-routines.sh`:
+The Slack channel + MCP id the routines need are config, not hardcoded: set `slack.standup_channel` and `slack.mcp_server` in `config/sources.yaml` (gitignored; see `config/sources.example.yaml` for the keys). Then bootstrap a new machine with:
 
 ```bash
-SLACK_MCP_SERVER=<id> STANDUP_CHANNEL=<channel> bin/install-routines.sh
+bin/install-routines.sh                                  # reads config/sources.yaml
+STANDUP_CHANNEL=<id> SLACK_MCP_SERVER=<id> bin/install-routines.sh   # one-off env override
 ```
 
-It materialises the templated SKILL.md files (substituting `__REPO__`/`__HOME__` + the env vars; a routine whose `needs` env var is unset is skipped, never blanked) and prints the `create_scheduled_task` payloads for Claude to register via MCP (a shell script can't call MCP). Both `cron-status.sh` and `dashboard.py` show a **ROUTINES** section with each routine's cadence, last run, and next fire — read from the app's `scheduled-tasks.json` registry via `bin/_routines.py`.
+It materialises the templated SKILL.md files (substituting `__REPO__`/`__HOME__` + the config-resolved channel/MCP id; a routine whose `needs` value is unset is skipped, never blanked) and prints the `create_scheduled_task` payloads for Claude to register via MCP (a shell script can't call MCP). Both `cron-status.sh` and `dashboard.py` show a **ROUTINES** section with each routine's cadence, last run, and next fire — read from the app's `scheduled-tasks.json` registry via `bin/_routines.py`.
 
 **Channel yaml schema (`config/slack_channels.yaml`):**
 

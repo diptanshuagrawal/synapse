@@ -82,6 +82,14 @@ def coowner_team() -> str:
 def slack_workspace() -> str:
     return _get("slack.workspace", env="SLACK_WORKSPACE", default="example")
 
+def standup_channel() -> str:
+    """Slack channel id the daily-standup routine posts to. Empty if unset."""
+    return _get("slack.standup_channel", env="STANDUP_CHANNEL", default="")
+
+def slack_mcp_server() -> str:
+    """Slack MCP server id (the hash in mcp__<id>__slack_*). Empty if unset."""
+    return _get("slack.mcp_server", env="SLACK_MCP_SERVER", default="")
+
 def org_match_tokens() -> list[str]:
     """Org-specific lowercase shorthands used to match channel/slug/ticket names
     (e.g. the jira-key + service abbreviations). Generic by default."""

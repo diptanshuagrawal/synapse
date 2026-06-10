@@ -24,6 +24,8 @@ teams:
 slack:
   workspace: "example"
   mom_channels: ["C0EXAMPLE"]
+  standup_channel: "C0EXAMPLE"   # daily-standup routine target (env override: STANDUP_CHANNEL)
+  mcp_server: "example-mcp-id"   # Slack MCP server id, the hash in mcp__<id>__slack_* (env override: SLACK_MCP_SERVER)
 launchd:
   prefix: "com.example"
 match:

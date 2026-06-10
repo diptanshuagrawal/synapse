@@ -8,15 +8,20 @@
 # and then PRINTS the create_scheduled_task registration payloads from
 # scheduled-tasks/routines.yaml for Claude to register.
 #
-# A routine whose `needs` env var is unset is SKIPPED (not written) so an
+# A routine whose `needs` value is unset is SKIPPED (not written) so an
 # unattended re-run can never blank out a live routine's channel/MCP id.
 #
-# Usage:
-#   SLACK_MCP_SERVER=<server-id> STANDUP_CHANNEL=<channel-id> bin/install-routines.sh
+# Config-first: the Slack channel + MCP id are read from config/sources.yaml
+# (slack.standup_channel / slack.mcp_server) via derive/sources_config. Env vars
+# override the config when set — no need to pass them once sources.yaml is filled.
 #
-# Env vars (only needed by the routines that reference them — see routines.yaml `needs`):
-#   SLACK_MCP_SERVER  — the Slack MCP server id (the hash in mcp__<id>__slack_*)
-#   STANDUP_CHANNEL   — Slack channel id the daily standup posts to
+# Usage:
+#   bin/install-routines.sh                                  # values from config/sources.yaml
+#   STANDUP_CHANNEL=<id> SLACK_MCP_SERVER=<id> bin/install-routines.sh   # one-off override
+#
+# Env overrides (see config/sources.example.yaml for the config keys):
+#   STANDUP_CHANNEL   — overrides slack.standup_channel
+#   SLACK_MCP_SERVER  — overrides slack.mcp_server
 #   ROUTINES_DST      — override the install dir (default ~/.claude/scheduled-tasks); for dry-runs
 set -euo pipefail
 
@@ -30,24 +35,27 @@ PY="$WORKCTX/.venv/bin/python"
 [[ -f "$MANIFEST" ]] || { echo "ERROR: manifest not found: $MANIFEST" >&2; exit 1; }
 
 REPO_ROOT="$REPO_ROOT" HOME_DIR="$HOME" SRC="$SRC" DST="$DST" \
-SLACK_MCP="${SLACK_MCP_SERVER:-}" STANDUP_CHANNEL="${STANDUP_CHANNEL:-}" \
+PYTHONPATH="$WORKCTX${PYTHONPATH:+:$PYTHONPATH}" \
 "$PY" - "$MANIFEST" <<'PYEOF'
 import json, os, sys
 from pathlib import Path
 import yaml
+from derive.sources_config import standup_channel, slack_mcp_server
 
 manifest = sys.argv[1]
 repo_root = os.environ["REPO_ROOT"]
 home_dir  = os.environ["HOME_DIR"]
 src = Path(os.environ["SRC"])
 dst = Path(os.environ["DST"])
+# Channel + MCP id come from config/sources.yaml (env overrides honoured inside
+# these accessors). Empty when neither config nor env set → the `needs` gate skips.
 subs = {
     "__REPO__": repo_root,
     "__HOME__": home_dir,
-    "__SLACK_MCP__": os.environ.get("SLACK_MCP", ""),
-    "__STANDUP_CHANNEL__": os.environ.get("STANDUP_CHANNEL", ""),
+    "__SLACK_MCP__": slack_mcp_server(),
+    "__STANDUP_CHANNEL__": standup_channel(),
 }
-# Which env vars back each `needs` token.
+# Which resolved value backs each `needs` token.
 NEED_OK = {
     "slack_mcp": bool(subs["__SLACK_MCP__"]),
     "standup_channel": bool(subs["__STANDUP_CHANNEL__"]),
