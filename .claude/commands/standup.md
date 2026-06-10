@@ -57,8 +57,15 @@ It emits, per roster member, in a single pass:
 - window jira (with **assignee-at-close resolved** + `OWN`/`byActor` tag — credit rule §3 baked in),
 - window github + confluence (with page titles),
 - current BOARD state (inprog / todo / open-CMR, Epics already filtered, §3b),
-- **Slack authored in window** + **@-asks over 7d** with an `answered_by_member` flag
-  (the §4b heavy scan, pre-computed).
+- **Slack authored in window** + **@-asks over the past 2 days** with an
+  `answered_by_member` flag (the §4b heavy scan, pre-computed).
+
+It also emits an **`OWNER FOCUS`** block at the end (always — even on a `team` run, the
+owner is the audience): the manager's own **reply-pending @-asks** (mentions of the owner
+unanswered by them in-thread over the past 2 days), **owner board items needing a decision** (open CMRs
+to approve/execute + In-Review assigned to them), and **`DAY SIGNALS`** (release/CMR
+transitions in the window + beta/prod deploy slack callouts). This block feeds the two
+owner-facing sections §7b (Needs your attention) and §7c (For your day).
 
 Read its output, then go straight to formatting (§7). Only fall back to ad-hoc SQL /
 `mcp__plugin_context-mode` queries for the ENRICHMENT clause (§8) — the one substantive
@@ -89,10 +96,12 @@ The team flips tickets To-Do→Done in batches at standup; a `status_change` eve
 `actor` is whoever **moved** the board, NOT who did the work, and its `assignee` field
 is often blank. **Credit by assigned-at-close, not the transitioner.**
 
-- "Done" / "In progress" for a person = tickets where THEY are the **assignee**
-  (resolve via the latest non-null `assignee` for that subject:
-  `SELECT assignee FROM events WHERE subject=? AND assignee<>'' ORDER BY ts DESC LIMIT 1`)
-  + PRs they **authored** (merged/opened) + commits.
+- "Done" / "In progress" for a person = tickets where THEY are the **owner** (the
+  dev — see §3c for what that means by status) + PRs they **authored** (merged/opened)
+  + commits. `bin/standup_gather.py` resolves the owner via the shared engine
+  `derive/jira_metrics.infer_all_ticket_roles` (replays assignment-event titles, NOT
+  the `assignee` column — which is null on status/assignment rows). Do NOT hand-roll a
+  "latest assignee" query: the column is empty on transitions, so it credits no one.
 - A member moving someone else's ticket = clerical. Either drop it, or note once at
   team level ("<member> ran the board — moved 4 tickets, not their work"). NEVER render
   a moved-but-not-owned ticket as that person's Done. (Validated bug: several tickets a
@@ -103,18 +112,18 @@ is often blank. **Credit by assigned-at-close, not the transitioner.**
 
 "In progress" is a *state*, not an event — a ticket can sit In-Progress/In-Review
 assigned to someone with no status-change in the window. So DON'T derive it from
-window events only (that misses them). For each member, query the current board:
-tickets where they are the **assignee** and the ticket's LATEST status (across all
-time) ∈ {In Progress, In Review, In Development}:
+window events only (that misses them). `bin/standup_gather.py` computes the current
+board for every member in one pass via `derive/jira_metrics.infer_all_ticket_roles`,
+which returns per-subject `TicketRoles(state, dev, reviewer, current_assignee)` keyed
+by canonical handle. The gather buckets each member's tickets from those roles:
 
-```sql
-SELECT subject, latest_status FROM (
-  SELECT e.subject,
-    (SELECT to_status FROM events x WHERE x.subject=e.subject AND x.to_status IS NOT NULL
-     ORDER BY x.ts DESC LIMIT 1) latest_status
-  FROM events e WHERE e.assignee = :member_identity GROUP BY e.subject
-) WHERE latest_status IN ('In Progress','In Review','In Development');
-```
+- `state == in_progress`                         → **In progress** (owner = the dev)
+- `state in (in_review_active, …_awaiting_reviewer)` → **In review** (own work; reviewer shown or "awaiting reviewer") — see §3c
+- the member is a ticket's `reviewer`            → **Reviewing** (someone else's work)
+- `state == other` and status ∈ To-Do set        → **Up next**
+
+`current_status` falls back to the `issue_created` status snapshot for never-
+transitioned To-Do tickets (no `status_change` rows), so backlog items aren't lost.
 
 Always list these under "In progress" even if untouched today. (Validated: a member
 had two tickets In-Progress on the board with no event in the window — the window-only
@@ -131,6 +140,38 @@ merged/closed.
   person has more, summarise ("+N more on the epic"). Up-next: top 3-5,
   sprint-committed first — never the full backlog (some members have ~13 To-Do, the owner dozens).
 
+## 3c. DEV vs REVIEWER — interpret the assignee by status (critical)
+
+The assignee means different things depending on status. Read it logically, don't
+just credit "latest assignee":
+
+- **In Progress / In Development** → the assignee is the **dev doing the work**. Credit
+  the ticket to them.
+- **In Review** → two cases:
+  - **assignee unchanged** (same person who had it In Progress) → that dev **finished
+    their part; it's waiting on a reviewer**. Render under the dev as
+    *"<ticket> — in review, awaiting reviewer"*.
+  - **assignee changed to a new person** → the new person is the **reviewer**; the
+    **dev who had it In Progress keeps the credit**. Render the *work* under the dev
+    (*"in review, <Reviewer> reviewing"*) AND a *review task* under the reviewer
+    (*"reviewing <Dev>'s <ticket>"*). When review is done the reviewer moves it back
+    to the dev — so a ticket bouncing In-Review→In-Progress is the dev's again.
+
+This rule is implemented once in `derive/jira_metrics.infer_ticket_roles` /
+`infer_all_ticket_roles` (single source of truth; `/ask`, `/retro`, `/dev-style` use
+it too). The gather emits the resulting lines: `IP`, `IR … (reviewer=… | awaiting
+reviewer)`, and `REVIEWING <ticket> (dev=…)`. For an In-Progress ticket reassigned
+mid-flight, the **current** holder is the dev (whoever is building it now).
+
+So the "work owner" = **the assignee while the ticket was In Progress** (the dev), NOT
+the current in-review assignee. `standup_gather.py` computes this: it prints
+`owner=<dev>` on window rows, an `IR … (reviewer=<name> | awaiting reviewer)` line for
+the dev's in-review work, and a `REVIEWING <ticket> (dev=<name>)` line under whoever is
+reviewing someone else's ticket. Render those exactly — never put a ticket on the
+reviewer's plate as their own Done/In-progress, and never drop the dev's credit because
+a reviewer is the current assignee. (CMRs have no dev/review semantics — keep crediting
+them by latest assignee.)
+
 ## 4. PRIMARY WORKSTREAM — show domain even on a quiet day
 
 Each member has an owning domain (e.g. one member owns IFT, another TDS). Derive it from
@@ -142,7 +183,7 @@ If they genuinely logged nothing, say so — do not fabricate from transitions.
 ## 4b. SLACK DEEP SCAN — mandatory per-member pass (heavy)
 
 Slack is a FIRST-CLASS source here, not just enrichment. For every active roster
-member, run a deliberate Slack scan over the window (and ~7d back for open asks/
+member, run a deliberate Slack scan over the window (and ~2 days back for open asks/
 promises) and fold the results into Done / In-progress / Up-next / Blockers. Never
 skip this because Jira/PRs already produced lines — Slack catches work that never
 becomes a ticket (debugging, prod support, design back-and-forth, helping teammates).
@@ -255,6 +296,50 @@ Then at the END, `## Team summary`:
 
 For `me` / `<person>`: just their section.
 
+## 7b. `## ⚠️ Needs your attention` — the owner's own action queue (team scope)
+
+A dedicated owner-facing section, rendered **at the very top of the `team` digest**
+(above the per-person sections — it's what the manager reads first), AND repeated in the
+chat reply before anything else. Source = the gather's `OWNER FOCUS` block + escalations
+already surfaced in the per-member scan. This is *only* things **the owner must personally
+act on or decide** — not the team's work. Triage and rank; do not dump the raw list.
+
+Pull together, most-urgent-first:
+- **Your reply is pending** — `OWNER @-asks` where the owner is mentioned and hasn't
+  replied in-thread. Keep the ones that are a real ask of *him* (decision, opinion, join a
+  call, confirm). Drop pure-cc / FYI mentions and asks clearly aimed at someone else in the
+  same ping. Lead with what's being asked + who's waiting + how long it's sat.
+- **Approvals pending on you** — open CMRs awaiting the owner's approval/execution, and
+  any "kindly approve the CMR @owner" slack asks. CMR approvals gate prod rectifications —
+  treat as high priority.
+- **Reviews awaiting you** — PRDs / TRDs / API contracts shared for the owner's review
+  (slack "review this @owner" + In-Review items assigned to him).
+- **Decisions / escalations** — team blockers from the Team summary that need a *manager*
+  call (timeline crunch, ownership gaps, unowned incidents), framed as the decision he owns.
+
+Each line: one-sentence what + who's waiting + age, then the clickable link
+(`[thread](…)` / `[EX-NNNN](…)`). Rank by (prod/customer impact × staleness). If the queue
+is genuinely empty, say `Nothing pending your action.` — never pad.
+
+## 7c. `## 📋 For your day` — info dump (team scope)
+
+A second owner-facing section, rendered right after §7b (and after it in the chat reply).
+This is **situational awareness** — important things to *know* today, even if no action is
+needed. Synthesise from the gather's `DAY SIGNALS` + the per-member blocks; group as short
+bullets, not prose:
+- **Shipping / rolling out** — releases, beta cuts, prod deploys happening or just done
+  (DAY SIGNALS release/CMR transitions + deploy callouts), with the owner of each.
+- **Prod / ops watch** — live incidents, TB-diffs, alert bursts, stuck-txn / 5xx threads
+  the team is chasing (esp. on the on-call).
+- **Timelines / dates called out** — go-live dates, beta deadlines, cycle-day callouts
+  surfaced in slack this window.
+- **Team status** — who's out (leave) + who's on-call, one line.
+- **Cross-team** — notable asks/decisions from sister teams touching this team's surface.
+
+Keep it tight (≤ ~8 bullets). Each item carries its link. This section is FYI — never
+duplicate the action items from §7b here; if something needs the owner to act, it belongs
+in §7b, not here.
+
 ## 8. Describe every item — never a bare ID, enrich from body + slack
 
 - Lead each item with a plain-English phrase of WHAT it is (reworded from the ticket's
@@ -299,15 +384,19 @@ digest is a snapshot, not a log; stale `-2`/`-3` copies just confuse). Read-only
 sources. (If you ever need to keep a prior run, copy it out manually first.)
 
 - **`team` scope** writes BOTH:
-  - the combined digest → `management/standup/<date>/team.md` (all 7 + team summary), AND
+  - the combined digest → `management/standup/<date>/team.md` — **`⚠️ Needs your
+    attention` (§7b) and `📋 For your day` (§7c) at the TOP**, then the 7 per-person
+    sections, then `## Team summary`. AND
   - one **per-person file** per report → `management/standup/<date>/<canonical>.md`
     (that person's section only — its own header + the four lines / on-call / leave).
     So each report's update is an individual, shareable md (drop into a 1:1, ping the
-    person, track over time).
+    person, track over time). The owner sections (§7b/§7c) live ONLY in `team.md`, not in
+    the per-person files.
 - **`me` / `<person>` scope** writes just `management/standup/<date>/<canonical>.md`.
 
 Each file is self-contained markdown (own title + date + the rendered section). The
-chat reply shows the team digest and ends with `**Saved to:** <dir>` listing the files.
+chat reply **leads with `⚠️ Needs your attention` (§7b) and `📋 For your day` (§7c)**,
+then the team digest, and ends with `**Saved to:** <dir>` listing the files.
 
 ## Hard constraints
 
@@ -315,4 +404,7 @@ chat reply shows the team digest and ends with `**Saved to:** <dir>` listing the
 - Credit by assignee/author, never the transitioner.
 - On-leave members badged, not expected to report; on-call member badged, incident work expected.
 - Never a bare ticket ID; describe + enrich + link.
+- `team` digest leads with `⚠️ Needs your attention` (§7b) + `📋 For your day` (§7c);
+  §7b = owner's own action queue only (reply-pending / approvals / reviews / decisions),
+  §7c = FYI awareness only — never duplicate action items into §7c. Empty §7b says so, no padding.
 - Read-only — no writes to events.db, Confluence, Jira, Opsgenie.

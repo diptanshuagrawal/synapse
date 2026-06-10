@@ -42,6 +42,11 @@ if [ -n "$PYF" ]; then
   else echo "   ok"; fi
 fi
 
+echo "==> selftests"
+if ! "$REPO/bin/run-selftests.sh" >/tmp/preflight_st.txt 2>&1; then
+  cat /tmp/preflight_st.txt; fail=1
+else echo "   ok"; fi
+
 if [ "$fail" -ne 0 ]; then echo ""; echo "preflight: FAILED — fix above; not pushing."; exit 2; fi
 echo ""; echo "preflight: PASS"
 
