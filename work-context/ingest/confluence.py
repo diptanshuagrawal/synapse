@@ -39,7 +39,7 @@ from ingest.common import (
     write_cursor,
     write_success_date,
 )
-from derive.sources_config import atlassian_host
+from derive.sources_config import atlassian_host, owner_email
 
 ROOT = Path(__file__).parent.parent
 
@@ -74,6 +74,19 @@ class ConfluenceClient:
             resp = self.session.get(f"{self.base}{path}", params=params, timeout=30)
         resp.raise_for_status()
         return resp.json()
+
+    def whoami(self) -> Optional[str]:
+        """Return the authenticated account's id/email (/rest/api/user/current), or None.
+
+        Guards the silent failure mode where a wrong-but-well-formed email + valid
+        token resolves to no/empty identity and quietly ingests nothing. If this
+        returns None, auth did not resolve to a real user — abort rather than freeze.
+        """
+        try:
+            u = self.get("/rest/api/user/current") or {}
+            return u.get("email") or u.get("accountId")
+        except Exception:
+            return None
 
     def get_page_title(self, page_id: str) -> str:
         """Fetch (and cache for run) page title. Returns empty string on 404/error."""
@@ -281,11 +294,18 @@ def main() -> None:
     parser.add_argument("--reset-cursor", action="store_true")
     args = parser.parse_args()
 
-    email = os.environ.get("ATLASSIAN_EMAIL")
+    # Email is config-driven (org.owner_email in sources.yaml), with an optional
+    # ATLASSIAN_EMAIL env override. Single source of truth — no separate secrets
+    # file to go missing. The /user/current identity check below rejects a placeholder.
+    email = os.environ.get("ATLASSIAN_EMAIL") or owner_email()
     token = os.environ.get("ATLASSIAN_TOKEN")
     domain = os.environ.get("JIRA_DOMAIN", DEFAULT_DOMAIN)
-    if not email or not token:
-        print("ERROR: ATLASSIAN_EMAIL and ATLASSIAN_TOKEN must be set", file=sys.stderr)
+    if not token:
+        print("ERROR: ATLASSIAN_TOKEN must be set", file=sys.stderr)
+        sys.exit(1)
+    if not email or email == "owner@example.com":
+        print("ERROR: owner email unresolved — set org.owner_email in config/sources.yaml "
+              "(or ATLASSIAN_EMAIL)", file=sys.stderr)
         sys.exit(1)
 
     log = setup_logging()
@@ -302,6 +322,14 @@ def main() -> None:
 
     conn = get_db()
     client = ConfluenceClient(domain, email, token)
+
+    # Verify auth resolves to a real user. A wrong email + valid token can return
+    # 200-with-empty-results instead of 401, silently freezing the data. Abort loud.
+    if not client.whoami():
+        log.error("Auth check failed — /user/current returned no identity for %s. "
+                  "Aborting (refusing to ingest as an unverified identity).", email)
+        sys.exit(3)
+
     total_new = 0
     total_dup = 0
     n_failed = 0

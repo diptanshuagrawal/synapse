@@ -159,7 +159,40 @@ def main():
     out = []
     out.append(f"# STANDUP GATHER  date={date_str}  scope={scope}  windowUTC=[{W0} .. {W1})")
     out.append(f"# roster(reports)={members}")
-    out.append("# RULES: credit work to OWNER=dev (assignee while In Progress), NOT the transitioner or reviewer. IR=own work in review (reviewer shown); REVIEWING=member reviewing another dev's ticket. CMR by latest assignee. Cap inprog~5, todo~5. Exclude Epics. Enrich+link in formatting.\n")
+    out.append("# RULES: credit work to OWNER=dev (assignee while In Progress), NOT the transitioner or reviewer. IR=own work in review (reviewer shown); REVIEWING=member reviewing another dev's ticket. CMR by latest assignee. Cap inprog~5, todo~5. Exclude Epics. Enrich+link in formatting.")
+
+    # DATA FRESHNESS — guard against silent-stale ingest. If a source's newest event
+    # predates the window end, the digest for this day is built on incomplete data;
+    # the skill MUST surface this rather than report empty work as "quiet".
+    def _to_dt(ts):
+        if ts is None:
+            return None
+        s = str(ts)
+        try:
+            if s.replace(".", "", 1).isdigit():       # slack epoch float
+                return datetime.datetime.fromtimestamp(float(s), datetime.timezone.utc).replace(tzinfo=None)
+            return datetime.datetime.strptime(s[:19], "%Y-%m-%dT%H:%M:%S")
+        except Exception:
+            return None
+    w1_dt = datetime.datetime.strptime(W1, "%Y-%m-%dT%H:%M:%S")
+    now_dt = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    fresh_rows, stale_any = [], False
+    for src, in [("jira",), ("confluence",), ("github",), ("slack",)]:
+        row = cur.execute("SELECT MAX(ts) FROM events WHERE source=?", (src,)).fetchone()
+        newest = _to_dt(row[0] if row else None)
+        if newest is None:
+            fresh_rows.append(f"  {src:11} newest=NONE  ⚠️ NO DATA"); stale_any = True
+            continue
+        age_h = (now_dt - newest).total_seconds() / 3600.0
+        stale = newest < w1_dt
+        if stale:
+            stale_any = True
+        fresh_rows.append(
+            f"  {src:11} newest={newest.strftime('%Y-%m-%dT%H:%M')}Z  age={age_h:.0f}h"
+            + ("  ⚠️ STALE — before window end; data incomplete for this day" if stale else "  ok"))
+    out.append(f"# DATA FRESHNESS (vs window end {W1}Z){'  ⚠️ STALE SOURCES PRESENT' if stale_any else ''}")
+    out.extend(fresh_rows)
+    out.append("")
 
     for m in members:
         em, sl, jid, gh = emails[m], slids[m], jids[m], ghs[m]

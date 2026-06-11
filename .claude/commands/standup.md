@@ -75,6 +75,20 @@ Run Opsgenie (§6) and that's it. Two tool calls (gather + on-call), not ten.
 If the script errors or the roster/identity model changed, fall back to the manual
 queries below.
 
+**DATA FRESHNESS GATE (mandatory — read the gather's `# DATA FRESHNESS` block first).**
+The gather emits a per-source freshness header: the newest event ts per source and a
+`⚠️ STALE` flag when a source's newest event predates the window end. A stale source
+means the day is built on incomplete data — that is exactly how a real ship gets
+silently reported as "quiet" (validated: a 2-day Atlassian ingest stall made an entire
+standup wrong). So:
+- If the header shows `⚠️ STALE SOURCES PRESENT`, **do not proceed silently.** Lead the
+  digest (and the chat reply) with a top banner: `⚠️ Data freshness — <source> ingest is
+  stale (newest <ts>, ~<N>h old); this digest may be incomplete. Fix the ingest and
+  re-run.` Name each stale source.
+- Never render an empty/quiet section for a person when the source feeding it is stale —
+  say "unknown (ingest stale)", not "no tracked activity".
+- If all sources are `ok`, proceed normally (no banner).
+
 **FIELD SOURCING — do NOT use the window for everything.** Only "Done" is a
 window-bounded event; the rest are CURRENT STATE and must be queried as state,
 else they go silently empty on a quiet day:
