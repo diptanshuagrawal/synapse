@@ -55,6 +55,26 @@ def _truncate(s: Optional[str], cap: int) -> str:
 
 _MIN_USEFUL_CONTENT = 30  # chars of real content (after stripping title) needed to bother embedding
 
+# Structural-noise slack roots — channel housekeeping + availability notices.
+# These embed into tight junk clusters (near-identical text; ~2.3k threads as
+# of 2026-06) that pollute HDBSCAN geometry, waste chat-labeling effort, and
+# surface in /ask retrieval. Returning "" turns them into no_content: detect
+# skips them and they are never (re-)embedded.
+# Keep loosely in sync with ownership_corrections HR_OOO_PHRASES (that list
+# drives ownership noise→external; this one drives embeddability).
+_NOISE_ALWAYS = ("has joined the channel", "has left the channel")
+_NOISE_OOO = (
+    "out of office", "on leave", "on a leave", "planned leave", "annual leave",
+    "sick leave", "leave today", "half day", "day off", "on vacation",
+    "wfh", "work from home", "working from home",
+    "login late", "logging in late", "will login", "login by", "log in by",
+    "feeling unwell",
+)
+# Availability notices are short. Long threads that merely *mention* leave
+# (incident threads, handover discussions) must survive — guard on combined
+# length so only short notes are dropped.
+_NOISE_OOO_MAX_LEN = 400
+
 
 def _slack_content(conn: sqlite3.Connection, subject: str) -> str:
     """slack:CH:ts → parent + replies preview.
@@ -96,6 +116,14 @@ def _slack_content(conn: sqlite3.Connection, subject: str) -> str:
     combined = "\n".join(p for p in (title_text, parent_text, reply_text) if p).strip()
     if len(combined) < _MIN_USEFUL_CONTENT:
         return ""  # empty bot ping / channel-join / pure-emoji message — not worth embedding
+    # Structural noise — judge on the ROOT message only (title + parent), so a
+    # junk-looking root can't be rescued by reply volume, but a long real
+    # thread that mentions leave keeps its content via the length guard.
+    root_low = f"{title_text} {parent_text}".lower()
+    if any(p in root_low for p in _NOISE_ALWAYS):
+        return ""
+    if len(combined) < _NOISE_OOO_MAX_LEN and any(p in root_low for p in _NOISE_OOO):
+        return ""
     return combined
 
 
