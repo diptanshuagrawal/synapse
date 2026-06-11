@@ -369,12 +369,18 @@ def db_stats() -> dict:
         # Fallback rows = subjects awaiting /rollup chat classification.
         cur.execute("SELECT source, COUNT(*) FROM subject_summary GROUP BY source")
         cls_breakdown = dict(cur.fetchall())
+        # Newest event ts per source — the freshness signal. A green "ran today"
+        # marker can still sit on stale data if the ingest authed but fetched
+        # nothing (validated: placeholder-email auth → 200-empty → 2-day stall).
+        cur.execute("SELECT source, MAX(ts) FROM events GROUP BY source")
+        newest = dict(cur.fetchall())
         conn.close()
         return {
             "by_source": by_source,
             "by_type": by_type,
             "recent_24h": recent,
             "classification": cls_breakdown,
+            "newest_ts": newest,
         }
     except Exception as e:
         return {"error": str(e)}
@@ -1206,7 +1212,33 @@ stats      = db_stats()
 db_by_src  = stats.get("by_source", {})
 db_by_type = stats.get("by_type", {})
 db_recent  = stats.get("recent_24h", {})
+db_newest  = stats.get("newest_ts", {})
 db_total   = sum(db_by_src.values())
+
+
+def data_freshness(src: str):
+    """(age_hours, label, is_stale) for a source's newest event, or None.
+
+    Stale threshold: 26h for the daily Atlassian/github sources, 3h for slack
+    (near-real-time). Surfaces a green-marker-but-stale-data stall.
+    """
+    raw = db_newest.get(src)
+    if not raw:
+        return None
+    s = str(raw)
+    try:
+        if s.replace(".", "", 1).isdigit():       # slack epoch float
+            dt = datetime.fromtimestamp(float(s), tz=timezone.utc)
+        else:
+            dt = datetime.strptime(s[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+    age_s = (datetime.now(timezone.utc) - dt).total_seconds()
+    age = (f"{int(age_s // 60)}m" if age_s < 3600
+           else f"{int(age_s // 3600)}h" if age_s < 86400
+           else f"{int(age_s // 86400)}d")
+    threshold = 3 * 3600 if src == "slack" else 26 * 3600
+    return age_s / 3600.0, age, age_s > threshold
 
 # ─── header ──────────────────────────────────────────────────────────────────
 print()
@@ -1301,6 +1333,17 @@ for src in SOURCES:
     if s_rec:
         rec_str = "  ".join(f"{et}:{n}" for et, n in s_rec[:5])
         print(kv("24h",     f"{GREEN}{rec_str}{RESET}"))
+
+    # Data freshness — newest event age. Catches a green "ran today" marker that
+    # actually sits on stale data (ingest authed but fetched nothing).
+    fr = data_freshness(src)
+    if fr:
+        _, age_lbl, is_stale = fr
+        if is_stale:
+            print(kv("data", f"{RED}⚠ STALE — newest event {age_lbl} old; ingest may be "
+                             f"authing but fetching nothing{RESET}"))
+        else:
+            print(kv("data", f"{GREEN}fresh{RESET}  {DIM}(newest {age_lbl} ago){RESET}"))
 
     # ── attribution validate cache (github/jira/confluence) ────────────────
     # Mirrors the slack validate render block. Slack has its own bigger

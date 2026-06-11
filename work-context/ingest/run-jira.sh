@@ -32,12 +32,16 @@ fi
 export ATLASSIAN_TOKEN
 ATLASSIAN_TOKEN="$(cat "$TOKEN_FILE")"
 
-export ATLASSIAN_EMAIL
-if [[ -f "$EMAIL_FILE" ]]; then
-  ATLASSIAN_EMAIL="$(cat "$EMAIL_FILE")"
-else
-  ATLASSIAN_EMAIL="owner@example.com"
+# Fail loud on a missing email file. A wrong-but-well-formed email + valid token
+# makes Jira return HTTP 200 with an EMPTY issue list (not a 401), so a placeholder
+# fallback silently ingests nothing while the run still "succeeds" — data freezes
+# with no error. Refuse to auth as a placeholder.
+if [[ ! -f "$EMAIL_FILE" ]]; then
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ERROR email file not found: $EMAIL_FILE (refusing placeholder auth)" >> "$ROOT/logs/ingest.log"
+  exit 1
 fi
+export ATLASSIAN_EMAIL
+ATLASSIAN_EMAIL="$(cat "$EMAIL_FILE")"
 
 mkdir -p "$ROOT/state"
 set +e

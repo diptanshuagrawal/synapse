@@ -75,6 +75,19 @@ class ConfluenceClient:
         resp.raise_for_status()
         return resp.json()
 
+    def whoami(self) -> Optional[str]:
+        """Return the authenticated account's id/email (/rest/api/user/current), or None.
+
+        Guards the silent failure mode where a wrong-but-well-formed email + valid
+        token resolves to no/empty identity and quietly ingests nothing. If this
+        returns None, auth did not resolve to a real user — abort rather than freeze.
+        """
+        try:
+            u = self.get("/rest/api/user/current") or {}
+            return u.get("email") or u.get("accountId")
+        except Exception:
+            return None
+
     def get_page_title(self, page_id: str) -> str:
         """Fetch (and cache for run) page title. Returns empty string on 404/error."""
         if not page_id:
@@ -302,6 +315,14 @@ def main() -> None:
 
     conn = get_db()
     client = ConfluenceClient(domain, email, token)
+
+    # Verify auth resolves to a real user. A wrong email + valid token can return
+    # 200-with-empty-results instead of 401, silently freezing the data. Abort loud.
+    if not client.whoami():
+        log.error("Auth check failed — /user/current returned no identity for %s. "
+                  "Aborting (refusing to ingest as an unverified identity).", email)
+        sys.exit(3)
+
     total_new = 0
     total_dup = 0
     n_failed = 0
