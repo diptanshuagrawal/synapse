@@ -19,9 +19,14 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # py<3.9
+    ZoneInfo = None  # type: ignore
 
 import requests
 
@@ -40,7 +45,7 @@ from derive.identity_signals import (
     init as init_identity_signals,
     record_user_dict,
 )
-from derive.sources_config import atlassian_host, jira_project_keys
+from derive.sources_config import atlassian_host, jira_project_keys, owner_email
 
 ROOT = Path(__file__).parent.parent
 
@@ -89,6 +94,19 @@ class JiraClient:
             resp = self.session.post(f"{self.base}{path}", json=body, timeout=30)
         resp.raise_for_status()
         return resp.json()
+
+    def whoami(self) -> Optional[str]:
+        """Return the email of the AUTHENTICATED account (/myself), or None.
+
+        Guards the silent-empty-200 failure mode: a wrong-but-well-formed email
+        + a valid token does NOT 401 — Jira returns 200 with an empty issue list,
+        so the ingest "succeeds" while fetching nothing. Verifying the resolved
+        identity at startup catches that before it can freeze the data.
+        """
+        try:
+            return (self.get("/rest/api/3/myself") or {}).get("emailAddress")
+        except Exception:
+            return None
 
     def search_issues(self, jql: str, fields: list[str], expand: list[str]):
         """Yield issues from /rest/api/3/search/jql; fall back to legacy /search."""
@@ -383,20 +401,41 @@ def normalize_comment(domain: str, key: str, comment: dict, epic_key: str = "") 
 
 # ── per-project ingest ───────────────────────────────────────────────────────
 
+def _jql_updated_floor(since: str) -> Optional[str]:
+    """Format an ISO-UTC cursor as a JQL `updated >=` floor in the ACCOUNT timezone.
+
+    Jira evaluates unqualified JQL datetimes in the requesting account's timezone,
+    NOT UTC. Feeding a UTC value as a naive string skews the window by the account
+    offset (here IST, +5:30). We convert to the account TZ (env JIRA_ACCOUNT_TZ,
+    default Asia/Kolkata) and subtract a small overlap margin so any residual skew
+    over-includes rather than skips — duplicates are deduped on store.
+    """
+    try:
+        dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    dt -= timedelta(minutes=15)  # overlap margin; dedup absorbs it
+    tz_name = os.environ.get("JIRA_ACCOUNT_TZ", "Asia/Kolkata")
+    if ZoneInfo is not None:
+        try:
+            dt = dt.astimezone(ZoneInfo(tz_name))
+        except Exception:
+            pass
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
 def ingest_project(client: JiraClient, domain: str, project: str, since: Optional[str],
-                   conn, dry_run: bool, log: logging.Logger) -> tuple[int, int]:
+                   conn, dry_run: bool, log: logging.Logger) -> tuple[int, int, Optional[str]]:
     new_count = 0
     dup_count = 0
+    max_updated: Optional[str] = None
 
     # JQL: updated since cursor (or all if no cursor)
     jql = f"project = {project}"
     if since:
-        # Convert ISO Z → Jira format "yyyy-MM-dd HH:mm" (UTC)
-        try:
-            dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
-            jql += f' AND updated >= "{dt.strftime("%Y-%m-%d %H:%M")}"'
-        except ValueError:
-            pass
+        floor = _jql_updated_floor(since)
+        if floor:
+            jql += f' AND updated >= "{floor}"'
     jql += " ORDER BY updated ASC"
 
     log.info("Jira project=%s jql=%r", project, jql)
@@ -413,6 +452,12 @@ def ingest_project(client: JiraClient, domain: str, project: str, since: Optiona
         f = issue.get("fields", {})
         created_ts = _ts(f.get("created"))
         epic_key = get_epic_key(issue)
+
+        # Track the high-water `updated` so the cursor advances to real data seen,
+        # never to wall-clock now() (which turns an empty pull into a permanent gap).
+        upd = _ts(f.get("updated"))
+        if upd and (max_updated is None or upd > max_updated):
+            max_updated = upd
 
         # Capture identity signals from every user-shaped object on the issue.
         for u in (f.get("creator"), f.get("reporter"), f.get("assignee")):
@@ -461,7 +506,7 @@ def ingest_project(client: JiraClient, domain: str, project: str, since: Optiona
             log.warning("  Failed to fetch comments for %s: %s", key, e)
 
     log.info("  %d issues processed", issues_fetched)
-    return new_count, dup_count
+    return new_count, dup_count, max_updated
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -474,11 +519,18 @@ def main() -> None:
     parser.add_argument("--reset-cursor", action="store_true")
     args = parser.parse_args()
 
-    email = os.environ.get("ATLASSIAN_EMAIL")
+    # Email is config-driven (org.owner_email in sources.yaml), with an optional
+    # ATLASSIAN_EMAIL env override. Single source of truth — no separate secrets
+    # file to go missing. The /myself identity check below rejects a placeholder.
+    email = os.environ.get("ATLASSIAN_EMAIL") or owner_email()
     token = os.environ.get("ATLASSIAN_TOKEN")
     domain = os.environ.get("JIRA_DOMAIN", DEFAULT_DOMAIN)
-    if not email or not token:
-        print("ERROR: ATLASSIAN_EMAIL and ATLASSIAN_TOKEN must be set", file=sys.stderr)
+    if not token:
+        print("ERROR: ATLASSIAN_TOKEN must be set", file=sys.stderr)
+        sys.exit(1)
+    if not email or email == "owner@example.com":
+        print("ERROR: owner email unresolved — set org.owner_email in config/sources.yaml "
+              "(or ATLASSIAN_EMAIL)", file=sys.stderr)
         sys.exit(1)
 
     log = setup_logging()
@@ -486,7 +538,6 @@ def main() -> None:
     cursor_key = "jira"
 
     since = None if args.reset_cursor else read_cursor(cursor_key)
-    now_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     log.info("Jira ingest starting. domain=%s projects=%s since=%s dry_run=%s",
              domain, projects, since, args.dry_run)
@@ -494,16 +545,34 @@ def main() -> None:
     conn = get_db()
     init_identity_signals(conn)
     client = JiraClient(domain, email, token)
+
+    # Verify the token actually authenticates AS the configured email. A wrong
+    # email + valid token yields 200-with-empty-results (not 401), which would
+    # silently freeze the data. Abort loudly instead.
+    who = client.whoami()
+    if not who:
+        log.error("Auth check failed — /myself returned no identity for %s. "
+                  "Aborting (refusing to ingest as an unverified identity).", email)
+        sys.exit(3)
+    if who.lower() != email.lower():
+        log.error("Auth identity mismatch — configured %s but token authenticates "
+                  "as %s. Aborting.", email, who)
+        sys.exit(3)
+    log.info("Authenticated as %s", who)
+
     total_new = 0
     total_dup = 0
     n_failed = 0
     last_err = ""
+    max_seen: Optional[str] = None
 
     for project in projects:
         try:
-            new, dup = ingest_project(client, domain, project, since, conn, args.dry_run, log)
+            new, dup, mx = ingest_project(client, domain, project, since, conn, args.dry_run, log)
             total_new += new
             total_dup += dup
+            if mx and (max_seen is None or mx > max_seen):
+                max_seen = mx
             log.info("Project %s: %d new, %d duplicates", project, new, dup)
         except Exception as e:
             last_err = str(e)
@@ -511,10 +580,16 @@ def main() -> None:
             n_failed += 1
 
     if not args.dry_run and n_failed == 0:
-        write_cursor(cursor_key, now_ts)
+        # Advance the cursor to the newest `updated` actually seen — NOT wall-clock
+        # now(). An empty window leaves the cursor untouched so it re-queries next
+        # run instead of skipping a gap forever.
+        if max_seen and (since is None or max_seen > since):
+            write_cursor(cursor_key, max_seen)
+            log.info("Cursor advanced to %s (max updated seen)", max_seen)
+        else:
+            log.info("Cursor unchanged (since=%s) — no newer issues in window", since)
         if not args.reset_cursor:
             write_success_date("jira")
-        log.info("Cursor updated to %s", now_ts)
     elif n_failed == len(projects):
         log.error("Cursor NOT updated — ALL %d projects failed (last error: %s)",
                   len(projects), last_err[:200])

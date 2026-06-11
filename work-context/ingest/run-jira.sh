@@ -4,7 +4,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TOKEN_FILE="$HOME/.secrets/atlassian_token"
-EMAIL_FILE="$HOME/.secrets/atlassian_email"
 TODAY="$(date +%Y-%m-%d)"
 
 # Two ingest windows/day (see LaunchAgent schedule):
@@ -32,12 +31,11 @@ fi
 export ATLASSIAN_TOKEN
 ATLASSIAN_TOKEN="$(cat "$TOKEN_FILE")"
 
-export ATLASSIAN_EMAIL
-if [[ -f "$EMAIL_FILE" ]]; then
-  ATLASSIAN_EMAIL="$(cat "$EMAIL_FILE")"
-else
-  ATLASSIAN_EMAIL="owner@example.com"
-fi
+# Email is NOT read from a file — jira.py resolves it from config (org.owner_email
+# in sources.yaml). A wrong/placeholder email + valid token makes Jira return
+# HTTP 200 with an EMPTY list (not 401), which would silently freeze the data; the
+# ingester's /myself identity check rejects that. Set ATLASSIAN_EMAIL here only to
+# override config.
 
 mkdir -p "$ROOT/state"
 set +e
