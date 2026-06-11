@@ -4,7 +4,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TOKEN_FILE="$HOME/.secrets/atlassian_token"
-EMAIL_FILE="$HOME/.secrets/atlassian_email"
 TODAY="$(date +%Y-%m-%d)"
 
 # Two ingest windows/day (see LaunchAgent schedule):
@@ -32,16 +31,11 @@ fi
 export ATLASSIAN_TOKEN
 ATLASSIAN_TOKEN="$(cat "$TOKEN_FILE")"
 
-# Fail loud on a missing email file. A wrong-but-well-formed email + valid token
-# makes Jira return HTTP 200 with an EMPTY issue list (not a 401), so a placeholder
-# fallback silently ingests nothing while the run still "succeeds" — data freezes
-# with no error. Refuse to auth as a placeholder.
-if [[ ! -f "$EMAIL_FILE" ]]; then
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ERROR email file not found: $EMAIL_FILE (refusing placeholder auth)" >> "$ROOT/logs/ingest.log"
-  exit 1
-fi
-export ATLASSIAN_EMAIL
-ATLASSIAN_EMAIL="$(cat "$EMAIL_FILE")"
+# Email is NOT read from a file — jira.py resolves it from config (org.owner_email
+# in sources.yaml). A wrong/placeholder email + valid token makes Jira return
+# HTTP 200 with an EMPTY list (not 401), which would silently freeze the data; the
+# ingester's /myself identity check rejects that. Set ATLASSIAN_EMAIL here only to
+# override config.
 
 mkdir -p "$ROOT/state"
 set +e

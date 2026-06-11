@@ -39,7 +39,7 @@ from ingest.common import (
     write_cursor,
     write_success_date,
 )
-from derive.sources_config import atlassian_host
+from derive.sources_config import atlassian_host, owner_email
 
 ROOT = Path(__file__).parent.parent
 
@@ -294,11 +294,18 @@ def main() -> None:
     parser.add_argument("--reset-cursor", action="store_true")
     args = parser.parse_args()
 
-    email = os.environ.get("ATLASSIAN_EMAIL")
+    # Email is config-driven (org.owner_email in sources.yaml), with an optional
+    # ATLASSIAN_EMAIL env override. Single source of truth — no separate secrets
+    # file to go missing. The /user/current identity check below rejects a placeholder.
+    email = os.environ.get("ATLASSIAN_EMAIL") or owner_email()
     token = os.environ.get("ATLASSIAN_TOKEN")
     domain = os.environ.get("JIRA_DOMAIN", DEFAULT_DOMAIN)
-    if not email or not token:
-        print("ERROR: ATLASSIAN_EMAIL and ATLASSIAN_TOKEN must be set", file=sys.stderr)
+    if not token:
+        print("ERROR: ATLASSIAN_TOKEN must be set", file=sys.stderr)
+        sys.exit(1)
+    if not email or email == "owner@example.com":
+        print("ERROR: owner email unresolved — set org.owner_email in config/sources.yaml "
+              "(or ATLASSIAN_EMAIL)", file=sys.stderr)
         sys.exit(1)
 
     log = setup_logging()
