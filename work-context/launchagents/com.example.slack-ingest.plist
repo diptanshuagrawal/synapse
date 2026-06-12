@@ -11,7 +11,7 @@
         <string>__REPO__/work-context/ingest/run-slack.sh</string>
     </array>
 
-    <!-- every :00 and :30, hours 12–22 IST -->
+    <!-- every :00 and :30, 12:00–23:00 IST -->
     <!-- policy: every fire ingests (no daily-success gate — slack volume high) -->
     <key>StartCalendarInterval</key>
     <array>
@@ -37,6 +37,7 @@
         <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>30</integer></dict>
         <dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>0</integer></dict>
         <dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Hour</key><integer>23</integer><key>Minute</key><integer>0</integer></dict>
     </array>
 
     <key>StandardOutPath</key>
