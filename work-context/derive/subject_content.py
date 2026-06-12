@@ -12,7 +12,7 @@ the text we hand to the embedding model — designed to capture the semantics
 of the subject without being so long the model truncates aggressively.
 
 Caps (rough token budgets at ~4 chars/token):
-  slack:    parent body + first 5 reply previews + last 2 ~  3000 chars
+  slack:    parent body + first 5 reply previews            ~  3000 chars
   jira:     title + description + matterai-summary             ~ 2500 chars
   conf:     title + first ~2000 chars of body                  ~ 2000 chars
   github:   title + body + matterai-summary                    ~ 1500 chars
@@ -38,7 +38,6 @@ if str(_PKG_ROOT) not in sys.path:
 _MAX_SLACK_PARENT = 1500
 _MAX_SLACK_REPLY = 300
 _MAX_SLACK_REPLIES_FIRST = 5
-_MAX_SLACK_REPLIES_LAST = 2
 _MAX_JIRA = 2500
 _MAX_CONF = 2000
 _MAX_GH = 1500
@@ -55,13 +54,33 @@ def _truncate(s: Optional[str], cap: int) -> str:
 
 _MIN_USEFUL_CONTENT = 30  # chars of real content (after stripping title) needed to bother embedding
 
+# Bump whenever the content RECIPE changes (caps, noise rules, reply windows,
+# source priorities). The embed_content_cache in refresh_embeddings keys its
+# sha memos on this — a bump invalidates the cache so every subject's content
+# is recomputed once under the new recipe (detect-time cost only; re-embeds
+# happen only where the produced content actually differs).
+# v3 (2026-06): dropped trailing-2-replies window from slack content (drift
+#               damping); long threads re-embed once under the new recipe.
+CONTENT_RECIPE_VERSION = 3
+
+# ── NOISE POLICY MAP (three layers, three owners) ────────────────────────────
+# 1. CONTENT layer (this file): message-level junk (membership events, OOO
+#    notes) returns "" → never embedded. Operates per-subject on text.
+# 2. CHANNEL layer (derive/cluster_noise_filter.py): whole automation channels
+#    (alert/recon/digest, bot-ratio scored) excluded from CLUSTERING input via
+#    the cluster_excluded_channel snapshot. Vectors still exist; /ask search
+#    can still reach them.
+# 3. OWNERSHIP layer (derive/ownership_corrections.py): HR/OOO/admin noise
+#    routed to owned_by=external in subject_summary. Affects attribution only.
+# A subject can be caught by any layer independently; keep phrase lists
+# loosely aligned but do NOT merge the modules — each guards a different
+# stage with different blast radius.
+#
 # Structural-noise slack roots — channel housekeeping + availability notices.
 # These embed into tight junk clusters (near-identical text; ~2.3k threads as
 # of 2026-06) that pollute HDBSCAN geometry, waste chat-labeling effort, and
 # surface in /ask retrieval. Returning "" turns them into no_content: detect
 # skips them and they are never (re-)embedded.
-# Keep loosely in sync with ownership_corrections HR_OOO_PHRASES (that list
-# drives ownership noise→external; this one drives embeddability).
 _NOISE_ALWAYS = (
     "has joined the channel", "has left the channel",
     # Group-DM membership events use "conversation", not "channel" — missed in
@@ -117,11 +136,15 @@ def _slack_content(conn: sqlite3.Connection, subject: str) -> str:
 
     reply_text = ""
     if replies:
-        first = replies[:_MAX_SLACK_REPLIES_FIRST]
-        last = replies[-_MAX_SLACK_REPLIES_LAST:] if len(replies) > _MAX_SLACK_REPLIES_FIRST else []
+        # First N replies ONLY — deliberately NO trailing-replies window.
+        # Including the last-2 replies meant every new reply on a long
+        # thread changed the content sha → ~100-250 "drifted" re-embeds per
+        # refresh and wobbling cluster membership for chatty threads. The
+        # topical signal lives in the root + early replies; the tail adds
+        # churn, not meaning. (Recipe change — see CONTENT_RECIPE_VERSION.)
         seen = set()
         chosen = []
-        for r in first + last:
+        for r in replies[:_MAX_SLACK_REPLIES_FIRST]:
             key = r[0]
             if key in seen:
                 continue
