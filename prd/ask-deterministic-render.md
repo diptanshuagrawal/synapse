@@ -2,7 +2,7 @@
 
 **TL;DR:** Move the determinism boundary so scripts decide *what* to surface/cite/flag/rank; the model only phrases a fixed manifest, then a gate verifies every item landed. Same window → same facts. Parallel `ask-v2` only — wire live after owner approval.
 
-**Status:** DESIGN — not wired. Parallel version only.
+**Status:** WIRED into live `/ask person_range` on 2026-06-11. `ask-v2` retired.
 **Author:** generated 2026-06-09
 
 **Problem.** Two runs of the same `/ask` over the same window gave different narratives (missed a "getting overwhelmed" workload quote, different cited tickets, different framing). Scripts are deterministic; the *synthesis* (what to surface/cite/read/phrase) happens in the chat model and is stochastic.
@@ -155,11 +155,39 @@ prd/ask-deterministic-render.md   # this doc
 
 ---
 
-## 5. Wiring plan (DEFERRED — only after owner approves the parallel version)
+## 5. Wiring (DONE — 2026-06-11)
 
-1. Owner reviews `ask-v2` outputs side-by-side with live `/ask`.
-2. On approval: fold the manifest stage into `person_v3` (or keep as wrapper); replace `.claude/commands/ask.md` synthesis section with the manifest-render + verify-gate flow; retire `ask-v2`.
-3. Apply the same manifest pattern to `/retro` and `team_range` (they share the selection-is-stochastic weakness).
+What landed in live `/ask` (`.claude/commands/ask.md`):
+- **Step 0** added to the `person_range` dispatch: build the render manifest via
+  `derive/person_v4_manifest.py` FIRST; it runs `person_v3` + `person_deepread`
+  internally. The manifest is the selection authority — the model phrases it,
+  does not curate it. `person_v3`/`person_deepread` reframed as the manifest's
+  internal inputs + supplementary citation source.
+- **Phase 5.5** added: mandatory `derive/verify_render.py` gate after writing the
+  person_range file; surface-on-fail, loop until PASS. person_range only.
+- Live output path unchanged (`management/narratives/per-person/<canonical>-<since>-to-<until>.md`).
+- `.claude/commands/ask-v2.md` deleted (retired).
+
+Unchanged: `person_v3.py`, `person_deepread.py` (manifest wraps them, does not
+modify). Other intents (summarize / attention / rootcauses / feature_logic /
+event_metrics) are untouched — no manifest, no gate.
+
+### Rollback
+
+The wiring is two additive edits to `ask.md` + one deletion. To revert:
+1. Remove the **Step 0** block (the "DETERMINISTIC RENDER MANIFEST" section) from
+   the `person_range` dispatch in `.claude/commands/ask.md`, restoring `person_v3`
+   as Step 1.
+2. Remove **Phase 5.5** (the verify-gate section) from `ask.md`.
+3. (Optional) restore `ask-v2.md` from git history (`git show <pre-wiring>:.claude/commands/ask-v2.md`).
+The scripts (`person_v4_manifest.py`, `verify_render.py`, `body_extractors.yaml`)
+can stay — they are inert unless `ask.md` calls them.
+
+### Remaining follow-ups
+- KNOWN GAP: bus-factor uses a low-event heuristic, not true sole-author detection
+  (needs per-slug author count).
+- Apply the same manifest pattern to `/retro` and `team_range` (they share the
+  selection-is-stochastic weakness).
 
 ---
 
