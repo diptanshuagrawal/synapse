@@ -62,13 +62,29 @@ _MIN_USEFUL_CONTENT = 30  # chars of real content (after stripping title) needed
 # skips them and they are never (re-)embedded.
 # Keep loosely in sync with ownership_corrections HR_OOO_PHRASES (that list
 # drives ownership noise→external; this one drives embeddability).
-_NOISE_ALWAYS = ("has joined the channel", "has left the channel")
+_NOISE_ALWAYS = (
+    "has joined the channel", "has left the channel",
+    # Group-DM membership events use "conversation", not "channel" — missed in
+    # the first pass; they formed several labeled junk clusters (2026-06-11).
+    "has joined the conversation", "has left the conversation",
+    "has been added to the conversation",
+)
 _NOISE_OOO = (
     "out of office", "on leave", "on a leave", "planned leave", "annual leave",
     "sick leave", "leave today", "half day", "day off", "on vacation",
     "wfh", "work from home", "working from home",
     "login late", "logging in late", "will login", "login by", "log in by",
     "feeling unwell",
+    # Availability variants observed in surviving junk clusters (2026-06-11).
+    # Phrasings kept specific (e.g. "running late by/for", not bare "running
+    # late") so short real ops notes ("EOD job running late") survive.
+    "won't be able to", "wont be able to", "won;t be able to",
+    "won't be available", "not be available",
+    "not feeling well", "under the weather", "feeling under the weather",
+    "out sick", "taking rest", "taking a leave", "taking leave",
+    "taking off today", "taking the day",
+    "running late by", "running late for", "logging off early",
+    "will be away", "join office", "will join tomorrow",
 )
 # Availability notices are short. Long threads that merely *mention* leave
 # (incident threads, handover discussions) must survive — guard on combined
