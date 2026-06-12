@@ -66,6 +66,22 @@ PLAN_PATH = ROOT / "state" / "cluster_diff_plan.json"
 PENDING_NEW_LABELS_PATH = ROOT / "state" / "pending_new_cluster_labels.json"
 RULES_SOURCE_PATH = ROOT / "derive" / "cluster_label_rules.md"
 PENDING_RULES_PATH = ROOT / "state" / "pending_new_cluster_labels.json.rules.md"
+APPLIED_PLAN_PATH = PLAN_PATH.with_suffix(PLAN_PATH.suffix + ".applied")
+
+
+def last_applied_min_cluster_size() -> int | None:
+    """min_cluster_size of the last APPLIED plan, or None if never applied.
+
+    Guard input for granularity pinning: running plan/refresh with a different
+    min_cluster_size than the live topic_brief was built with re-shards every
+    cluster and triggers a mass spurious relabel (observed 2026-06: 5→15
+    flipped 574 of 606 clusters into the chat-labeling queue)."""
+    if not APPLIED_PLAN_PATH.exists():
+        return None
+    try:
+        return json.loads(APPLIED_PLAN_PATH.read_text()).get("min_cluster_size")
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
 def _unpack(b: bytes):
@@ -80,7 +96,12 @@ def _now_iso() -> str:
 # ── core ────────────────────────────────────────────────────────────────────
 
 
-def _fresh_clusters(conn, min_cluster_size: int) -> dict[int, list[str]]:
+def _subject_last_ts(conn) -> dict[str, str]:
+    """Last event ts per subject — one GROUP BY pass over events."""
+    return dict(conn.execute("SELECT subject, MAX(ts) FROM events GROUP BY subject"))
+
+
+def _fresh_clusters(conn, min_cluster_size: int, window_days: int | None = None) -> dict[int, list[str]]:
     """Run HDBSCAN on current `embedding` table and return {cluster_id: [subjects]}."""
     import numpy as np
     from sklearn.cluster import HDBSCAN
@@ -92,6 +113,19 @@ def _fresh_clusters(conn, min_cluster_size: int) -> dict[int, list[str]]:
     rows = conn.execute("SELECT subject, vector FROM embedding ORDER BY subject").fetchall()
     if not rows:
         return {}
+    # Optional trailing-window cap: clustering cost grows with corpus size
+    # (~2 min at 8.5k filtered subjects, ~18 min at 38k) and old inactive
+    # subjects re-shuffle every run for no benefit. With window_days set,
+    # only subjects with activity inside the window are clustered; old
+    # clusters made entirely of out-of-window subjects are FROZEN by diff()
+    # and carried verbatim through apply (label + members untouched).
+    if window_days:
+        from datetime import datetime, timedelta, timezone
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
+        last_ts = _subject_last_ts(conn)
+        rows = [r for r in rows if (last_ts.get(r[0]) or "") >= cutoff]
+        if not rows:
+            return {}
     # Drop automation-noise subjects (alert/recon/digest channels) so real work
     # clusters cleanly at a small min-cluster-size. Decision is snapshotted in
     # cluster_excluded_channel by `cluster_noise_filter.py refresh`; this is the
@@ -150,10 +184,26 @@ def diff(
     min_cluster_size: int,
     jaccard_threshold: float,
     min_overlap_for_match: int = 3,
+    containment_threshold: float = 0.8,
+    window_days: int | None = None,
 ) -> dict:
     """Compute the new→old mapping. Returns a plan dict."""
-    fresh = _fresh_clusters(conn, min_cluster_size)
+    fresh = _fresh_clusters(conn, min_cluster_size, window_days=window_days)
     old = _old_clusters(conn)
+
+    # Windowed mode: old clusters whose members are ALL outside the window
+    # never re-cluster — freeze them (carried verbatim by apply) and exclude
+    # them from matching so they can't be spuriously dropped or matched.
+    frozen_old: list[int] = []
+    if window_days:
+        from datetime import datetime, timedelta, timezone
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
+        last_ts = _subject_last_ts(conn)
+        frozen_old = [
+            cid for cid, members in old.items()
+            if members and all((last_ts.get(s) or "") < cutoff for s in members)
+        ]
+        old = {cid: m for cid, m in old.items() if cid not in set(frozen_old)}
 
     plan: dict[str, dict] = {}
     matched_old: set[int] = set()
@@ -177,9 +227,41 @@ def diff(
             action = "relabel"  # partial match — old label may be stale
         else:
             action = "new"
+
+        # Containment fallback. Jaccard structurally fails when small old
+        # clusters MERGE into a bigger new one (a fully-absorbed 10-member
+        # cluster inside a 50-member cluster scores j=0.2 → "new", and its
+        # label dies). Measured 2026-06: a re-granularisation kept only
+        # 32/606 labels and forced a 208-cluster relabel session. So when
+        # Jaccard found nothing usable, look for an old cluster mostly
+        # CONTAINED in the new one (overlap/|old| ≥ threshold) and donate its
+        # label as a draft — action becomes "relabel" (chat confirms) instead
+        # of "new" (chat writes from scratch).
+        seed_cid: int | None = None
+        seed_containment: float = 0.0
+        if action == "new":
+            best_seed_overlap = 0
+            for old_cid, old_set in old.items():
+                if old_cid in matched_old or not old_set:
+                    continue
+                overlap = len(new_set & old_set)
+                containment = overlap / len(old_set)
+                if (containment >= containment_threshold
+                        and overlap >= min_overlap_for_match
+                        and overlap > best_seed_overlap):
+                    seed_cid = old_cid
+                    seed_containment = containment
+                    best_seed_overlap = overlap
+            if seed_cid is not None:
+                matched_old.add(seed_cid)
+                action = "relabel"
+                best_cid = seed_cid
+                best_overlap = best_seed_overlap
+
         plan[str(new_cid)] = {
             "best_match_old_cid": best_cid,
             "jaccard": round(best_j, 3),
+            "containment": round(seed_containment, 3) if seed_cid is not None else None,
             "n_new_members": len(new_set),
             "n_old_members": len(old.get(best_cid or -999, set())),
             "n_overlap": best_overlap,
@@ -193,6 +275,7 @@ def diff(
         "computed_at": _now_iso(),
         "min_cluster_size": min_cluster_size,
         "jaccard_threshold": jaccard_threshold,
+        "window_days": window_days,
         "n_old_clusters": len(old),
         "n_new_clusters": len(fresh),
         "summary": {
@@ -200,10 +283,12 @@ def diff(
             "relabel": sum(1 for v in plan.values() if v["action"] == "relabel"),
             "new": sum(1 for v in plan.values() if v["action"] == "new"),
             "dropped_old": len(dropped_old),
+            "frozen_old": len(frozen_old),
         },
         "plan": plan,
         "fresh_clusters": {str(k): v for k, v in fresh.items()},  # save for apply
         "dropped_old_cluster_ids": sorted(dropped_old),
+        "frozen_old_cluster_ids": sorted(frozen_old),
     }
 
 
@@ -212,7 +297,15 @@ def diff(
 
 def cmd_plan(args):
     conn = get_db()
-    p = diff(conn, args.min_cluster_size, args.jaccard_threshold, args.min_overlap)
+    pinned = last_applied_min_cluster_size()
+    if pinned is not None and pinned != args.min_cluster_size:
+        print(
+            f"⚠ GRANULARITY CHANGE: live topic_brief was applied with "
+            f"min_cluster_size={pinned}, this plan uses {args.min_cluster_size}. "
+            f"Expect a mass relabel — use {pinned} unless re-sharding is intended."
+        )
+    p = diff(conn, args.min_cluster_size, args.jaccard_threshold, args.min_overlap,
+             window_days=getattr(args, "cluster_window_days", None))
     PLAN_PATH.parent.mkdir(parents=True, exist_ok=True)
     PLAN_PATH.write_text(json.dumps(p, indent=2))
     print(f"✓ cluster diff plan → {PLAN_PATH}")
@@ -253,19 +346,22 @@ def cmd_apply(args):
         return
 
     # Load old topic_brief snapshot (keyed by old cluster_id) so we can copy
-    # enrichment forward to new cluster_ids.
+    # enrichment forward to new cluster_ids. Full-row dynamic copy: the
+    # previous fixed 8-column list silently DROPPED every column added since
+    # (outcomes/followups/risk_areas/stakeholders/artifacts json, v2 fields) —
+    # observed as "ACTIVE clusters with no v2 enrichment" WARNs after the
+    # 2026-06 refresh. Carry everything except the per-apply computed fields.
+    _computed_cols = {
+        "cluster_id", "source_breakdown_json", "member_count",
+        "first_ts", "last_activity_ts", "computed_at",
+    }
+    tb_cols = [r[1] for r in conn.execute("PRAGMA table_info(topic_brief)")]
+    carry_cols = [c for c in tb_cols if c not in _computed_cols]
     old_briefs: dict[int, dict] = {}
     for row in conn.execute(
-        """SELECT cluster_id, label, summary, status, root_cause,
-                  decisions_json, blockers_json, participants_json,
-                  confidence
-             FROM topic_brief"""
+        f"SELECT cluster_id, {', '.join(carry_cols)} FROM topic_brief"
     ):
-        old_briefs[row[0]] = {
-            "label": row[1], "summary": row[2], "status": row[3],
-            "root_cause": row[4], "decisions_json": row[5], "blockers_json": row[6],
-            "participants_json": row[7], "confidence": row[8],
-        }
+        old_briefs[row[0]] = dict(zip(carry_cols, row[1:]))
 
     fresh_clusters = {int(k): v for k, v in plan["fresh_clusters"].items()}
     now = _now_iso()
@@ -282,6 +378,19 @@ def cmd_apply(args):
     preserved = 0
     needs_label: list[int] = []
     needs_relabel: list[int] = []
+
+    # Windowed plans freeze out-of-window old clusters — snapshot their member
+    # rows BEFORE the wipe so they can be re-inserted verbatim (renumbered
+    # above the fresh id range to avoid collisions with HDBSCAN numbering).
+    frozen_ids = [int(c) for c in plan.get("frozen_old_cluster_ids", [])]
+    frozen_members: dict[int, list[tuple[str, str]]] = {}
+    if frozen_ids:
+        ph_f = ",".join("?" * len(frozen_ids))
+        for cid, subj, src in conn.execute(
+            f"SELECT cluster_id, subject, source FROM topic_brief_member "
+            f"WHERE cluster_id IN ({ph_f})", frozen_ids,
+        ):
+            frozen_members.setdefault(cid, []).append((subj, src))
 
     prev_isolation = conn.isolation_level
     conn.isolation_level = None  # manual transaction control
@@ -313,32 +422,40 @@ def cmd_apply(args):
                     # Defensive — shouldn't happen if plan was just computed.
                     needs_label.append(new_cid)
                     continue
-                conn.execute(
-                    """INSERT INTO topic_brief
-                       (cluster_id, label, summary, status, root_cause,
-                        decisions_json, blockers_json, participants_json,
-                        source_breakdown_json, member_count,
-                        first_ts, last_activity_ts, computed_at, confidence)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (
-                        new_cid, old["label"], old["summary"], old["status"],
-                        old["root_cause"], old["decisions_json"], old["blockers_json"],
-                        old["participants_json"],
+                cols = ["cluster_id", *carry_cols, "source_breakdown_json",
+                        "member_count", "first_ts", "last_activity_ts", "computed_at"]
+                vals = [new_cid, *(old[c] for c in carry_cols),
                         json.dumps(src_breakdown, sort_keys=True),
-                        len(members), first_ts, last_ts, now, old["confidence"],
-                    ),
+                        len(members), first_ts, last_ts, now]
+                conn.execute(
+                    f"INSERT INTO topic_brief ({', '.join(cols)}) "
+                    f"VALUES ({', '.join('?' * len(cols))})",
+                    vals,
                 )
                 preserved += 1
             else:
                 # 'new' or 'relabel' — insert placeholder so member rows + ids
-                # exist, but leave content fields NULL for chat to fill.
+                # exist. For 'relabel' with a known donor (partial Jaccard
+                # match OR containment seed), carry the donor's label/summary/
+                # status forward as a DRAFT: /ask + /retro stay usable during
+                # the labeling window, and chat confirms/overwrites via the
+                # finalize pass (the dump surfaces existing_label). 'new'
+                # stays NULL for chat to fill from scratch.
+                donor = old_briefs.get(entry.get("best_match_old_cid") or -999) \
+                    if entry["action"] == "relabel" else None
                 conn.execute(
                     """INSERT INTO topic_brief
-                       (cluster_id, label, member_count, source_breakdown_json,
+                       (cluster_id, label, summary, status, confidence,
+                        member_count, source_breakdown_json,
                         first_ts, last_activity_ts, computed_at)
-                       VALUES (?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
                     (
-                        new_cid, None, len(members),
+                        new_cid,
+                        donor["label"] if donor else None,
+                        donor["summary"] if donor else None,
+                        donor["status"] if donor else None,
+                        donor["confidence"] if donor else None,
+                        len(members),
                         json.dumps(src_breakdown, sort_keys=True),
                         first_ts, last_ts, now,
                     ),
@@ -372,6 +489,43 @@ def cmd_apply(args):
                     (new_cid, sub, src_by_sub[sub]),
                 )
 
+        # Re-insert frozen clusters verbatim, renumbered above the fresh
+        # range. Their enrichment row carries fully (carry_cols) and their
+        # original first/last ts + source breakdown are recomputed from the
+        # snapshotted members so nothing depends on the deleted rows.
+        frozen_carried = 0
+        next_cid = (max(fresh_clusters) + 1) if fresh_clusters else 0
+        for old_cid in frozen_ids:
+            old = old_briefs.get(old_cid)
+            mem = frozen_members.get(old_cid, [])
+            if not old or not mem:
+                continue
+            subs = [m[0] for m in mem]
+            ph = ",".join("?" * len(subs))
+            ts_row = conn.execute(
+                f"SELECT MIN(ts), MAX(ts) FROM events WHERE subject IN ({ph})", subs
+            ).fetchone()
+            src_breakdown: dict[str, int] = {}
+            for _, src in mem:
+                src_breakdown[src] = src_breakdown.get(src, 0) + 1
+            cols = ["cluster_id", *carry_cols, "source_breakdown_json",
+                    "member_count", "first_ts", "last_activity_ts", "computed_at"]
+            vals = [next_cid, *(old[c] for c in carry_cols),
+                    json.dumps(src_breakdown, sort_keys=True),
+                    len(subs), ts_row[0], ts_row[1], now]
+            conn.execute(
+                f"INSERT INTO topic_brief ({', '.join(cols)}) "
+                f"VALUES ({', '.join('?' * len(cols))})",
+                vals,
+            )
+            for subj, src in mem:
+                conn.execute(
+                    "INSERT INTO topic_brief_member (cluster_id, subject, source) VALUES (?,?,?)",
+                    (next_cid, subj, src),
+                )
+            frozen_carried += 1
+            next_cid += 1
+
         conn.execute("COMMIT")
     except Exception:
         try:
@@ -383,6 +537,7 @@ def cmd_apply(args):
         conn.isolation_level = prev_isolation
     print(json.dumps({
         "preserved": preserved,
+        "frozen_carried": frozen_carried,
         "needs_new_label": len(needs_label),
         "needs_relabel": len(needs_relabel),
         "pre_topic_brief": pre_brief,
@@ -457,6 +612,10 @@ def main():
     p.add_argument("--jaccard-threshold", type=float, default=0.8)
     p.add_argument("--min-overlap", type=int, default=3,
                    help="Min new∩old member count to consider a match at all")
+    p.add_argument("--cluster-window-days", type=int, default=None,
+                   help="Only re-cluster subjects active in the last N days; "
+                        "old clusters wholly outside the window are frozen "
+                        "(carried verbatim). Default: cluster everything.")
     p.set_defaults(fn=cmd_plan)
 
     a = sub.add_parser("apply", help="Apply diff: preserve labels by Jaccard match, dump rest for chat")
