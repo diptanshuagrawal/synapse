@@ -142,9 +142,44 @@ Novel / Gaps / Interventions blocks):**
 Brief is for "skim before 1:1" use. Full is for "write the actual
 performance-review evidence pack". When unsure which one user wants, ask.
 
-**Step 1 — run `person_v3` FIRST (primary engine).** It merges complete-recall
-discovery + signal taxonomy + workstreams + V1 rating, with TRACK-ROUTING that
-fixes the feature-SP mis-rating of platform/ops engineers.
+**Step 0 — build the DETERMINISTIC RENDER MANIFEST first (selection authority).**
+`person_v4_manifest.py` runs `person_v3` + `person_deepread` internally and emits
+ONE manifest that has ALREADY MADE every selection decision — which tickets /
+docs / PRs / threads to cite, in which section, ranked and capped; the flags
+(workload / risk / commit-without-PR); the caveats; the tier verdict; footprint
+breadth + bus-factor; role-drift; key coordination threads. This removes
+run-to-run variance: **the model PHRASES the manifest, it does not curate it.**
+
+```bash
+.venv/bin/python derive/person_v4_manifest.py --name "<canonical>" \
+    --since "<iso>" --until "<iso>" > /tmp/<canonical>_manifest.json
+```
+
+Render rules from the manifest:
+- `headline.tldr_facts[]` — one TL;DR bullet per fact, IN ORDER. Do not reorder,
+  drop, or add facts.
+- `sections.{shipped,designed,db_platform,ops,workstreams,own_prs}` — cite every
+  item; do not add items not listed, do not drop listed items.
+- `flags[]` — every flag MUST appear (TL;DR or the matching Signals/Gaps
+  section). `workload_sentiment` is the regression this exists to prevent —
+  never omit it.
+- `caveats[]` — render each in the Caveats section.
+- `footprint` (breadth + `bus_factor_candidates`) / `role_drift` (stepped-into vs
+  stepped-back) / `review_concentration` / `key_threads` (release / oncall /
+  coordination, by reply count) / `narrative_signals` (tier verdict, sprint
+  cadence, owned-domain shares, ops count, MatterAI, pace) — render per the field
+  map + translation rules below.
+- `verify_manifest[]` — the gate's contract (Phase 5); not rendered.
+
+Steps 1–2 below (`person_v3`, `person_deepread`) are the manifest's INTERNAL
+inputs — do NOT run them separately for selection. Read their raw output only for
+SUPPLEMENTARY citation quotes (a thread body, a jira-comment preview) the manifest
+didn't bundle. The field map + completeness gate below still govern HOW to phrase
+each signal; the manifest governs WHICH artefacts and locks selection + ordering.
+
+**Step 1 — `person_v3` (manifest's primary engine; field reference for phrasing).**
+It merges complete-recall discovery + signal taxonomy + workstreams + V1 rating,
+with TRACK-ROUTING that fixes the feature-SP mis-rating of platform/ops engineers.
 
 ```bash
 .venv/bin/python derive/person_v3.py --name "<canonical>" \
@@ -1349,6 +1384,32 @@ So owner can open the file directly.
 that disappeared once the session ended. The file preserves the analysis
 + citations for future reference (1:1 prep, retro source material, audit
 trail). Cost is trivial (~one extra file write per run).
+
+## Phase 5.5 — verify gate (MANDATORY for person_range)
+
+After writing the person_range file, run the deterministic verify gate. It
+asserts every must-appear token in the manifest's `verify_manifest[]` — every
+cited ticket / PR / page, every `flag:*`, every `caveat:*` — actually landed in
+the prose. This makes "did all required facts land" deterministic even though
+the wording is model-generated, and prevents the silent-drop class of bug (a
+shipped ticket, a workload flag, a caveat going missing on a given run).
+
+```bash
+.venv/bin/python derive/verify_render.py \
+    --manifest /tmp/<canonical>_manifest.json \
+    --file management/narratives/per-person/<canonical>-<since>-to-<until>.md
+```
+
+- **Exit 0 / VERIFY PASS** → done. End the chat reply with `**Verify:** PASS
+  (all N manifest items present)`.
+- **Exit 1 / VERIFY FAIL** → the printed list names every manifest item missing
+  from the prose. SURFACE the list, rewrite the narrative to include the missing
+  items, and re-run the gate. Do NOT silently accept a fail. Loop until PASS — or,
+  if an item genuinely cannot be placed, say so explicitly with the reason; never
+  drop it silently.
+
+This phase applies to `person_range` only (the manifest is person_range-scoped).
+Other intents skip it.
 
 ### URL conventions (use as inline markdown links)
 
