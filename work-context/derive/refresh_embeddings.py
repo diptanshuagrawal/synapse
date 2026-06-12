@@ -56,7 +56,7 @@ if str(_PKG_ROOT) not in sys.path:
 
 from ingest.common import get_db  # noqa: E402
 from derive.sample_subjects import sample  # noqa: E402
-from derive.subject_content import get_content, content_sha  # noqa: E402
+from derive.subject_content import get_content, content_sha, CONTENT_RECIPE_VERSION  # noqa: E402
 from derive import embed_subjects as _embed_mod  # noqa: E402
 from derive import cluster_diff as _diff_mod  # noqa: E402
 from derive import openai_client  # noqa: E402
@@ -69,6 +69,16 @@ def _now_iso() -> str:
 # ── detect ──────────────────────────────────────────────────────────────────
 
 
+_CACHE_DDL = """CREATE TABLE IF NOT EXISTS embed_content_cache (
+    subject        TEXT PRIMARY KEY,
+    recipe_version INTEGER NOT NULL,
+    n_events       INTEGER NOT NULL,
+    last_event_ts  TEXT,
+    content_sha    TEXT NOT NULL,
+    computed_at    TEXT NOT NULL
+)"""
+
+
 def detect_delta(conn, model: str) -> dict:
     """Return {new: [...], drifted: [...], unchanged: int, no_content: int}.
 
@@ -76,30 +86,62 @@ def detect_delta(conn, model: str) -> dict:
     drifted   — in `embedding` for this model BUT content_sha differs now.
     unchanged — sha matches; no re-embed needed.
     no_content — embeddable corpus member but get_content() returned empty.
+
+    Content shas are memoised in `embed_content_cache`, keyed on a cheap
+    change signature (event count + last event ts per subject) plus
+    CONTENT_RECIPE_VERSION. A subject's content can only change when its
+    events change or the recipe changes — so the expensive get_content()
+    pass (per-subject event reads, ~25s over a 38k corpus) runs only for
+    changed subjects (typically a few hundred per day). Rows store sha=""
+    for no-content subjects so noise stays cheap too.
     """
     all_subjects = sample(conn, target_size=None)
-    existing_rows = conn.execute(
+    existing = dict(conn.execute(
         "SELECT subject, content_sha FROM embedding WHERE model = ?", (model,),
-    ).fetchall()
-    existing = {s: sha for s, sha in existing_rows}
+    ))
+
+    conn.execute(_CACHE_DDL)
+    sig = {s: (n, ts) for s, n, ts in conn.execute(
+        "SELECT subject, COUNT(*), MAX(ts) FROM events GROUP BY subject"
+    )}
+    cache = {s: (rv, n, ts, sha) for s, rv, n, ts, sha in conn.execute(
+        "SELECT subject, recipe_version, n_events, last_event_ts, content_sha "
+        "FROM embed_content_cache"
+    )}
 
     new: list[str] = []
     drifted: list[str] = []
     unchanged = 0
     no_content = 0
+    cache_hits = 0
+    upserts: list[tuple] = []
+    now = _now_iso()
 
     for subj in all_subjects:
-        _, content = get_content(conn, subj)
-        if not content:
+        n_ev, last_ts = sig.get(subj, (0, None))
+        hit = cache.get(subj)
+        if hit and hit[0] == CONTENT_RECIPE_VERSION and hit[1] == n_ev and hit[2] == last_ts:
+            sha = hit[3]
+            cache_hits += 1
+        else:
+            _, content = get_content(conn, subj)
+            sha = content_sha(content) if content else ""
+            upserts.append((subj, CONTENT_RECIPE_VERSION, n_ev, last_ts, sha, now))
+        if sha == "":
             no_content += 1
             continue
-        sha = content_sha(content)
         if subj not in existing:
             new.append(subj)
         elif existing[subj] != sha:
             drifted.append(subj)
         else:
             unchanged += 1
+
+    if upserts:
+        conn.executemany(
+            "INSERT OR REPLACE INTO embed_content_cache VALUES (?,?,?,?,?,?)", upserts
+        )
+        conn.commit()
 
     return {
         "model": model,
@@ -109,6 +151,8 @@ def detect_delta(conn, model: str) -> dict:
         "n_no_content": no_content,
         "n_new": len(new),
         "n_drifted": len(drifted),
+        "sha_cache_hits": cache_hits,
+        "sha_recomputed": len(upserts),
         "new": new,
         "drifted": drifted,
     }
@@ -133,6 +177,24 @@ def cmd_status(args):
 
 def cmd_refresh(args):
     conn = get_db()
+
+    # Granularity pin: clustering with a different min_cluster_size than the
+    # live topic_brief was applied with re-shards every cluster and triggers
+    # a mass spurious relabel (observed 2026-06: 5→15 queued 574 of 606
+    # clusters for chat labeling). Refuse unless explicitly overridden.
+    pinned = _diff_mod.last_applied_min_cluster_size()
+    if (pinned is not None and pinned != args.min_cluster_size
+            and not args.allow_granularity_change):
+        print(
+            f"refusing: live topic_brief was applied with min_cluster_size={pinned}, "
+            f"but this run requests {args.min_cluster_size}. A granularity change "
+            f"re-shards every cluster (mass relabel). Re-run with "
+            f"--min-cluster-size {pinned}, or pass --allow-granularity-change "
+            f"if re-sharding is intended.",
+            file=sys.stderr,
+        )
+        sys.exit(3)
+
     summary: dict[str, object] = {"started_at": _now_iso(), "model": args.model}
 
     # Step 1 — detect.
@@ -144,6 +206,8 @@ def cmd_refresh(args):
         "n_no_content": delta["n_no_content"],
         "n_new": delta["n_new"],
         "n_drifted": delta["n_drifted"],
+        "sha_cache_hits": delta["sha_cache_hits"],
+        "sha_recomputed": delta["sha_recomputed"],
     }
     to_embed = delta["new"] + delta["drifted"]
 
@@ -168,12 +232,32 @@ def cmd_refresh(args):
         )
         summary["embed"] = stats
 
+    # Step 2.5 — vacuum orphan vectors. Subjects can leave the corpus (noise
+    # rules, channel exclusions, compaction) but their vectors linger and
+    # keep participating in clustering. Drop vectors that are neither in the
+    # current corpus nor members of a live cluster (protects frozen-window
+    # clusters whose members are intentionally out-of-corpus). Skipped on
+    # --dry-run.
+    corpus_set = set()
+    if not args.dry_run:
+        corpus_set = set(sample(conn, target_size=None))
+        member_set = {s for (s,) in conn.execute("SELECT DISTINCT subject FROM topic_brief_member")}
+        orphans = [
+            (s,) for (s,) in conn.execute("SELECT subject FROM embedding")
+            if s not in corpus_set and s not in member_set
+        ]
+        if orphans:
+            conn.executemany("DELETE FROM embedding WHERE subject = ?", orphans)
+            conn.commit()
+        summary["vacuum"] = {"orphan_vectors_deleted": len(orphans)}
+
     # Step 3 — cluster diff plan.
     plan = _diff_mod.diff(
         conn,
         min_cluster_size=args.min_cluster_size,
         jaccard_threshold=args.jaccard_threshold,
         min_overlap_for_match=args.min_overlap,
+        window_days=args.cluster_window_days,
     )
     _diff_mod.PLAN_PATH.parent.mkdir(parents=True, exist_ok=True)
     _diff_mod.PLAN_PATH.write_text(json.dumps(plan, indent=2))
@@ -252,6 +336,13 @@ def main():
                    help="Skip the embed step (use when embed ran separately).")
     r.add_argument("--dry-run", action="store_true",
                    help="Pass-through to embed_subjects: detect only, no API calls.")
+    r.add_argument("--cluster-window-days", type=int, default=None,
+                   help="Only re-cluster subjects active in the last N days; "
+                        "old clusters wholly outside the window are frozen "
+                        "and carried verbatim. Default: cluster everything.")
+    r.add_argument("--allow-granularity-change", action="store_true",
+                   help="Override the min-cluster-size pin against the last "
+                        "applied plan (expect a mass relabel).")
     r.set_defaults(fn=cmd_refresh)
 
     args = ap.parse_args()
