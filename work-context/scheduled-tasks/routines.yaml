@@ -1,7 +1,7 @@
 # Routine manifest — source of truth for bootstrapping Claude Code scheduled
 # agents ("routines") on a new owner's machine. The SKILL.md bodies live in
 # scheduled-tasks/<id>/SKILL.md (templated with __REPO__ / __SLACK_MCP__ /
-# __STANDUP_CHANNEL__ placeholders).
+# __STANDUP_CHANNEL__ / __ROLLUP_CHANNEL__ / __JIRA_PROJECT__ placeholders).
 #
 # install-routines.sh materialises the SKILL.md files into
 #   ~/.claude/scheduled-tasks/<id>/SKILL.md
@@ -25,6 +25,24 @@ routines:
     enabled: true
     needs: []
     permissions: []
+
+  - id: track-work-ticketize
+    cron: "15 12 * * 1-5"         # weekdays 12:15 IST
+    enabled: true
+    needs: []                     # channel read from config by relay_bot; no token
+    permissions: [Bash]
+
+  - id: rollup-classify
+    cron: "0 15 * * 1-5"          # weekdays 15:00 IST
+    enabled: true
+    needs: [rollup_channel]       # __ROLLUP_CHANNEL__ must be set
+    permissions: [Bash]
+
+  - id: daily-leaves-classify
+    cron: "0 4 * * *"             # daily 04:00 IST
+    enabled: true
+    needs: []
+    permissions: [Bash]
 
   - id: slack-ingest
     cron: "0,30 12-22 * * *"      # every 30 min, 12:00–22:30 IST

@@ -40,7 +40,7 @@ PYTHONPATH="$WORKCTX${PYTHONPATH:+:$PYTHONPATH}" \
 import json, os, sys
 from pathlib import Path
 import yaml
-from derive.sources_config import standup_channel, slack_mcp_server
+from derive.sources_config import standup_channel, slack_mcp_server, rollup_channel, jira_project_keys
 
 manifest = sys.argv[1]
 repo_root = os.environ["REPO_ROOT"]
@@ -54,11 +54,14 @@ subs = {
     "__HOME__": home_dir,
     "__SLACK_MCP__": slack_mcp_server(),
     "__STANDUP_CHANNEL__": standup_channel(),
+    "__ROLLUP_CHANNEL__": rollup_channel(),
+    "__JIRA_PROJECT__": (jira_project_keys() or [""])[0],
 }
 # Which resolved value backs each `needs` token.
 NEED_OK = {
     "slack_mcp": bool(subs["__SLACK_MCP__"]),
     "standup_channel": bool(subs["__STANDUP_CHANNEL__"]),
+    "rollup_channel": bool(subs["__ROLLUP_CHANNEL__"]),
 }
 
 m = yaml.safe_load(open(manifest))
