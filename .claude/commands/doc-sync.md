@@ -126,10 +126,15 @@ For each doc surface, diff against code/decisions. Five checks, roughly by preci
      3. `navigate` that tab to the page, then `javascript_tool` (wrap in
         `(async()=>{…})()`, NOT top-level await):
         `fetch('/wiki/rest/api/content/<customContentId>?expand=body.raw')` →
-        `JSON.parse(body.raw.value).code` = the ZenUML/mermaid source. Diff that vs code.
-     4. If the source is just the default ZenUML template ("Order Service / OrderController
-        / PurchaseService.createPO"), the diagram was never drawn → report "placeholder
-        diagram, not filled in" (a real finding), don't try to diff.
+        `JSON.parse(body.raw.value).code` = a ZenUML/mermaid source — but **`body.raw` is
+        UNRELIABLE for these macros: it often returns the default starter template
+        ("Order Service / OrderController / PurchaseService.createPO") even when a real
+        diagram is rendered** (the live source lives in the ZenUML app backend, not
+        Confluence content). So NEVER conclude "placeholder/never drawn" from body.raw.
+     4. ALWAYS verify against the RENDERED diagram: expand the diagram's section, then
+        `screenshot` + `zoom` the SVG and read participants + messages visually — that is
+        the source of truth. Only call it a "placeholder diagram" if the RENDERED diagram
+        is the default template. Diff the rendered steps vs code-graph flows/CALLS.
    - **Image/PNG blob** → not text-extractable; if the work browser is available, a
      `screenshot` of the rendered diagram can be read visually; else flag "verify manually".
    - **No browser available (unattended/cron)** → emit ONE low-severity note
