@@ -555,6 +555,57 @@ def insert_event(conn: sqlite3.Connection, event: Event, dry_run: bool = False) 
         return False  # duplicate
 
 
+def delete_events(
+    conn: sqlite3.Connection,
+    event_ids,
+    *,
+    commit: bool = True,
+) -> int:
+    """Hard-delete events by id, cascading to event_refs + events_fts. Returns
+    the number of `events` rows removed.
+
+    The single delete counterpart to insert_event(). insert_event is the only
+    writer of the (events, event_refs, events_fts) trio; this is the only
+    deleter, so the three can never drift. A bare ``DELETE FROM events`` that
+    forgot the paired event_refs delete is exactly what leaked 16 orphan refs
+    behind a re-ingested Slack thread — route every hard delete through here so
+    that leak (and stale full-text postings) can't recur.
+
+    Order matters: the events_fts row is an external-content FTS5 index keyed on
+    the events rowid, so its `'delete'` command must run *before* the parent
+    row vanishes (it reads rowid/title/body from `events`). For rows whose body
+    drifted from what was indexed (Slack edits never re-sync FTS incrementally),
+    the periodic ``events_fts('rebuild')`` heals any residue.
+
+    Idempotent and chunked (SQLite caps host parameters per statement). Pass
+    ``commit=False`` when the caller drives its own ``with conn:`` transaction.
+    """
+    ids = [e for e in dict.fromkeys(event_ids) if e]  # dedup, drop falsy, keep order
+    if not ids:
+        return 0
+
+    BATCH = 500
+    deleted = 0
+    for i in range(0, len(ids), BATCH):
+        chunk = ids[i:i + BATCH]
+        ph = ",".join("?" * len(chunk))
+        # 1. Drop full-text postings while the parent rows still exist.
+        conn.execute(
+            f"INSERT INTO events_fts(events_fts, rowid, title, body) "
+            f"SELECT 'delete', rowid, title, body FROM events WHERE id IN ({ph})",
+            chunk,
+        )
+        # 2. Refs — same id set as the events delete below, so nothing orphans.
+        conn.execute(f"DELETE FROM event_refs WHERE event_id IN ({ph})", chunk)
+        # 3. The events rows themselves.
+        cur = conn.execute(f"DELETE FROM events WHERE id IN ({ph})", chunk)
+        deleted += cur.rowcount
+
+    if commit:
+        conn.commit()
+    return deleted
+
+
 # ---------------------------------------------------------------------------
 # Cursor management
 # ---------------------------------------------------------------------------

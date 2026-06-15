@@ -37,6 +37,8 @@ SERVICES_DIR = REPO_ROOT / "derived" / "services"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from ingest.common import delete_events  # noqa: E402  shared deleter (events+refs+fts)
+
 # H2 section title (lowercased, prefix match) -> slug. Others are skipped.
 _SECTION_SLUGS = {
     "responsibility": "responsibility",
@@ -153,11 +155,15 @@ def ingest_md(conn: sqlite3.Connection, svc: str, md_path: Path, ts: str) -> int
         appendix = endpoint_appendix(_json.loads(skel_path.read_text()))
     chunks = chunk_brief(svc, md_path.read_text(errors="replace"), appendix)
     raw_path = str(md_path)
-    # idempotent: clear this service's prior chunks first
-    conn.execute(
-        "DELETE FROM events WHERE source='service' AND subject LIKE ?",
+    # idempotent: clear this service's prior chunks first. Route through the
+    # shared deleter so any event_refs / events_fts attached to a brief chunk
+    # are cascaded too (service rows carry none today, but a bare DELETE FROM
+    # events is the exact pattern that leaked orphan refs elsewhere).
+    prior_ids = [r[0] for r in conn.execute(
+        "SELECT id FROM events WHERE source='service' AND subject LIKE ?",
         (f"service:{svc}#%",),
-    )
+    ).fetchall()]
+    delete_events(conn, prior_ids, commit=False)
     for slug, title, body in chunks:
         subject = f"service:{svc}#{slug}"
         conn.execute(
