@@ -1232,8 +1232,13 @@ def overrun_for(src: str, fire_mins: list[int]) -> dict | None:
         return None
     start_ts = inflight_starts.get(src)
     if start_ts and rh.source_running(src):
-        return rh.overrun_verdict(rh.inflight_duration_min(start_ts),
-                                  interval, in_flight=True)
+        # Prefer the live process's real age (ps) over the log-parsed start —
+        # an orphaned open 'starting' line paired with a younger live run
+        # otherwise inflates into a phantom "running OVERRUN".
+        dur = rh.live_inflight_min(src)
+        if dur is None:
+            dur = rh.inflight_duration_min(start_ts)
+        return rh.overrun_verdict(dur, interval, in_flight=True)
     r = last_per_src.get(src)
     if r:
         return rh.overrun_verdict(rh.run_duration_min(r.get("start", ""),
