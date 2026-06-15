@@ -57,6 +57,7 @@ HOUSE_PLIST_LABEL = f"{_LP}.housekeeping"
 IDENTITY_STATE = ROOT / "state/last_identity_reconcile.json"
 
 EMBED_VALIDATE = ROOT / "state/last_embedding_validate.json"
+PIPELINE_VALIDATE = ROOT / "state/last_pipeline_validate.json"
 
 # ── ANSI ─────────────────────────────────────────────────────────────────────
 ESC    = "\033["
@@ -1774,6 +1775,53 @@ if TB_VALIDATE.exists():
         print()
 else:
     print(f"  {BOLD}{'PIPELINE':<13}{RESET}  {pill('○', 'no cache', YELLOW)}  {DIM}run derive/topic_brief_validate.py{RESET}")
+    print(rule())
+    print()
+
+
+# ─── integrity (pipeline_validate) block ─────────────────────────────────────
+# Cross-cutting structural invariants on events.db — schema NOT-NULLs, ISO ts,
+# orphan refs, FTS sync, raw_path collisions, and per-source FRESHNESS. The
+# freshness check is the silent-stale guard: the placeholder-auth freeze that
+# stalled jira+confluence for 2 days behind green markers trips here.
+# Cache refreshed by ingest/refresh-pipeline-validate.sh after every ingest.
+if PIPELINE_VALIDATE.exists():
+    try:
+        pvr = json.loads(PIPELINE_VALIDATE.read_text())
+        pv_mtime = datetime.fromtimestamp(PIPELINE_VALIDATE.stat().st_mtime, tz=IST)
+        pv_age_s = int((datetime.now(IST) - pv_mtime).total_seconds())
+        pv_age = (f"{pv_age_s // 60}m" if pv_age_s < 3600
+                  else f"{pv_age_s // 3600}h" if pv_age_s < 86400
+                  else f"{pv_age_s // 86400}d")
+        pv_fail = sum(1 for f in pvr.get("findings", []) if f[0] == "FAIL")
+        pv_warn = sum(1 for f in pvr.get("findings", []) if f[0] == "WARN")
+        if pv_fail:
+            pv_pill = pill("○", f"{pv_fail} FAIL · {pv_warn} WARN", RED)
+        elif pv_warn:
+            pv_pill = pill("◐", f"{pv_warn} WARN", YELLOW)
+        else:
+            pv_pill = pill("●", "all invariants hold", GREEN)
+        print(f"  {BOLD}{'INTEGRITY':<13}{RESET}  {pv_pill}  {DIM}events.db · {pv_age} old{RESET}")
+        stats = pvr.get("stats", {})
+        fresh = stats.get("freshness_age_h", {})
+        if fresh:
+            fr_str = "  ".join(f"{s}={h}h" for s, h in sorted(fresh.items()))
+            print(kv("freshness", f"{DIM}{fr_str}{RESET}"))
+        findings = sorted(pvr.get("findings", []),
+                          key=lambda x: (0 if x[0] == "FAIL" else 1))
+        for sev, check, msg in findings:
+            if sev == "PASS":
+                continue
+            col = RED if sev == "FAIL" else YELLOW
+            print(f"  {'':13}  {col}{sev}{RESET} {DIM}{check:<22s}{RESET} {msg[:80]}")
+        print(rule())
+        print()
+    except Exception as e:
+        print(kv("integrity", f"{YELLOW}cache parse error: {str(e)[:40]}{RESET}"))
+        print(rule())
+        print()
+else:
+    print(f"  {BOLD}{'INTEGRITY':<13}{RESET}  {pill('○', 'no cache', YELLOW)}  {DIM}run derive/pipeline_validate.py{RESET}")
     print(rule())
     print()
 

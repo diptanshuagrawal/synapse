@@ -1,3 +1,8 @@
 pyyaml>=6.0
 requests>=2.31
 anthropic>=0.40
+
+# Dev / test only (not needed by ingest or cron):
+#   .venv/bin/python -m pip install pytest
+# or run bin/run-tests.sh which installs it on first use.
+pytest>=8.0

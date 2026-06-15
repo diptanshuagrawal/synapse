@@ -514,6 +514,14 @@ Exit codes: 0 clean, 1 findings, 2 env error. `--json` consumed by `bin/cron-sta
 
 Source-specific siblings of `slack_validate.py`. Same contract: layered per-source checks (row counts, cursor lag, null-field drift, dup detection, orphan refs), exit `0`/`1`/`2`, `--json`. Run ad-hoc or wired into per-source ingest wrappers. Keep in sync with `slack_validate.py` when the schema changes.
 
+### 5.17b `derive/pipeline_validate.py` — cross-cutting integrity validator
+
+The structural sibling of the per-source validators. Where those check *content* attribution, this checks *pipeline* invariants that hold regardless of source: schema NOT-NULLs (`id/source/event_type/ts/raw_path`), ISO-8601 ts shape (GLOB scan), implausible-future ts, source/event_type vocabulary (WARN on unregistered), orphan `event_refs` (referential leak → FAIL), `events_fts`↔`events` row-count sync, `raw_path` collisions scoped to the `append_raw` `raw/…#N` shape (the line-number race), and **per-source freshness** vs a `FRESHNESS_BUDGET_H` table (the silent-stale guard for the placeholder-auth-freeze class of bug). Same `{computed_at, source, findings:[[sev,check,msg]]}` contract + `--json`. **Report-only** — `main()` returns 0 unless the DB is missing, so it never blocks ingest. Refreshed by `ingest/refresh-pipeline-validate.sh` (called from every `run-<src>.sh`) into `state/last_pipeline_validate.json`; rendered as the **INTEGRITY** block in `cron-status`. Vocabulary sets (`KNOWN_SOURCES`, `KNOWN_EVENT_TYPES`) must track new ingest paths.
+
+### 5.17c `tests/` — pytest suite (unit + integration)
+
+Hermetic test suite for the ingest/derive core; **never touches the real `events.db`** (conftest fixtures redirect `common.DB_PATH/RAW_ROOT/STATE_PATH` at a tmp tree, and inject a synthetic people/projects config). Covers `common.enrich_refs` regexes + resolution, `insert_event` dedup/refs/FTS, atomic writes, `append_raw` line numbering, cursors, `bin/_run_health` overrun math, `derive/jira_metrics` attribution/role inference, `pipeline_validate`'s own branches, and — the network-facing mapping layer, exercised with fixture dicts (no HTTP) — `ingest/{jira,github,confluence}.py` `normalize_*` and `slack_api_client.api_message_to_parsed` + `slack_upsert` id/subject/upsert. Run via `bin/run-tests.sh` (auto-installs pytest). Opt-in pre-push gate via `RUN_TESTS=1`. 161 tests as of 2026-06-15.
+
 ### 5.18 `derive/slack_{expand_mentions,backfill_files,backfill_helper}.py`
 
 - `slack_expand_mentions.py` — one-shot retro-fill of legacy `<@U…>` bodies to `<@U…|Name>` using current `users_cache` + `subteams_cache`. Idempotent. Retro-fixed 949 opsgenie rows.

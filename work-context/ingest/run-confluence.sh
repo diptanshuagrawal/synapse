@@ -68,6 +68,9 @@ set +e
   && mv "$ROOT/state/last_confluence_validate.json.tmp" "$ROOT/state/last_confluence_validate.json" \
   || rm -f "$ROOT/state/last_confluence_validate.json.tmp"
 
+# Cross-cutting pipeline-integrity validate cache (all sources).
+"$ROOT/ingest/refresh-pipeline-validate.sh" "$ROOT" || true
+
 # Reconcile observed identity signals back into people.yaml.
 "$ROOT/.venv/bin/python" "$ROOT/derive/identity_reconcile.py" \
   >> "$ROOT/logs/identity_reconcile.log" 2>&1 || true
