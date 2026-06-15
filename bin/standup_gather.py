@@ -43,6 +43,61 @@ def load_roster():
     return out
 
 
+def gather_oncall(roster):
+    """Live Opsgenie who's-on-call, config-driven (config/oncall.yaml). Fail-soft:
+    a dead Opsgenie must not kill the gather — emit a warning line instead."""
+    import yaml, urllib.request
+    cfg_path = os.path.join(ROOT, "work-context/config/oncall.yaml")
+    try:
+        og = yaml.safe_load(open(cfg_path))["opsgenie"]
+        env = og.get("api_key_env", "OPSGENIE_API_KEY")
+        key = os.environ.get(env, "")
+        if not key:
+            sec = os.path.expanduser("~/.secrets/opsgenie_api_key")
+            if os.path.exists(sec):
+                key = open(sec).read().strip()
+        if not key:
+            return [f"  ⚠️ no API key ({env} unset, no ~/.secrets/opsgenie_api_key)"]
+        url = (f"https://api.opsgenie.com/v2/schedules/{og['schedule']}/on-calls"
+               f"?scheduleIdentifierType={og.get('identifier_type', 'name')}")
+        req = urllib.request.Request(url, headers={"Authorization": "GenieKey " + key})
+        d = json.load(urllib.request.urlopen(req, timeout=10))
+        names = [p.get("name", "") for p in d.get("data", {}).get("onCallParticipants", [])]
+        by_email = {v.get("email", ""): k for k, v in roster.items()}
+        return [f"  {n}  canonical={by_email.get(n, '?(not roster)')}" for n in names] or ["  (none returned)"]
+    except Exception as e:
+        return [f"  ⚠️ opsgenie lookup failed: {e}"]
+
+
+def gather_leaves(cur, roster, date_str, W1, WL):
+    """LEAVES = durable team_leaves (overlapping the day + upcoming 14d) + live
+    slack scan (lookback..window-end) so a same-day sick message isn't missed."""
+    lines = []
+    horizon = (datetime.date.fromisoformat(date_str) + datetime.timedelta(days=14)).isoformat()
+    try:
+        for a, ds, de, rs, url in cur.execute(
+                "SELECT actor,date_start,date_end,reason,url FROM team_leaves "
+                "WHERE date_end>=? AND date_start<=? ORDER BY date_start",
+                (date_str, horizon)).fetchall():
+            tag = "ON-LEAVE-THIS-DAY" if (ds and de and ds <= date_str <= de) else "UPCOMING"
+            lines.append(f"  {tag} {a} {ds}..{de} ({rs}) {url or ''}")
+    except sqlite3.Error as e:
+        lines.append(f"  ⚠️ team_leaves read failed: {e}")
+    sl2canon = {v.get("slack_id"): k for k, v in roster.items() if v.get("slack_id")}
+    for actor, ts, body, subj in cur.execute(
+            "SELECT actor,ts,substr(body,1,200),subject FROM events "
+            "WHERE source='slack' AND ts>=? AND ts<? ORDER BY ts", (WL, W1)):
+        if actor in sl2canon and LEAVE_RE.search(body or ""):
+            snip = re.sub(r"\s+", " ", body or "")[:120]
+            try:
+                _, ch, mts = subj.split(":", 2)
+                link = slack_permalink(ch, mts)
+            except Exception:
+                link = ""
+            lines.append(f"  LIVE-SIGNAL {sl2canon[actor]} [{ts[:16]}] link={link} :: {snip}")
+    return lines or ["  (none)"]
+
+
 def ist_window(date_str):
     """IST day -> UTC ISO bounds (naive, comparable to stored ts[:19])."""
     y, m, dd = map(int, date_str.split("-"))
@@ -192,6 +247,10 @@ def main():
             + ("  ⚠️ STALE — before window end; data incomplete for this day" if stale else "  ok"))
     out.append(f"# DATA FRESHNESS (vs window end {W1}Z){'  ⚠️ STALE SOURCES PRESENT' if stale_any else ''}")
     out.extend(fresh_rows)
+    out.append("# ONCALL (live Opsgenie, config/oncall.yaml)")
+    out.extend(gather_oncall(roster))
+    out.append("# LEAVES (team_leaves overlapping day + upcoming 14d; LIVE-SIGNAL = slack scan lookback..window-end)")
+    out.extend(gather_leaves(cur, roster, date_str, W1, WL))
     out.append("")
 
     for m in members:

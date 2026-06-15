@@ -312,28 +312,72 @@ def _is_design_slug(slug: str) -> bool:
     return not any(p in low for p in _NON_DESIGN_SLUG_PATTERNS)
 
 
-def _footprint(v3: dict) -> dict:
-    """Project-level breadth. AUTHOR on a design slug = primary ownership. We
-    surface every design-slug AUTHOR (render-contract rule), ranked by activity.
-    Bus-factor is the subset of *design* slugs he authors with low shared
-    activity — a sole-owner / single-point-of-knowledge candidate (coordination
-    and infra slugs are excluded so the signal isn't UAT-chore noise)."""
-    rows = []
-    for p in v3.get("project_footprint", []):
+# Owner-level roles for bus-factor — these are the "knows it deeply" roles.
+# REVIEWER / RESPONDER / participant are NOT ownership, so a slug others only
+# review is still a sole-owner risk on authorship.
+_OWNER_ROLES = {"AUTHOR", "DECIDER", "RESOLVER"}
+
+
+def _slug_owners(conn, footprint_entry: dict) -> set[str]:
+    """Distinct owner-level people across the clusters mapped to this slug,
+    read from each cluster's topic_brief.participants_json. This is the REAL
+    sole-ownership signal — how many people own the area — not a traffic proxy."""
+    owners: set[str] = set()
+    for c in footprint_entry.get("clusters", []):
+        cid = c.get("cluster_id")
+        if cid is None:
+            continue
+        row = conn.execute(
+            "SELECT participants_json FROM topic_brief WHERE cluster_id=?", (cid,)
+        ).fetchone()
+        if not row or not row[0]:
+            continue
+        try:
+            parts = json.loads(row[0])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for p in parts:
+            if (p.get("role") or "").upper() in _OWNER_ROLES:
+                owners.add((p.get("person") or "").strip().lower())
+    owners.discard("")
+    return owners
+
+
+def _footprint(v3: dict, canonical: str, conn) -> dict:
+    """Project-level breadth + TRUE bus-factor. AUTHOR on a design slug = primary
+    ownership (surfaced for every design slug, render-contract rule). Bus-factor =
+    a design slug where the person is the ONLY owner-level participant (distinct
+    owner count == 1, and it's him) — computed from participants, NOT from event
+    volume. Coordination/infra slugs are excluded so the signal isn't UAT noise."""
+    canon = (canonical or "").strip().lower()
+    raw = v3.get("project_footprint", [])
+    rows, bus_factor = [], []
+    for p in raw:
+        slug = p.get("project_slug")
+        top_role = p.get("top_role_in_project")
+        is_author_design = top_role == "AUTHOR" and _is_design_slug(slug)
+        owners = _slug_owners(conn, p) if is_author_design else set()
+        sole = bool(is_author_design and owners and owners.issubset({canon}))
         rows.append({
-            "slug": p.get("project_slug"),
-            "top_role": p.get("top_role_in_project"),
+            "slug": slug,
+            "top_role": top_role,
             "window_events": p.get("window_event_count_total") or 0,
             "clusters": p.get("cluster_count") or 0,
             "role_drift_clusters": p.get("role_drift_cluster_count") or 0,
+            "owner_count": len(owners) if is_author_design else None,
+            "sole_owner": sole,
         })
+        if sole:
+            bus_factor.append(slug)
     rows.sort(key=lambda x: (-x["window_events"], x["slug"] or ""))
+    # "primary design ownership" = AUTHOR on a design slug with MEANINGFUL
+    # activity. A 1-2 event slug isn't ownership; counting it inflates breadth.
     author_design = [r["slug"] for r in rows
-                     if r["top_role"] == "AUTHOR" and _is_design_slug(r["slug"])]
-    # bus-factor: a design slug he authors with thin shared activity (≤5 events)
-    bus_factor = [r["slug"] for r in rows
-                  if r["top_role"] == "AUTHOR" and _is_design_slug(r["slug"])
-                  and r["window_events"] <= 5]
+                     if r["top_role"] == "AUTHOR" and _is_design_slug(r["slug"])
+                     and r["window_events"] >= 5]
+    # bus_factor ordered by activity (most-active sole-owned area first)
+    bf_order = {r["slug"]: -r["window_events"] for r in rows}
+    bus_factor.sort(key=lambda s: (bf_order.get(s, 0), s or ""))
     return {"projects": rows, "author_slugs": author_design,
             "breadth_author_count": len(author_design),
             "bus_factor_candidates": bus_factor}
@@ -596,7 +640,7 @@ def build_manifest(name: str, since: str, until: str,
     db_platform = _bucket_db(shipped)
     ops = _rank_shipped(delivery.get("ops", {}).get("primary", []), tmeta)[:CAP_OPS]
     workstreams = _workstreams(v3)
-    footprint = _footprint(v3)
+    footprint = _footprint(v3, canonical, get_db())
     role_drift = _role_drift(v3)
     review_conc = _review_concentration(v3)
     own_prs = _own_prs(deep)

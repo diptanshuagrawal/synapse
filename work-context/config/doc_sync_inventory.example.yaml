@@ -1,0 +1,44 @@
+# doc-sync inventory (EXAMPLE / template).
+# Copy to doc_sync_inventory.yaml (gitignored) and populate from discovery.
+#
+# INCLUSION FILTER (all three must hold):
+#   1. Doc is about a service the team OWNS (list them under meta.owned_services)
+#   2. Author is a team member (config/people.yaml scope: team)
+#   3. Doc is a DESIGN doc — NOT ops / RCA / oncall / incident / report / perf / setup / tracking
+#
+#   monitor:       passes all 3 → sweep runs drift check and may post comments. owner = author.
+#   needs_confirm: team service + design doc, but author left (reassign) OR page looks empty (verify).
+#   excluded:      fails the filter — recorded with reason so re-runs don't re-surface it.
+#
+# owner = people.yaml canonical (sweep resolves to jira_id + slack_id).
+# repo  = one of meta.owned_services, or an unregistered repo (marked not-checkable).
+
+meta:
+  generated: "YYYY-MM-DD"
+  spaces_scanned: [SPACEKEY1, SPACEKEY2]
+  owned_services: [svc-one, svc-two, svc-three]
+  team_authors: [dev-a, dev-b, dev-c]
+  exclude_reasons:
+    - non_team_author
+    - other_service
+    - ops_rca_oncall
+    - perf_loadtest
+    - setup_onboarding
+    - tracking_plan
+    - report_analysis
+
+monitor:
+  - {id: "<page-id>", title: "<Feature> TRD", owner: dev-a, repo: svc-one, kind: TRD}
+  - {id: "<page-id>", title: "<Feature> Schemas", owner: dev-a, repo: svc-one, kind: schema}
+  - {id: "<page-id>", title: "<Feature> API Contract", owner: dev-b, repo: svc-two, kind: api-contract}
+  - {id: "<page-id>", title: "<Feature> Sequence Diagram", owner: dev-b, repo: svc-two, kind: sequence}
+
+needs_confirm:
+  - {id: "<page-id>", title: "<Feature> Design", author: "<author who left>", repo: svc-one, why: reassign_owner}
+  - {id: "<page-id>", title: "<Feature> TRD", author: dev-c, repo: svc-three, why: verify_not_empty}
+
+excluded:
+  - {id: "<page-id>", title: "<PM PRD>", reason: non_team_author, author: "<PM name>"}
+  - {id: "<page-id>", title: "<Other team doc>", reason: other_service, author: "<author>"}
+  - {id: "Oncall Report - *", reason: ops_rca_oncall, note: "all weekly oncall reports"}
+  - {id: "*RCA* / *Incident*", reason: ops_rca_oncall, note: "all postmortems"}

@@ -1,0 +1,16 @@
+# doc-sync automation — Slack + run config (EXAMPLE / template).
+# Copy to doc_sync.yaml (gitignored) and fill real ids. Used by /doc-sync-sweep + /doc-sync-digest.
+
+slack:
+  # Test target: owner's DM (a Slack user id doubles as the DM channel id).
+  dm_user_id: "<slack-user-id>"     # owner's Slack user id
+  # Live target: the team channel. Fill the real channel id before flipping --target to channel.
+  channel_id: ""                    # team channel id (leave blank to block channel posts)
+  # cc'd on every comment + Slack summary (Confluence account id = people.yaml jira_id).
+  cc_account_id: "<confluence-account-id>"
+
+default_target: dm                  # dm until channel_id is filled + owner flips it
+
+inventory_file: config/doc_sync_inventory.yaml
+state_db: state/doc_sync.db
+cloud_id: "<confluence-cloud-id>"   # Confluence cloudId
