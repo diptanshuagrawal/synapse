@@ -59,6 +59,109 @@ def _load_yaml_channel_ids() -> set[str]:
     return out
 
 
+def _load_yaml_channels_full() -> list[dict]:
+    """Every channel entry in slack_channels.yaml with id/name/class — the
+    decision input for the prune pass."""
+    with CHANNELS_YAML.open() as f:
+        cfg = yaml.safe_load(f)
+    out = []
+    for c in cfg.get("channels", []):
+        cid = c.get("id")
+        if cid and cid != "TODO":
+            out.append({"id": cid, "name": c.get("name", cid),
+                        "class": c.get("class", "")})
+    return out
+
+
+def _channel_team_active(conn, cid: str, team_ids: set[str],
+                         subteam_ids: set[str], days: int) -> bool:
+    """True if the channel has ≥1 team-involved slack message in the last
+    `days` (author ∈ team, or body @-mentions a team member / pings a team
+    subteam). Drives the stale-prune decision off the SAME team-involvement
+    rule the ingest uses — so 'stale' means 'dead for us', not just quiet."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows = conn.execute(
+        "SELECT actor, body FROM events WHERE source='slack' AND channel_id=? "
+        "AND ts >= ?",
+        (cid, since),
+    ).fetchall()
+    for actor, body in rows:
+        if _is_team_involved(actor, body, team_ids, subteam_ids):
+            return True
+    return False
+
+
+def _find_prunable(channels: list[dict], client, conn, team_ids: set[str],
+                   subteam_ids: set[str], stale_days: int) -> list[dict]:
+    """Channels currently in yaml that should be removed:
+      - ARCHIVED (any class) — Slack reports is_archived, or the channel is gone.
+      - STALE auto-discovered — class=='auto-discovered' AND no team activity in
+        `stale_days`. Hand-curated channels are NEVER pruned for staleness;
+        only archived ones.
+    On any ambiguous Slack error the channel is KEPT (conservative)."""
+    out = []
+    for ch in channels:
+        cid, name, klass = ch["id"], ch["name"], ch["class"]
+        archived = None
+        try:
+            info = client.conversations_info(cid)
+            archived = bool(info.get("channel", {}).get("is_archived"))
+        except RuntimeError as e:
+            # channel_not_found / is_archived-only-readable → treat as gone.
+            archived = True if ("not_found" in str(e) or "archived" in str(e)) else None
+        except Exception:
+            archived = None  # network/other → don't risk a removal
+
+        if archived:
+            out.append({"id": cid, "name": name, "class": klass, "reason": "archived"})
+            continue
+        if archived is None:
+            continue  # couldn't verify — keep
+        if klass == "auto-discovered" and not _channel_team_active(
+                conn, cid, team_ids, subteam_ids, stale_days):
+            out.append({"id": cid, "name": name, "class": klass,
+                        "reason": f"stale: 0 team msgs in {stale_days}d"})
+    return out
+
+
+def _remove_channels_from_yaml(ids: set[str]) -> int:
+    """Surgically delete the block for each id from slack_channels.yaml,
+    preserving all other formatting + comments. A block is the `- id: <cid>`
+    line plus its indented body lines (and any blank/comment lines immediately
+    above it that belong to it). Returns the count removed."""
+    lines = CHANNELS_YAML.read_text().splitlines(keepends=True)
+    keep: list[str] = []
+    i = 0
+    removed = 0
+    while i < len(lines):
+        ln = lines[i]
+        stripped = ln.strip()
+        m = stripped.startswith("- id:")
+        cid = stripped.split("- id:", 1)[1].strip() if m else None
+        if m and cid in ids:
+            # Drop this list item: the `- id:` line + all following lines more
+            # indented than the dash (the field body), until the next list item
+            # / comment header / dedent.
+            dash_indent = len(ln) - len(ln.lstrip())
+            i += 1
+            while i < len(lines):
+                nxt = lines[i]
+                if not nxt.strip():           # blank line inside block → drop
+                    i += 1
+                    continue
+                nxt_indent = len(nxt) - len(nxt.lstrip())
+                if nxt_indent <= dash_indent:  # next item / comment / dedent
+                    break
+                i += 1
+            removed += 1
+            continue
+        keep.append(ln)
+        i += 1
+    if removed:
+        CHANNELS_YAML.write_text("".join(keep))
+    return removed
+
+
 EXCLUDE_YAML = _REPO_ROOT / "config" / "discover_exclude.yaml"
 
 
@@ -292,6 +395,14 @@ def main() -> int:
                          "often; this filters out dead ones (default 1)")
     ap.add_argument("--apply", action="store_true",
                     help="append rows to config/slack_channels.yaml")
+    ap.add_argument("--prune", action="store_true",
+                    help="also remove dead channels from yaml: archived (any class) "
+                         "+ stale auto-discovered (no team activity in --prune-stale-days)")
+    ap.add_argument("--prune-stale-days", type=int, default=45,
+                    help="staleness window for pruning auto-discovered channels (default 45)")
+    ap.add_argument("--prune-max-frac", type=float, default=0.30,
+                    help="safety cap: abort the prune if it would remove more than this "
+                         "fraction of channels (guards against a Slack-API blip; default 0.30)")
     ap.add_argument("--json-out",
                     help="write proposals as JSON to this path (for cron-status consumption)")
     args = ap.parse_args()
@@ -470,6 +581,22 @@ def main() -> int:
     print(f"\n[buckets] auto_full={len(auto_full)}  auto_team_involved={len(auto_ti)}  "
           f"needs_review={len(needs_review)}  skipped={len(skipped)}")
 
+    # ── Prune scan (archived + stale auto-discovered already in yaml) ──
+    removable: list[dict] = []
+    if args.prune:
+        from ingest.common import get_db  # noqa: E402
+        yaml_channels = _load_yaml_channels_full()
+        conn = get_db()
+        removable = _find_prunable(yaml_channels, client, conn, team_ids,
+                                   team_subteam_ids, args.prune_stale_days)
+        conn.close()
+        print(f"\n[prune] {len(removable)} removable "
+              f"({sum(r['reason']=='archived' for r in removable)} archived, "
+              f"{sum(r['reason']!='archived' for r in removable)} stale) of "
+              f"{len(yaml_channels)} channels")
+        for r in removable:
+            print(f"  - {r['name'][:40]:<40}  {r['reason']}")
+
     # ── JSON output (for cron-status consumption) ──
     if args.json_out:
         with open(args.json_out, "w") as f:
@@ -480,13 +607,27 @@ def main() -> int:
                 "auto_team_involved": auto_ti,
                 "needs_review": needs_review,
                 "skipped": skipped,
+                "removed": removable,
             }, f, indent=2)
         print(f"\n[json] wrote proposals to {args.json_out}")
 
     # ── Apply ──
     if not args.apply:
-        print("\n[dry] no yaml writes. Re-run with --apply to add auto_* channels.")
+        print("\n[dry] no yaml writes. Re-run with --apply to add/prune channels.")
         return 0
+
+    # Prune removals first (rewrites yaml), guarded by a blast-radius cap so a
+    # Slack-API blip that mis-reports many channels can't wipe the config.
+    if args.prune and removable:
+        total = len(_load_yaml_channels_full())
+        frac = len(removable) / max(1, total)
+        if frac > args.prune_max_frac:
+            print(f"\n[prune] ABORTED — would remove {len(removable)}/{total} "
+                  f"({frac:.0%} > {args.prune_max_frac:.0%} cap). Not pruning; "
+                  "investigate (Slack API blip?). Add candidates are unaffected.")
+        else:
+            n = _remove_channels_from_yaml({r["id"] for r in removable})
+            print(f"[prune] removed {n} channel(s) from config/slack_channels.yaml")
 
     to_add = auto_full + auto_ti
     if not to_add:

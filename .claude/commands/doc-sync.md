@@ -109,9 +109,31 @@ For each doc surface, diff against code/decisions. Five checks, roughly by preci
    - Read the migration body — never infer a column set from a struct name.
 2. **LLD drift**. Doc-named enums / class paths / method signatures vs the graph's
    nodes + signatures. (e.g. "add OrderTypeLien to order_type.go" → is it there?)
-3. **Sequence drift**. The mermaid `sequenceDiagram` steps (participant → message)
-   vs the graph's `flows` + `CALLS` edges. Detect: documented step absent in code,
-   code call the diagram omits, reordered control flow.
+3. **Sequence drift**. Diagram steps (participant → message) vs the graph's `flows` +
+   `CALLS` edges. Detect: documented step absent in code, code call the diagram omits,
+   reordered control flow. **First you must GET THE DIAGRAM SOURCE** — the team's docs
+   rarely use inline mermaid; most are ZenUML macros (source hidden) or PNGs. Resolution
+   order:
+   - **Inline mermaid** (```mermaid fence / ADF `codeBlock` lang=mermaid) → use directly.
+   - **ZenUML "Diagram as Code Lite" macro** → source is in Forge custom-content, NOT the
+     page API (a plain `getConfluencePage`/`fetch` on the id 404s). Extract it via the
+     **logged-in work browser** (Claude-in-Chrome):
+     1. Fetch the page ADF (`getConfluencePage` contentFormat=adf); for each
+        `zenuml-sequence-macro-lite` extension read `parameters.guestParams.customContentId`.
+     2. `list_connected_browsers` → if >1, ask which (use `switch_browser`/`select_browser`);
+        pick the **work browser** signed into Confluence. The page domain needs extension
+        site-access granted, else JS/read are "denied on this domain".
+     3. `navigate` that tab to the page, then `javascript_tool` (wrap in
+        `(async()=>{…})()`, NOT top-level await):
+        `fetch('/wiki/rest/api/content/<customContentId>?expand=body.raw')` →
+        `JSON.parse(body.raw.value).code` = the ZenUML/mermaid source. Diff that vs code.
+     4. If the source is just the default ZenUML template ("Order Service / OrderController
+        / PurchaseService.createPO"), the diagram was never drawn → report "placeholder
+        diagram, not filled in" (a real finding), don't try to diff.
+   - **Image/PNG blob** → not text-extractable; if the work browser is available, a
+     `screenshot` of the rendered diagram can be read visually; else flag "verify manually".
+   - **No browser available (unattended/cron)** → emit ONE low-severity note
+     ("diagram source not machine-readable here — verify manually"); never fabricate steps.
 4. **Behavior drift**. Narrative claims ("computed synchronously", "counter upserted
    here") vs the actual function body. READ THE BODY — a matching function name proves
    structure exists, not that it behaves as claimed. (This is the instant-pay-ATM `OnTransactionFailed`

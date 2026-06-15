@@ -184,8 +184,14 @@ The scripts (`person_v4_manifest.py`, `verify_render.py`, `body_extractors.yaml`
 can stay — they are inert unless `ask.md` calls them.
 
 ### Remaining follow-ups
-- KNOWN GAP: bus-factor uses a low-event heuristic, not true sole-author detection
-  (needs per-slug author count).
+- ~~bus-factor low-event heuristic~~ **FIXED 2026-06-11.** Bus-factor now computes
+  TRUE sole-ownership: per design slug, count distinct owner-role people
+  (AUTHOR/DECIDER/RESOLVER) across the slug's clusters' `participants_json`; flag
+  where the person is the only one. Catches busy sole-owned areas the old ≤5-event
+  proxy missed (April `cash-tds`, 35 events) and drops quiet-but-shared false
+  positives. Breadth count also gained a ≥5-event floor so "primary owner across N
+  areas" isn't inflated by 1-2 event slugs. (April rich narrative corrected — the
+  sole-owned area is cash-TDS, not the charge engine, which has 2 owners.)
 - Apply the same manifest pattern to `/retro` and `team_range` (they share the
   selection-is-stochastic weakness).
 

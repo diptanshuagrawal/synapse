@@ -1,0 +1,17 @@
+# /ticketize runtime config — TEMPLATE (placeholders only; copy to ticketize.yaml with real values).
+# Real ticketize.yaml is gitignored. No org identity belongs in tracked files.
+jira:
+  base_url: https://your-org.atlassian.net
+  project: EX                     # your Jira project key
+  fallback_epic: EX-0000          # catch-all "Tech Misc" epic; new tickets parent here when no confident epic
+  environment_default: PROD       # required custom field default on issue types that mandate it
+  fields:
+    sprint: customfield_10010     # GreenHopper sprint field id (varies by instance)
+    environment: customfield_10162
+  # REST auth reuses ~/.secrets/atlassian_email + atlassian_token
+slack:
+  channel_id: CHANGEME_CHANNEL_ID    # the private owner-only channel the daily candidates post to
+  owner_slack_id: CHANGEME_USER_ID   # only this user's button-clicks / replies are honoured
+  bot_app: relay                  # shared interaction bot; tokens in ~/.secrets/<bot>_slack.env
+link:
+  cmr_link_type: Associated       # Jira issue-link type for CMR<->tracking-ticket (Relates / Associated — varies by instance)

@@ -50,7 +50,12 @@ SQL round-trips (each a full turn re-reading this prompt). So gather EVERYTHING 
 call, then format/enrich in ONE turn.
 
 ```bash
-python3 bin/standup_gather.py <YYYY-MM-DD> <scope>   # scope = team | me | <canonical>
+# EXACT invocation — the script lives at the REPO ROOT bin/ (not work-context/bin/),
+# imports derive.* from work-context/, and needs the work-context venv (system
+# python3 has no yaml). Run from work-context:
+PYTHONPATH=$HOME/context/work-context \
+  $HOME/context/work-context/.venv/bin/python \
+  $HOME/context/bin/standup_gather.py <YYYY-MM-DD> <scope>   # scope = team | me | <canonical>
 ```
 
 It emits, per roster member, in a single pass:
@@ -67,10 +72,15 @@ to approve/execute + In-Review assigned to them), and **`DAY SIGNALS`** (release
 transitions in the window + beta/prod deploy slack callouts). This block feeds the two
 owner-facing sections §7b (Needs your attention) and §7c (For your day).
 
+It also emits **`# ONCALL`** (live Opsgenie, config-driven — §6) and **`# LEAVES`**
+(durable `team_leaves` overlapping the day + 14d upcoming, plus `LIVE-SIGNAL` rows from
+the slack leave scan — §5) right after the freshness header, so on-call and leave need
+NO separate tool calls.
+
 Read its output, then go straight to formatting (§7). Only fall back to ad-hoc SQL /
 `mcp__plugin_context-mode` queries for the ENRICHMENT clause (§8) — the one substantive
 detail from a ticket body or slack thread — which is judgement work, not bulk gather.
-Run Opsgenie (§6) and that's it. Two tool calls (gather + on-call), not ten.
+ONE tool call (the gather), not ten.
 
 If the script errors or the roster/identity model changed, fall back to the manual
 queries below.
@@ -237,26 +247,32 @@ becomes a ticket (debugging, prod support, design back-and-forth, helping teamma
 "today/planned" IS derivable (§9), so Up-next sourced from a dated commitment may be
 stated as planned with the date. Everything else stays "what's true now", not invented.
 
-## 5. LEAVE — live scan + the durable table (both)
+## 5. LEAVE — read the gather's `# LEAVES` block
 
 Mark members who are on leave for the window; don't expect a standup line or call them
-"quiet".
+"quiet". The gather emits a `# LEAVES` block combining BOTH sources — no separate query:
 
-- **Live scan (freshness):** the leaves cron's chat-classify is owner-invoked and lags,
-  so scan the window (± a couple days) of roster slack for leave signals directly —
-  `body` matching `leave|on leave|sick|fever|unwell|ooo|out of office|day off|taking
-  the day|wfh|working from home`. (Validated: a member's sick-leave slack message was
-  in events.db but not yet in `team_leaves`.)
-- **Durable table:** also read `team_leaves` / `derived/team-leaves.md` for planned
-  leave (e.g. a member's multi-day planned leave).
+- `ON-LEAVE-THIS-DAY` / `UPCOMING` rows = the durable `team_leaves` table (overlapping
+  the window day + planned leave in the next 14 days).
+- `LIVE-SIGNAL` rows = a live regex scan of roster slack (lookback→window-end), because
+  the leaves cron's chat-classify is owner-invoked and lags. (Validated: a member's
+  sick-leave slack message was in events.db but not yet in `team_leaves`.)
+- JUDGE the LIVE-SIGNAL rows — the regex is broad; a mention of someone ELSE's OOO or a
+  "wfh" in passing is not the member's leave. Check who's speaking and what they say.
 - Render on-leave members as `### <Name> — 🌴 on leave (sick/ooo, <date>)` with the
-  permalink; skip the four-line block.
+  permalink; skip the four-line block. Mention near-term `UPCOMING` leave as a one-line
+  note in that member's section.
 
-## 6. ONCALL — Opsgenie (live, config-driven)
+(Manual fallback if the gather block is missing: query `team_leaves` + scan roster slack
+`body` for `leave|sick|fever|unwell|ooo|out of office|day off|wfh|working from home`.)
 
-The on-call source is CONFIG-DRIVEN — read `work-context/config/oncall.yaml`; never
-hardcode the schedule name. It supplies `opsgenie.schedule`, `identifier_type`, and
-`api_key_env`. Then:
+## 6. ONCALL — read the gather's `# ONCALL` block
+
+The gather queries Opsgenie itself (config-driven via `work-context/config/oncall.yaml`
+— `opsgenie.schedule`, `identifier_type`, `api_key_env`; never hardcode the schedule
+name) and emits `# ONCALL` with the participant email already mapped to a roster
+canonical. If the block shows `⚠️` (no key / lookup failed), fall back to the manual
+call and SAY the on-call source was degraded:
 
 ```bash
 # values from config/oncall.yaml
@@ -264,9 +280,8 @@ curl -s -H "Authorization: GenieKey ${!api_key_env}" \
   "https://api.opsgenie.com/v2/schedules/${schedule}/on-calls?scheduleIdentifierType=${identifier_type}" \
   | python3 -c "import sys,json;d=json.load(sys.stdin).get('data',{});print([p.get('name') for p in d.get('onCallParticipants',[])])"
 ```
-(Currently `schedule: SERVICE-EXAMPLE-POD_schedule`, `api_key_env: OPSGENIE_API_KEY`.)
 
-Map the returned email to a roster canonical and badge that person
+Badge the on-call person
 `### <Name> — 📟 on-call`. Their incident / alert / log-triage work is EXPECTED — frame
 it as on-call duty, not as a red flag or as their feature work.
 
@@ -374,7 +389,7 @@ in §7b, not here.
   `link=https://example.slack.com/archives/...` field on EVERY slack row (authored +
   @-asks), valid for root posts and replies alike (built from the message's own ts, not
   thread_ts). Copy that `link=` value verbatim — never hand-construct or drop it.
-- **Pre-save check (mandatory):** before writing any file, scan every rendered line that
+- **Pre-save check (mandatory):** before posting/replying, scan every rendered line that
   mentions a slack thread/ask/message ("flagged in", "asked", "thread", "in #channel",
   a teammate quote). Each MUST carry a `[thread](…)` link from the gather's `link=` field.
   If a referenced row truly has no `link=` (rare), append `(no linkable ts)` so the gap is
@@ -390,27 +405,19 @@ in §7b, not here.
   as planned, with the thread link. Never invent a plan beyond that.
 - Plain language — no cluster IDs, no SP math, no tool jargon.
 
-## 10. Save — md files (mandatory)
+## 10. Output — NO md files (changed 2026-06-12, owner decision)
 
-Every run writes markdown under `management/standup/<YYYY-MM-DD>/` (`mkdir -p`).
-**A same-day re-run OVERWRITES the existing files in place** (latest run wins — the
-digest is a snapshot, not a log; stale `-2`/`-3` copies just confuse). Read-only on all
-sources. (If you ever need to keep a prior run, copy it out manually first.)
+**Do NOT write markdown files.** The digest is delivered, not archived (the old
+`management/standup/<date>/` team.md + per-person files cost ~3 min of duplicate
+generation per run and weren't being read). Read-only on all sources; the only outputs:
 
-- **`team` scope** writes BOTH:
-  - the combined digest → `management/standup/<date>/team.md` — **`⚠️ Needs your
-    attention` (§7b) and `📋 For your day` (§7c) at the TOP**, then the 7 per-person
-    sections, then `## Team summary`. AND
-  - one **per-person file** per report → `management/standup/<date>/<canonical>.md`
-    (that person's section only — its own header + the four lines / on-call / leave).
-    So each report's update is an individual, shareable md (drop into a 1:1, ping the
-    person, track over time). The owner sections (§7b/§7c) live ONLY in `team.md`, not in
-    the per-person files.
-- **`me` / `<person>` scope** writes just `management/standup/<date>/<canonical>.md`.
+- **Scheduled `team` run** → the Slack post (per the scheduled task's Step 3) +
+  this chat transcript.
+- **Interactive run (any scope)** → the chat reply only.
 
-Each file is self-contained markdown (own title + date + the rendered section). The
-chat reply **leads with `⚠️ Needs your attention` (§7b) and `📋 For your day` (§7c)**,
-then the team digest, and ends with `**Saved to:** <dir>` listing the files.
+The chat reply **leads with `⚠️ Needs your attention` (§7b) and `📋 For your day`
+(§7c)**, then the per-person sections, then `## Team summary`. The "pre-save check"
+(§8) still applies — run it on the rendered digest before posting/replying.
 
 ## Hard constraints
 
