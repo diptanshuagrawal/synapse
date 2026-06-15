@@ -29,17 +29,50 @@ _INGEST_SCRIPT = {
 }
 
 
-def source_running(src: str) -> bool:
-    """True if the source's ingest process is actually live (pgrep -f)."""
+def _live_pids(src: str) -> list[int]:
+    """PIDs of the source's live ingest process(es) (pgrep -f), oldest-first-agnostic."""
     pat = _INGEST_SCRIPT.get(src)
     if not pat:
-        return False
+        return []
     try:
         r = subprocess.run(["pgrep", "-f", pat],
                            capture_output=True, text=True, timeout=3)
-        return r.returncode == 0 and bool(r.stdout.strip())
+        if r.returncode != 0:
+            return []
+        return [int(p) for p in r.stdout.split() if p.strip().isdigit()]
     except Exception:
-        return False
+        return []
+
+
+def source_running(src: str) -> bool:
+    """True if the source's ingest process is actually live (pgrep -f)."""
+    return bool(_live_pids(src))
+
+
+def live_inflight_min(src: str) -> float | None:
+    """Minutes the live ingest process has actually been running, from the OS
+    (ps -o etimes on the pgrep'd PID) rather than a log-parsed 'starting' line.
+
+    A run that logged 'starting' but never logged 'Done.' (killed mid-run, or
+    log lines interleaved across overlapping fires) leaves an orphaned open
+    start; pairing it with a younger live run inflates the in-flight duration
+    into a phantom overrun. Reading the actual process age sidesteps that.
+    Returns the OLDEST matching process's age, or None if not derivable.
+    """
+    pids = _live_pids(src)
+    if not pids:
+        return None
+    ages: list[float] = []
+    for pid in pids:
+        try:
+            r = subprocess.run(["ps", "-o", "etimes=", "-p", str(pid)],
+                               capture_output=True, text=True, timeout=3)
+            secs = r.stdout.strip()
+            if secs.isdigit():
+                ages.append(int(secs) / 60)
+        except Exception:
+            continue
+    return max(ages) if ages else None
 
 
 def fire_interval_min(fire_minutes: list[int]) -> int | None:
