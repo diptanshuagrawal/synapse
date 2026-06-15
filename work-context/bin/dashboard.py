@@ -860,6 +860,9 @@ async function refresh() {
 }
 
 function drawChart(ts) {
+  // Chart.js comes from a CDN; if it failed to load (offline / blocked) skip
+  // the chart rather than throwing and aborting the rest of refresh().
+  if (typeof Chart === "undefined") return;
   const labels = ts.buckets;
   const colors = {github:"#5eb1ff", jira:"#9b8eff", confluence:"#d56dff", slack:"#f2c14e"};
   const datasets = Object.entries(ts.by_source).map(([src, data]) => ({
@@ -1096,8 +1099,15 @@ async function loadDiscover() {
 }
 
 async function refreshAll() {
-  await refresh();
-  loadDiscover();  // depends on slack lane being rendered
+  // loadDiscover must NOT be coupled to refresh() completing — the chart draw
+  // (Chart.js from CDN) at the tail of refresh() can throw when the CDN is
+  // blocked/offline, which would otherwise leave the discover panel stuck on
+  // "loading…". The finally fires it once the lanes div exists.
+  try {
+    await refresh();
+  } finally {
+    loadDiscover();  // needs only the discoverTable div (rendered mid-refresh)
+  }
 }
 
 refreshAll();
