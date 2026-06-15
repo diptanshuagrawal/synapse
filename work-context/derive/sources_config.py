@@ -90,6 +90,10 @@ def slack_mcp_server() -> str:
     """Slack MCP server id (the hash in mcp__<id>__slack_*). Empty if unset."""
     return _get("slack.mcp_server", env="SLACK_MCP_SERVER", default="")
 
+def rollup_channel() -> str:
+    """Slack channel id the rollup-classify routine posts its run-summary to. Empty if unset."""
+    return _get("slack.rollup_channel", env="ROLLUP_CHANNEL", default="")
+
 def org_match_tokens() -> list[str]:
     """Org-specific lowercase shorthands used to match channel/slug/ticket names
     (e.g. the jira-key + service abbreviations). Generic by default."""
