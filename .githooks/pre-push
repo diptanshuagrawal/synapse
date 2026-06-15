@@ -31,18 +31,21 @@ if [ "$fail" -ne 0 ]; then
   exit 1
 fi
 
-# Opt-in test gate. OFF by default so a routine push is never gated on test
-# state; export RUN_TESTS=1 (or set it once: git config --local hooks.runtests 1
-# and `export RUN_TESTS=$(git config --get hooks.runtests)`) to block a push
-# when the ingest/derive suite is red.
-if [ "${RUN_TESTS:-0}" = "1" ]; then
+# Test gate — ON by default. The ingest/derive suite runs in well under a
+# second, so every push is gated on green. Escape hatch for an emergency push
+# (e.g. a known-unrelated red test): SKIP_TESTS=1 git push  (or --no-verify,
+# which also skips the leak-scan above — prefer SKIP_TESTS=1).
+if [ "${SKIP_TESTS:-0}" != "1" ]; then
   RUNNER="$REPO_ROOT/work-context/bin/run-tests.sh"
   if [ -x "$RUNNER" ]; then
-    echo "pre-push: RUN_TESTS=1 → running test suite…" >&2
+    echo "pre-push: running test suite (SKIP_TESTS=1 to bypass)…" >&2
     if ! "$RUNNER" >&2; then
-      echo "pre-push BLOCKED — tests failed (unset RUN_TESTS to skip)." >&2
+      echo "" >&2
+      echo "pre-push BLOCKED — tests failed. Fix them, or SKIP_TESTS=1 git push to override." >&2
       exit 1
     fi
+  else
+    echo "pre-push: test runner $RUNNER missing/not-executable — skipping tests." >&2
   fi
 fi
 exit 0
