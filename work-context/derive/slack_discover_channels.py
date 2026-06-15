@@ -69,39 +69,61 @@ def _load_yaml_channels_full() -> list[dict]:
         cid = c.get("id")
         if cid and cid != "TODO":
             out.append({"id": cid, "name": c.get("name", cid),
-                        "class": c.get("class", "")})
+                        "class": c.get("class", ""),
+                        "ingest_mode": c.get("ingest_mode", "")})
     return out
 
 
-def _channel_team_active(conn, cid: str, team_ids: set[str],
-                         subteam_ids: set[str], days: int) -> bool:
-    """True if the channel has ≥1 team-involved slack message in the last
-    `days` (author ∈ team, or body @-mentions a team member / pings a team
-    subteam). Drives the stale-prune decision off the SAME team-involvement
-    rule the ingest uses — so 'stale' means 'dead for us', not just quiet."""
+def _channel_active(conn, cid: str, days: int) -> bool:
+    """True if the channel has ≥1 slack message of ANY author (incl. bots) in
+    the last `days`. Deliberately NOT team-involvement: alert/bot channels carry
+    real value with zero team-authored messages, so 'stale' must mean 'no
+    traffic at all' — otherwise the prune would delete live alert feeds. A
+    dead, auto-discovered channel is re-added by the additive discovery pass if
+    it ever revives, so this prune is self-healing."""
     since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    rows = conn.execute(
-        "SELECT actor, body FROM events WHERE source='slack' AND channel_id=? "
-        "AND ts >= ?",
+    n = conn.execute(
+        "SELECT 1 FROM events WHERE source='slack' AND channel_id=? AND ts >= ? LIMIT 1",
         (cid, since),
-    ).fetchall()
-    for actor, body in rows:
-        if _is_team_involved(actor, body, team_ids, subteam_ids):
-            return True
-    return False
+    ).fetchone()
+    return n is not None
 
 
-def _find_prunable(channels: list[dict], client, conn, team_ids: set[str],
-                   subteam_ids: set[str], stale_days: int) -> list[dict]:
-    """Channels currently in yaml that should be removed:
-      - ARCHIVED (any class) — Slack reports is_archived, or the channel is gone.
-      - STALE auto-discovered — class=='auto-discovered' AND no team activity in
-        `stale_days`. Hand-curated channels are NEVER pruned for staleness;
-        only archived ones.
+def _slack_last_msg_age_days(client, cid: str) -> float | None:
+    """Age (days) of the channel's most recent Slack message, via
+    conversations.history. None if the call fails. -1 sentinel if the channel
+    has no messages at all (treat as very old)."""
+    try:
+        r = client._call("conversations.history", {"channel": cid, "limit": 1})
+    except Exception:
+        return None
+    msgs = r.get("messages", [])
+    if not msgs:
+        return -1.0
+    try:
+        ts = float(msgs[0]["ts"])
+    except (KeyError, ValueError, TypeError):
+        return None
+    return (datetime.now(timezone.utc).timestamp() - ts) / 86400.0
+
+
+def _find_prunable(channels: list[dict], client, conn, stale_days: int):
+    """Decide what to remove from yaml. Returns (removable, ingest_gaps).
+
+    `events.db` is the right liveness signal because the ingest ALREADY applies
+    each channel's mode filter when storing — so 0-rows-in-window means "nothing
+    we keep for this channel happened":
+      - team_involved channel, 0 rows → no team-involved traffic → dead to us → prune.
+      - full channel, 0 rows → either truly dead OR a storage bug. We disambiguate
+        against Slack: if Slack shows a recent message the ingest SHOULD have
+        stored (full mode) but didn't, that's an INGEST GAP — flag, don't prune.
+
+      - ARCHIVED (any class) → removable.
+      - Hand-curated channels are never pruned for staleness; only archived.
     On any ambiguous Slack error the channel is KEPT (conservative)."""
-    out = []
+    removable, ingest_gaps = [], []
     for ch in channels:
-        cid, name, klass = ch["id"], ch["name"], ch["class"]
+        cid, name, klass, mode = ch["id"], ch["name"], ch["class"], ch.get("ingest_mode", "")
         archived = None
         try:
             info = client.conversations_info(cid)
@@ -113,15 +135,38 @@ def _find_prunable(channels: list[dict], client, conn, team_ids: set[str],
             archived = None  # network/other → don't risk a removal
 
         if archived:
-            out.append({"id": cid, "name": name, "class": klass, "reason": "archived"})
+            removable.append({"id": cid, "name": name, "class": klass, "reason": "archived"})
             continue
         if archived is None:
             continue  # couldn't verify — keep
-        if klass == "auto-discovered" and not _channel_team_active(
-                conn, cid, team_ids, subteam_ids, stale_days):
-            out.append({"id": cid, "name": name, "class": klass,
-                        "reason": f"stale: 0 team msgs in {stale_days}d"})
-    return out
+
+        # Stale check — auto-discovered only.
+        if klass != "auto-discovered":
+            continue
+        if _channel_active(conn, cid, stale_days):
+            continue  # we stored traffic in-window → live (mode-appropriately)
+
+        # 0 stored in-window. For `full` channels that should mean truly empty —
+        # confirm against Slack to separate dead from a storage bug.
+        if mode == "full":
+            age = _slack_last_msg_age_days(client, cid)
+            if age is None:
+                continue  # couldn't verify — keep
+            if 0 <= age <= stale_days:
+                ingest_gaps.append({"id": cid, "name": name, "class": klass,
+                                    "slack_age_days": round(age, 1),
+                                    "reason": f"full-mode but live in Slack ({age:.0f}d), "
+                                              "absent from DB — storage gap"})
+            else:
+                removable.append({"id": cid, "name": name, "class": klass,
+                                  "reason": ("stale: Slack idle "
+                                             + ("(no messages)" if age < 0 else f"{age:.0f}d"))})
+        else:
+            # team_involved (or other filtered mode): 0 stored = no traffic we
+            # keep. Re-added by the additive pass if team involvement returns.
+            removable.append({"id": cid, "name": name, "class": klass,
+                              "reason": f"stale: no team-involved traffic in {stale_days}d"})
+    return removable, ingest_gaps
 
 
 def _remove_channels_from_yaml(ids: set[str]) -> int:
@@ -583,12 +628,13 @@ def main() -> int:
 
     # ── Prune scan (archived + stale auto-discovered already in yaml) ──
     removable: list[dict] = []
+    ingest_gaps: list[dict] = []
     if args.prune:
         from ingest.common import get_db  # noqa: E402
         yaml_channels = _load_yaml_channels_full()
         conn = get_db()
-        removable = _find_prunable(yaml_channels, client, conn, team_ids,
-                                   team_subteam_ids, args.prune_stale_days)
+        removable, ingest_gaps = _find_prunable(yaml_channels, client, conn,
+                                                args.prune_stale_days)
         conn.close()
         print(f"\n[prune] {len(removable)} removable "
               f"({sum(r['reason']=='archived' for r in removable)} archived, "
@@ -596,6 +642,11 @@ def main() -> int:
               f"{len(yaml_channels)} channels")
         for r in removable:
             print(f"  - {r['name'][:40]:<40}  {r['reason']}")
+        if ingest_gaps:
+            print(f"\n[ingest-gap] {len(ingest_gaps)} channel(s) live in Slack but "
+                  "absent from our DB — NOT pruned; fix ingestion:")
+            for g in ingest_gaps:
+                print(f"  ! {g['name'][:40]:<40}  {g['reason']}")
 
     # ── JSON output (for cron-status consumption) ──
     if args.json_out:
@@ -608,6 +659,7 @@ def main() -> int:
                 "needs_review": needs_review,
                 "skipped": skipped,
                 "removed": removable,
+                "ingest_gaps": ingest_gaps,
             }, f, indent=2)
         print(f"\n[json] wrote proposals to {args.json_out}")
 
