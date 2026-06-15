@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# pre-push leak guard.
+# Scans the COMMITS being pushed (not just the current tree) — so a secret that
+# was committed and then deleted in a later commit is STILL caught, because the
+# old commit's blob travels with the push. Scanning by .githooks/leak_scan.py
+# (Python re — BSD grep mishandles \b). Bypass only in emergency: git push --no-verify
+set -uo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+SCANNER="$REPO_ROOT/.githooks/leak_scan.py"
+Z="0000000000000000000000000000000000000000"
+fail=0
+
+[ -f "$SCANNER" ] || { echo "leak-guard: $SCANNER missing — refusing push." >&2; exit 1; }
+
+# git feeds one line per ref being pushed:  <localref> <localsha> <remoteref> <remotesha>
+while read -r localref localsha remoteref remotesha; do
+  [ "$localsha" = "$Z" ] && continue           # branch deletion — nothing to scan
+  if [ "$remotesha" = "$Z" ]; then
+    python3 "$SCANNER" range "$localsha" || fail=1            # new branch: scan all of it
+  else
+    python3 "$SCANNER" range "$localsha" "$remotesha" || fail=1   # only the new commits
+  fi
+done
+
+if [ "$fail" -ne 0 ]; then
+  echo "" >&2
+  echo "pre-push BLOCKED — sensitive data in the commits being pushed (see above)." >&2
+  echo "It may live in an OLDER commit even if your latest files look clean —" >&2
+  echo "rewrite history (git rebase -i / filter-repo) to scrub it before pushing." >&2
+  exit 1
+fi
+exit 0
