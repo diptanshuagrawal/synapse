@@ -86,13 +86,27 @@ def _load_cursors() -> dict[str, str]:
         return json.load(f)
 
 
+def _load_excluded_channels(conn: sqlite3.Connection) -> set[str]:
+    """Channel ids snapshotted as AUTOMATION (alert/recon/digest) by
+    cluster_noise_filter — the same set clustering drops. Their thread replies
+    are intentionally capped (>1000-reply mega-threads) and never feed any
+    derived output, so reply_drift on these is expected, not a defect."""
+    try:
+        rows = conn.execute("SELECT channel_id FROM cluster_excluded_channel").fetchall()
+    except sqlite3.OperationalError:
+        return set()
+    return {r[0] for r in rows}
+
+
 # ── Per-channel checks ──────────────────────────────────────────────────
 
 
-def check_channel(conn: sqlite3.Connection, cid: str, ch: dict, cursors: dict) -> dict:
+def check_channel(conn: sqlite3.Connection, cid: str, ch: dict, cursors: dict,
+                  excluded: set[str] | None = None) -> dict:
     findings: list[tuple[str, str, str]] = []  # (severity, check, msg)
     name = ch.get("name", cid)
     keep_bot = ch.get("keep_bot_messages", False)
+    is_automation = cid in (excluded or set())
 
     # 1. counts
     row = conn.execute(
@@ -118,12 +132,19 @@ def check_channel(conn: sqlite3.Connection, cid: str, ch: dict, cursors: dict) -
     if declared > 0:
         drift_abs = abs(declared - replies_db)
         drift_pct = (drift_abs / declared) * 100
-        if drift_pct >= REPLY_DRIFT_FAIL_PCT:
-            findings.append(("FAIL", "reply_drift",
-                             f"replies_db={replies_db} declared={declared} ({drift_pct:.1f}% off)"))
-        elif drift_pct >= REPLY_DRIFT_WARN_PCT:
-            findings.append(("WARN", "reply_drift",
-                             f"replies_db={replies_db} declared={declared} ({drift_pct:.1f}% off)"))
+        if drift_pct >= REPLY_DRIFT_WARN_PCT:
+            # Automation channels (alert/recon/digest) are excluded from
+            # clustering and routinely carry >1000-reply mega-threads that hit
+            # the ingest reply cap — drift there is expected, not a defect.
+            # Surface it as INFO (visible, not counted as FAIL/WARN).
+            if is_automation:
+                sev = "INFO"
+            else:
+                sev = "FAIL" if drift_pct >= REPLY_DRIFT_FAIL_PCT else "WARN"
+            note = " [automation — drift expected]" if is_automation else ""
+            findings.append((sev, "reply_drift",
+                             f"replies_db={replies_db} declared={declared} "
+                             f"({drift_pct:.1f}% off){note}"))
 
     # 3. cursor lag
     cursor = cursors.get(cid)
@@ -325,10 +346,11 @@ def main() -> int:
     cursors = _load_cursors()
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = None
+    excluded = _load_excluded_channels(conn)
 
     per_channel: list[dict] = []
     for cid, ch in channels.items():
-        c = check_channel(conn, cid, ch, cursors)
+        c = check_channel(conn, cid, ch, cursors, excluded)
         if args.deep:
             c["findings"].extend(deep_check_channel(cid, ch.get("name", cid), conn))
         per_channel.append(c)
