@@ -254,6 +254,58 @@ WAL mode + 30s busy timeout on every connection.
 
 ---
 
+## Testing & pipeline validation
+
+Two complementary layers guard the pipeline.
+
+**1. Unit / integration tests** (`tests/`, pytest) — fast, hermetic, never touch
+the real `events.db` (fixtures redirect every persistent path at a tmp tree):
+
+```bash
+bin/run-tests.sh                 # full suite (installs pytest on first use)
+bin/run-tests.sh -v              # verbose
+bin/run-tests.sh tests/test_common_enrich_refs.py   # one file
+```
+
+Coverage focuses on the highest-leverage, most-regressable code:
+
+| file | what it pins |
+|------|--------------|
+| `test_common_enrich_refs.py` | every ref-extraction regex + project/person resolution + the 16-digit Slack-ts rule |
+| `test_common_insert_event.py` | dedup-on-id, refs fan-out, FTS sync, dry-run |
+| `test_common_atomic_and_raw.py` | atomic-write durability + temp cleanup; `append_raw` line numbering |
+| `test_common_cursors.py` | cursor round-trip + success-date markers |
+| `test_run_health.py` | ingest-overrun 80%/100%-of-interval thresholds |
+| `test_jira_metrics.py` | dedup credit, attribution chain, dev-vs-reviewer, ops detection |
+| `test_pipeline_validate.py` | the integrity validator's own FAIL/WARN branches |
+| `test_jira_normalize.py` | Jira JSON→Event: ADF flatten, sprint pick, +0530 ts, epic prefix, changelog fan-out |
+| `test_github_normalize.py` | PR opened/closed/merged collapse, review/comment, commit actor-resolution chain |
+| `test_confluence_normalize.py` | page created/updated, version-author precedence, body cap, comment |
+| `test_slack_parse.py` | bot block/attachment recovery, mention/subteam expand, files, reactions, thread-reply detection |
+| `test_slack_upsert.py` | id-vs-subject thread split, ts/url builders, UPSERT insert/update/unchanged |
+
+Opt-in pre-push gate: `export RUN_TESTS=1` makes `.githooks/pre-push` block a
+push when the suite is red (off by default — a routine push is never gated).
+
+**2. Data validators** (`derive/*_validate.py`) — runtime PASS/WARN/FAIL checks
+on the live DB, refreshed after each ingest and rendered by `cron-status`:
+
+- `jira_validate.py` / `github_validate.py` / `confluence_validate.py` /
+  `slack_validate.py` — per-source **attribution + content** quality.
+- `pipeline_validate.py` — **cross-cutting structural integrity** (schema
+  NOT-NULLs, ISO-8601 ts, no future ts, source/event_type vocabulary, orphan
+  `event_refs`, FTS↔events row-count sync, `raw_path` collisions from the
+  `append_raw` race, and per-source **freshness** — the silent-stale guard).
+  Report-only; refreshed by `ingest/refresh-pipeline-validate.sh` on every
+  fire; shown as the **INTEGRITY** block in `cron-status`.
+
+```bash
+.venv/bin/python derive/pipeline_validate.py          # human-readable
+.venv/bin/python derive/pipeline_validate.py --json    # cron-status cache
+```
+
+---
+
 ## Rollup pipeline
 
 `derive/rollup.py` reads `index/events.db` and regenerates all `derived/` markdown.

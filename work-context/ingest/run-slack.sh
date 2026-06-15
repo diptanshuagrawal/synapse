@@ -30,6 +30,9 @@ fi
   > "$ROOT/state/last_slack_validate.json.tmp" 2>/dev/null \
   && mv "$ROOT/state/last_slack_validate.json.tmp" "$ROOT/state/last_slack_validate.json" \
   || rm -f "$ROOT/state/last_slack_validate.json.tmp"
+
+# Cross-cutting pipeline-integrity validate cache (all sources).
+"$ROOT/ingest/refresh-pipeline-validate.sh" "$ROOT" || true
 set -e
 
 # slack_ingest_app writes STATE_FILE itself on any-channel success.

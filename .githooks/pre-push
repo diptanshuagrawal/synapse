@@ -30,4 +30,19 @@ if [ "$fail" -ne 0 ]; then
   echo "rewrite history (git rebase -i / filter-repo) to scrub it before pushing." >&2
   exit 1
 fi
+
+# Opt-in test gate. OFF by default so a routine push is never gated on test
+# state; export RUN_TESTS=1 (or set it once: git config --local hooks.runtests 1
+# and `export RUN_TESTS=$(git config --get hooks.runtests)`) to block a push
+# when the ingest/derive suite is red.
+if [ "${RUN_TESTS:-0}" = "1" ]; then
+  RUNNER="$REPO_ROOT/work-context/bin/run-tests.sh"
+  if [ -x "$RUNNER" ]; then
+    echo "pre-push: RUN_TESTS=1 → running test suite…" >&2
+    if ! "$RUNNER" >&2; then
+      echo "pre-push BLOCKED — tests failed (unset RUN_TESTS to skip)." >&2
+      exit 1
+    fi
+  fi
+fi
 exit 0
