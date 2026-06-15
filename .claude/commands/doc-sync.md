@@ -134,7 +134,21 @@ For each doc surface, diff against code/decisions. Five checks, roughly by preci
      4. ALWAYS verify against the RENDERED diagram: expand the diagram's section, then
         `screenshot` + `zoom` the SVG and read participants + messages visually — that is
         the source of truth. Only call it a "placeholder diagram" if the RENDERED diagram
-        is the default template. Diff the rendered steps vs code-graph flows/CALLS.
+        is the default template.
+   - **RIGOR IS MANDATORY — no structural glance.** A "looks aligned" pass is NOT
+     acceptable. To emit a sequence verdict you MUST:
+     a. Capture the diagram TOP-TO-BOTTOM (multiple zoomed screenshots) and transcribe
+        EVERY participant + message + opt/alt block, in order. Partial reads → keep
+        scrolling; do not conclude from the visible portion.
+     b. READ the actual code path end-to-end (the real entry fn, e.g. `Execute()`, plus
+        the helpers it calls — lock acquire, validations, build, persist, status) and list
+        the real call order with `file:line`.
+     c. Diff STEP-BY-STEP IN ORDER. Report per-step: matches / missing-in-code /
+        missing-in-diagram / **reordered** (same steps, different order is a real drift).
+        Naming-label mismatches (table/field names in the diagram vs code) are findings too.
+     d. State the verdict precisely ("N steps match, M reordered, K naming") — never the
+        vague "in sync". If you couldn't read the whole diagram or trace the whole path,
+        say so and mark the check incomplete rather than claiming sync.
    - **Image/PNG blob** → not text-extractable; if the work browser is available, a
      `screenshot` of the rendered diagram can be read visually; else flag "verify manually".
    - **No browser available (unattended/cron)** → emit ONE low-severity note
