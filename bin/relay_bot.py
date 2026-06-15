@@ -20,6 +20,8 @@ import os, re, sys, json, subprocess
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(ROOT, "work-context/config/ticketize.yaml")
 SECRETS = os.path.expanduser("~/.secrets")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ticketize_apply as ta  # reuse jira_auth/epic_title/search_epic (no main run on import)
 
 
 def load_cfg():
@@ -44,18 +46,25 @@ def parse_candidates(date):
     path = candidates_path(date)
     if not os.path.exists(path):
         return None
-    out, cur = [], None
-    for line in open(path):
-        h = HEAD_RE.match(line.rstrip())
+    out, cur, last = [], None, None
+    for raw in open(path):
+        line = raw.rstrip()
+        h = HEAD_RE.match(line)
         if h:
             if cur:
                 out.append(cur)
             cur = {"label": h.group(1), "name": h.group(2).strip(), "status_tag": (h.group(3) or "").lower()}
+            last = None
             continue
-        if cur:
-            f = FIELD_RE.match(line.rstrip())
-            if f:
-                cur[f.group(1)] = f.group(2).strip()
+        if cur is None:
+            continue
+        f = FIELD_RE.match(line)
+        if f:
+            cur[f.group(1)] = f.group(2).strip(); last = f.group(1)
+        elif last and raw.startswith(("  ", "\t")) and line.strip():
+            cur[last] += " " + line.strip()   # multi-line field value (e.g. a wrapped `why:`)
+        else:
+            last = None
     if cur:
         out.append(cur)
     return out
@@ -69,37 +78,65 @@ def open_candidates(date):
 
 
 # ---------- posting ----------
+TIER_GLOSS = {"🔴": "🔴 touches money / ledger — human-driven",
+              "🟡": "🟡 feature work", "🟢": "🟢 small / mechanical"}
+
+
+def fmt_refs(ev):
+    """Turn the evidence string into nice labelled links."""
+    out = []
+    for tok in re.split(r"[\s·,]+", ev or ""):
+        if not tok.startswith("http"):
+            continue
+        m = re.search(r"/browse/([A-Z]+-\d+)", tok)
+        if m:
+            out.append(f"<{tok}|{m.group(1)}>"); continue
+        m = re.search(r"/pull/(\d+)", tok)
+        if m:
+            out.append(f"<{tok}|PR #{m.group(1)}>"); continue
+        out.append(f"<{tok}|link>")
+    return "  ·  ".join(out)
+
+
 def build_blocks(date, opens):
-    blocks = [{
-        "type": "header",
-        "text": {"type": "plain_text", "text": f"Ticket candidates — {date}"},
-    }, {
-        "type": "context",
-        "elements": [{"type": "mrkdwn",
-                      "text": "Tap *Approve* to create (active sprint · Tech-Misc epic) or *Reject*. Owner-only."}],
-    }, {"type": "divider"}]
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": f"🎫 Ticket candidates — {date}"}},
+        {"type": "context", "elements": [{"type": "mrkdwn",
+            "text": "Untracked work I found. *Approve* → I create the Jira ticket. *Reject* → I drop it. (only you can act)"}]},
+        {"type": "divider"},
+    ]
     for c in opens:
         tier = c.get("code_tier", "")
-        ev = c.get("evidence", "")
-        txt = f"*{c['label']} — {c.get('summary','(no summary)')}*"
+        gloss = next((v for k, v in TIER_GLOSS.items() if k in tier), tier)
+        lines = [f"*{c['label']}  ·  {c.get('summary','(no summary)')}*", ""]
         if c.get("why"):
-            txt += f"\n{c['why']}"
-        txt += f"\nProposing a *{c.get('type','Task')}* for *{c.get('assignee','?')}*"
-        if tier:
-            txt += f"  ·  {tier}"
-        if ev:
-            txt += f"  ·  <{ev}|evidence>"
+            why = c["why"]
+            why = (why[:300].rstrip() + "…") if len(why) > 300 else why
+            lines.append(f"📌 *Why it matters*\n{why}")
+            lines.append("")
+        lines.append(f"✅ *Proposed ticket:*  a *{c.get('type','Task')}*  →  *{c.get('name','?')}*")
+        ek, et, base = c.get("epic_key"), c.get("epic_title"), c.get("base_url", "")
+        if ek:
+            epic_md = f"<{base}/browse/{ek}|{ek}>" + (f"  _{et}_" if et else "")
+        else:
+            epic_md = (c.get("epic") or "—").split(" (")[0]
+        lines.append(f"📂 *Epic (suggested, editable on approve):*  {epic_md}")
+        if gloss:
+            lines.append(f"⚖️ *Risk:*  {gloss}")
+        refs = fmt_refs(c.get("evidence", ""))
+        if refs:
+            lines.append(f"🔗 *Refs:*  {refs}")
         fp = c.get("fingerprint", "")
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": txt}})
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}})
         blocks.append({"type": "actions", "block_id": f"act_{c['label']}", "elements": [
-            {"type": "button", "style": "primary", "text": {"type": "plain_text", "text": f"Approve {c['label']}"},
+            {"type": "button", "style": "primary", "text": {"type": "plain_text", "text": f"✓ Approve {c['label']}"},
              "action_id": f"tkz:{date}:{fp}:approve:{c['label']}", "value": c["label"]},
-            {"type": "button", "style": "danger", "text": {"type": "plain_text", "text": "Reject"},
+            {"type": "button", "style": "danger", "text": {"type": "plain_text", "text": "✕ Reject"},
              "action_id": f"tkz:{date}:{fp}:reject:{c['label']}", "value": c["label"]},
         ]})
-    blocks.append({"type": "divider"})
+        blocks.append({"type": "divider"})
     blocks.append({"type": "context", "elements": [
-        {"type": "mrkdwn", "text": f"mode: *{os.environ.get('RELAY_APPLY_MODE','dry')}* · {len(opens)} open"}]})
+        {"type": "mrkdwn", "text": f"{len(opens)} open · created tickets land in the active sprint"}]})
     return blocks
 
 
@@ -114,6 +151,16 @@ def do_post(date):
     if not opens:
         client.chat_postMessage(channel=ch, text=f"No new ticketable gaps for {date}. ✅")
         print("posted: none-open"); return
+    # enrich each candidate with its suggested epic's title (read-only Jira)
+    try:
+        base, auth = cfg["jira"]["base_url"], ta.jira_auth()
+        for c in opens:
+            ke = (c.get("epic") or "").split()[0]
+            if re.match(r"^[A-Z]+-\d+$", ke):
+                c["epic_key"], c["base_url"] = ke, base
+                c["epic_title"] = ta.epic_title(base, auth, ke)
+    except Exception as e:
+        print(f"epic-title enrich skipped: {e}", file=sys.stderr)
     r = client.chat_postMessage(channel=ch, text=f"Ticket candidates — {date} ({len(opens)} open)",
                                 blocks=build_blocks(date, opens))
     print(f"posted {len(opens)} candidates to {ch} ts={r['ts']}")
@@ -128,26 +175,75 @@ def run_listener():
     mode = os.environ.get("RELAY_APPLY_MODE", "dry")
     app = App(token=secret("relay_slack_bot_token"))
 
-    @app.action(re.compile(r"^tkz:"))
-    def handle(ack, body, client, action, logger):
-        ack()
+    def run_apply(date, fp, decision, epic_input=None):
+        if mode != "live":
+            return True, f"🧪 dry — would {decision} (epic='{epic_input or ''}'); set RELAY_APPLY_MODE=live to action"
+        cmd = [sys.executable, os.path.join(ROOT, "bin/ticketize_apply.py"),
+               "--date", date, "--fingerprint", fp, "--decision", decision]
+        if epic_input:
+            cmd += ["--epic-input", epic_input]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        out = (res.stdout.strip() or res.stderr.strip() or "")
+        note = out.splitlines()[-1] if out else ""
+        return res.returncode == 0, note
+
+    def is_owner(body, client):
         uid = body["user"]["id"]
         if uid != owner:
-            client.chat_postEphemeral(channel=body["channel"]["id"], user=uid,
-                                      text="Not authorized — only the owner can action these.")
+            ch = (body.get("channel") or {}).get("id")
+            if ch:
+                client.chat_postEphemeral(channel=ch, user=uid, text="Only the owner can action these.")
+            return False
+        return True
+
+    @app.action(re.compile(r"^tkz:.*:approve:"))
+    def on_approve(ack, body, client, action):
+        ack()
+        if not is_owner(body, client):
             return
         _, date, fp, verb, label = action["action_id"].split(":", 4)
-        ts = body["message"]["ts"]; ch = body["channel"]["id"]
-        if mode == "live":
-            res = subprocess.run([sys.executable, os.path.join(ROOT, "bin/ticketize_apply.py"),
-                                  "--date", date, "--fingerprint", fp, "--decision", verb],
-                                 capture_output=True, text=True)
-            ok = res.returncode == 0
-            note = (res.stdout.strip() or res.stderr.strip() or "").splitlines()[-1] if (res.stdout or res.stderr) else ""
-            msg = f"{'✅' if ok else '⚠️'} {label} {verb} — {note}"
-        else:
-            msg = f"🧪 (dry) would {verb} {label} [{fp}] for {date} — set RELAY_APPLY_MODE=live to action"
-        client.chat_postMessage(channel=ch, thread_ts=ts, text=msg)
+        cands = parse_candidates(date) or []
+        c = next((x for x in cands if x.get("fingerprint") == fp), {})
+        suggested = (c.get("epic") or "").split(" (")[0]
+        client.views_open(trigger_id=body["trigger_id"], view={
+            "type": "modal", "callback_id": "tkz_apply",
+            "private_metadata": json.dumps({"date": date, "fp": fp, "label": label,
+                                            "channel": body["channel"]["id"], "msg_ts": body["message"]["ts"]}),
+            "title": {"type": "plain_text", "text": "Create ticket"},
+            "submit": {"type": "plain_text", "text": "Create"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn",
+                 "text": f"*{label}* — {c.get('summary','')}\nCreating a *{c.get('type','Task')}* for *{c.get('name','?')}*."}},
+                {"type": "input", "block_id": "epic",
+                 "label": {"type": "plain_text", "text": "Epic"},
+                 "element": {"type": "plain_text_input", "action_id": "epic_val",
+                             "initial_value": suggested,
+                             "placeholder": {"type": "plain_text", "text": "EX-1234  or  keywords e.g. atm charges"}},
+                 "hint": {"type": "plain_text", "text": "A key (EX-1234) is used as-is. Keywords search open epics and pick the best match."}},
+            ],
+        })
+
+    @app.view("tkz_apply")
+    def on_submit(ack, body, client, view):
+        ack()
+        m = json.loads(view["private_metadata"])
+        if body["user"]["id"] != owner:
+            return
+        epic_in = (view["state"]["values"]["epic"]["epic_val"].get("value") or "").strip()
+        ok, note = run_apply(m["date"], m["fp"], "approve", epic_in or None)
+        client.chat_postMessage(channel=m["channel"], thread_ts=m["msg_ts"],
+                                text=f"{'✅' if ok else '⚠️'} *{m['label']}* approved — {note}")
+
+    @app.action(re.compile(r"^tkz:.*:reject:"))
+    def on_reject(ack, body, client, action):
+        ack()
+        if not is_owner(body, client):
+            return
+        _, date, fp, verb, label = action["action_id"].split(":", 4)
+        ok, note = run_apply(date, fp, "reject")
+        client.chat_postMessage(channel=body["channel"]["id"], thread_ts=body["message"]["ts"],
+                                text=f"🗑️ *{label}* rejected — {note}")
 
     print(f"relay_bot listening (apply mode = {mode}) …")
     SocketModeHandler(app, secret("relay_slack_app_token")).start()
