@@ -38,28 +38,22 @@ FIELD = re.compile(r"^-\s+([a-z_]+):\s*(.*?)\s*(?:#.*)?$")
 
 
 def find_candidate(date, fp):
-    cur = None
-    for line in open(md_path(date)):
-        h = HEAD.match(line.rstrip())
+    blocks, cur, last = [], None, None
+    for raw in open(md_path(date)):
+        line = raw.rstrip()
+        h = HEAD.match(line)
         if h:
-            cur = {"label": h.group(1)}
-        elif cur:
-            f = FIELD.match(line.rstrip())
-            if f:
-                cur[f.group(1)] = f.group(2).strip()
-        if cur and cur.get("fingerprint") == fp:
-            # keep reading until block ends? fields already captured up to here; continue to gather all
-            pass
-    # simpler: re-parse fully then pick
-    blocks, cur = [], None
-    for line in open(md_path(date)):
-        h = HEAD.match(line.rstrip())
-        if h:
-            cur = {"label": h.group(1)}; blocks.append(cur)
-        elif cur:
-            f = FIELD.match(line.rstrip())
-            if f:
-                cur[f.group(1)] = f.group(2).strip()
+            cur = {"label": h.group(1)}; blocks.append(cur); last = None
+            continue
+        if cur is None:
+            continue
+        f = FIELD.match(line)
+        if f:
+            cur[f.group(1)] = f.group(2).strip(); last = f.group(1)
+        elif last and raw.startswith(("  ", "\t")) and line.strip():
+            cur[last] += " " + line.strip()   # wrapped multi-line value (e.g. `why:`)
+        else:
+            last = None
     return next((b for b in blocks if b.get("fingerprint") == fp), None)
 
 
@@ -101,6 +95,25 @@ def active_sprint_id(base, auth, project, sprint_field):
     return None
 
 
+def search_epic(base, auth, project, query):
+    """Find an Epic by free-text keywords (e.g. 'atm charges'). Returns (key, summary) or None."""
+    q = query.replace('"', "").strip()
+    jql = f'project = {project} AND issuetype = Epic AND statusCategory != Done AND summary ~ "{q}*" ORDER BY updated DESC'
+    r = jira("POST", base, "/rest/api/3/search/jql", auth, {"jql": jql, "maxResults": 5, "fields": ["summary"]})
+    issues = r.get("issues", [])
+    if not issues:
+        return None
+    return issues[0]["key"], issues[0]["fields"]["summary"]
+
+
+def epic_title(base, auth, key):
+    try:
+        r = jira("GET", base, f"/rest/api/3/issue/{key}?fields=summary", auth)
+        return r.get("fields", {}).get("summary", "")
+    except SystemExit:
+        return ""
+
+
 def adf(text):
     return {"type": "doc", "version": 1,
             "content": [{"type": "paragraph", "content": [{"type": "text", "text": text}]}]}
@@ -113,19 +126,23 @@ def commit_state(date, fp, decision, key=None):
 
 
 def write_back(date, fp, decision, key=None):
+    """Rewrite the decision (+ jira_key) of the block whose fingerprint == fp. Block-aware:
+    decision: sits ABOVE fingerprint: in a block, so locate the block first, then edit it."""
     path = md_path(date); lines = open(path).read().splitlines()
-    out, in_block = [], False
-    for line in lines:
-        if HEAD.match(line):
-            in_block = False
-        if re.match(r"^-\s+fingerprint:\s*" + re.escape(fp), line):
-            in_block = True
-        if in_block and re.match(r"^-\s+decision:", line):
-            line = f"- decision: {decision}" + (f"  # {key}" if key else "")
-            if key:
-                out.append(line); out.append(f"- jira_key: {key}"); in_block = False; continue
-        out.append(line)
-    open(path, "w").write("\n".join(out) + "\n")
+    heads = [i for i, l in enumerate(lines) if HEAD.match(l)] + [len(lines)]
+    for a, b in zip(heads, heads[1:]):
+        block = lines[a:b]
+        if not any(re.match(r"^-\s+fingerprint:\s*" + re.escape(fp), l) for l in block):
+            continue
+        for k, l in enumerate(block):
+            if re.match(r"^-\s+decision:", l):
+                block[k] = f"- decision: {decision}" + (f"  # {key}" if key else "")
+                if key and not any(re.match(r"^-\s+jira_key:", x) for x in block):
+                    block.insert(k + 1, f"- jira_key: {key}")
+                break
+        lines[a:b] = block
+        break
+    open(path, "w").write("\n".join(lines) + "\n")
 
 
 def main():
@@ -153,12 +170,31 @@ def main():
             commit_state(date, fp, "reject"); write_back(date, fp, "rejected")
         print(f"rejected {c['label']} ({fp})"); return
 
-    # approve → build payload
-    epic = (c.get("epic") or "").split()[0] if c.get("epic") else j["fallback_epic"]
-    if not re.match(r"^[A-Z]+-\d+$", epic):
-        epic = j["fallback_epic"]
+    # approve → resolve epic. precedence: --epic-input (key or keyword-search) > candidate epic > fallback
+    def is_key(s):
+        return bool(re.match(r"^[A-Z]+-\d+$", (s or "").strip()))
+    ei = arg("--epic-input")
+    cand_epic = (c.get("epic") or "").split()[0]
+    epic = ei.strip() if is_key(ei) else (cand_epic if is_key(cand_epic) else j["fallback_epic"])
+    needs_search = bool(ei) and not is_key(ei)
     assignee = accountid_for(c.get("assignee", ""))
     itype = c.get("type", "Task")
+
+    if dry:
+        print("DRY-RUN:", json.dumps({"epic": epic, "epic_search_query": ei if needs_search else None,
+              "type": itype, "assignee_canonical": c.get("assignee"), "summary": c.get("summary"),
+              "links_cmr": c.get("links_cmr")}, indent=2))
+        return
+
+    base, auth = j["base_url"], jira_auth()
+    if needs_search:
+        found = search_epic(base, auth, j["project"], ei)
+        if found:
+            epic = found[0]
+            print(f"epic search '{ei}' -> {found[0]} ({found[1]})", file=sys.stderr)
+        else:
+            print(f"epic search '{ei}' -> no match; using fallback {j['fallback_epic']}", file=sys.stderr)
+            epic = j["fallback_epic"]
     fields = {
         "project": {"key": j["project"]},
         "issuetype": {"name": itype},
@@ -172,13 +208,6 @@ def main():
         fields["assignee"] = {"accountId": assignee}
     if itype == "Bug":
         fields[j["fields"]["environment"]] = [{"value": j["environment_default"]}]
-
-    if dry:
-        print("DRY-RUN payload:"); print(json.dumps({"fields": fields,
-              "epic": epic, "assignee_canonical": c.get("assignee"), "links_cmr": c.get("links_cmr")}, indent=2))
-        return
-
-    base, auth = j["base_url"], jira_auth()
     sid = active_sprint_id(base, auth, j["project"], j["fields"]["sprint"])
     if sid:
         fields[j["fields"]["sprint"]] = sid
