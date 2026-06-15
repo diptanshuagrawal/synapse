@@ -92,19 +92,31 @@ def rel_time(ts_str: str) -> str:
         return ""
 
 
-def cursor_age(ts_str: str) -> str:
+def _parse_iso_utc(ts: str) -> datetime | None:
+    """Tolerant ISO-8601 → aware UTC datetime. Handles a trailing Z and optional
+    fractional seconds (jira cursors carry microseconds, e.g. ...02.980000Z)."""
+    if not ts:
+        return None
     try:
-        dt = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        secs = int((datetime.now(timezone.utc) - dt).total_seconds())
-        if secs < 3600:  return f"{secs // 60}m"
-        if secs < 86400: return f"{secs // 3600}h"
-        return f"{secs // 86400}d"
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).astimezone(timezone.utc)
     except Exception:
+        return None
+
+
+def cursor_age(ts_str: str) -> str:
+    dt = _parse_iso_utc(ts_str)
+    if not dt:
         return "?"
+    secs = int((datetime.now(timezone.utc) - dt).total_seconds())
+    if secs < 3600:  return f"{secs // 60}m"
+    if secs < 86400: return f"{secs // 3600}h"
+    return f"{secs // 86400}d"
 
 
 def cursor_to_ist(ts: str) -> str:
-    dt = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    dt = _parse_iso_utc(ts)
+    if not dt:
+        return str(ts)[:16]
     return dt.astimezone(IST).strftime("%Y-%m-%d %H:%M")
 
 
@@ -297,7 +309,10 @@ def parse_runs() -> tuple[list[dict], str | None, str | None, dict[str, str]]:
         if hint and hint in open_starts:
             last_attr = hint
 
-        if "WARNING" in line:
+        # Capture WARNING *and* ERROR lines — real ingest failures (auth abort,
+        # DNS, "Cursor NOT updated") log at ERROR, so a WARNING-only filter made
+        # the down-detection below dead. " ERROR " (spaced) avoids payload hits.
+        if "WARNING" in line or " ERROR " in line:
             tgt = last_attr if last_attr in open_starts else None
             if tgt:
                 open_warns[tgt].append(line)
@@ -339,6 +354,38 @@ def parse_runs() -> tuple[list[dict], str | None, str | None, dict[str, str]]:
 def read_marker(source: str) -> str | None:
     p = STATE_DIR / f"last_{source}_success.date"
     return p.read_text().strip() if p.exists() else None
+
+
+# Reverse of AGENT_MAP — source → LaunchAgent label, for exit-code lookup.
+SRC_AGENT = {src: label for label, src in AGENT_MAP.items()}
+
+
+def launchd_last_exit(label: str) -> int | None:
+    """Last exit status of a user LaunchAgent via `launchctl list <label>`.
+
+    Ground-truth failure signal: 0 = clean, non-zero = the last fire failed —
+    including aborts (auth/DNS) that leave NO parseable run in the log. Returns
+    None when the label is unknown or launchctl can't be read.
+    """
+    if not label:
+        return None
+    import subprocess
+    try:
+        out = subprocess.run(["launchctl", "list", label],
+                             capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return None
+    m = re.search(r'"LastExitStatus"\s*=\s*(-?\d+)', out)
+    if not m:
+        return None
+    raw = int(m.group(1))
+    # launchctl reports the raw wait(2) status, not the bare exit code. Decode
+    # WEXITSTATUS (high byte) when the process exited; a non-zero low byte means
+    # it was killed by that signal — negate so the caller can tell them apart.
+    if raw > 255:
+        sig = raw & 0x7f
+        return -sig if sig else (raw >> 8)
+    return raw
 
 
 def db_stats() -> dict:
@@ -1264,20 +1311,54 @@ for src in SOURCES:
     s_types = db_by_type.get(src, [])
     s_rec  = db_recent.get(src, [])
 
-    # Detect ingest-down state: marker stale AND last run logged a
-    # "Cursor NOT updated" warning/error — distinguishes total auth/network
-    # outage from a transient flake.
+    # Detect ingest-down state from the last run's ERROR/WARNING lines. Each
+    # pattern is a known hard-failure mode: cursor-not-advanced, identity-guard
+    # abort (the silent-stale fix), and DNS/connection loss.
     ingest_down = False
     down_reason = ""
+    DOWN_PATTERNS = (
+        "Cursor NOT updated", "Auth check failed", "refusing to ingest",
+        "Aborting", "Failed to resolve", "NameResolutionError",
+        "Max retries exceeded", "nodename nor servname",
+    )
     if last and last.get("warnings"):
         for w in last["warnings"]:
-            if "Cursor NOT updated" in w:
+            if any(p in w for p in DOWN_PATTERNS):
                 ingest_down = True
-                # Pluck a short reason from the warning line.
-                m_msg = re.search(r"Cursor NOT updated[^\n]*", w)
-                if m_msg:
-                    down_reason = m_msg.group(0)[:90]
+                m_msg = re.search(r"(?:ERROR|WARNING)\s+(.*)", w)
+                down_reason = (m_msg.group(1) if m_msg else w).strip()[:90]
                 break
+
+    # Ground-truth backstop: a non-zero LaunchAgent exit means the last *launchd*
+    # fire failed — even an auth/DNS abort that wrote no parseable run to the log
+    # (so the warnings scan above sees nothing). Suppress when a success marker
+    # was already written today: a same-day success supersedes the stale exit
+    # code (and a manual `run-<src>.sh` bypasses launchd, so the code lingers
+    # failed). A later-in-day failure after a success is still caught by the
+    # log-pattern scan above.
+    exit_code = launchd_last_exit(SRC_AGENT.get(src, ""))
+    if exit_code not in (0, None) and running_src != src and marker != today:
+        ingest_down = True
+        if not down_reason:
+            how = (f"killed by signal {-exit_code}" if exit_code < 0
+                   else f"exited {exit_code}")
+            down_reason = f"last run {how} — see logs/ingest.log"
+
+    # Recovery: clear the down flag if a success was recorded AFTER the failing
+    # run we matched. The success marker's mtime is the last-success wall-clock;
+    # if it's newer than the failed run's timestamp the source has recovered
+    # (e.g. a manual run-<src>.sh that updates the marker + DB but writes no line
+    # to logs/ingest.log, so the parser still sees the old failed launchd run).
+    # A failure that is newer than the last success is NOT cleared — stays red.
+    if ingest_down and last and last.get("done"):
+        mp = STATE_DIR / f"last_{src}_success.date"
+        try:
+            done_dt = datetime.strptime(last["done"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=IST)
+            if mp.exists() and mp.stat().st_mtime > done_dt.timestamp():
+                ingest_down = False
+                down_reason = ""
+        except Exception:
+            pass
 
     if running_src == src:
         status = pill("⚡", "running now", YELLOW)
@@ -1300,6 +1381,8 @@ for src in SOURCES:
     nxt = next_fire_label(fire_mins) if not running_src else "—"
 
     print(f"  {sc}{BOLD}{src.upper():<13}{RESET}  {status}  {DIM}next {nxt}{RESET}")
+    if ingest_down and down_reason:
+        print(f"  {'':4}{RED}{BOLD}✗ why{RESET}  {RED}{down_reason}{RESET}")
     print(kv("schedule", sched_label))
     policy_text = ("retry every fire · no daily gate · DM hard-skip"
                    if src == "slack"
