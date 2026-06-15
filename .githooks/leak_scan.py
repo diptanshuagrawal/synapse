@@ -34,20 +34,29 @@ def _root():
 
 
 def _load_patterns(root):
-    pats, seen, out = [], set(), []
-    for fp in (os.path.join(root, ".githooks/leak-patterns.txt"),
-               os.path.join(root, ".publish-denylist.txt")):
+    # Two tiers:
+    #   HARD = real org tokens (.publish-denylist.txt). A match is ALWAYS a leak —
+    #          an ALLOW marker on the line never excuses it (a real project key /
+    #          employee name / workspace id has no business in a tracked file,
+    #          even on a line that also says "placeholder").
+    #   SOFT = generic format heuristics (.githooks/leak-patterns.txt: email/UUID/
+    #          key/path shapes) that legitimately appear in doc examples; an ALLOW
+    #          marker on the line suppresses these.
+    # A pattern present in both files is treated as HARD (stricter wins).
+    by_pat, order = {}, []
+    for fp, hard in ((os.path.join(root, ".githooks/leak-patterns.txt"), False),
+                     (os.path.join(root, ".publish-denylist.txt"), True)):
         if os.path.exists(fp):
             for line in open(fp, encoding="utf-8", errors="replace"):
                 s = line.strip()
                 if s and not s.startswith("#"):
-                    pats.append(s)
-    for p in pats:
-        if p in seen:
-            continue
-        seen.add(p)
+                    if s not in by_pat:
+                        order.append(s)
+                    by_pat[s] = by_pat.get(s, False) or hard
+    out = []
+    for p in order:
         try:
-            out.append((p, re.compile(p, re.I)))
+            out.append((p, re.compile(p, re.I), by_pat[p]))
         except re.error:
             pass  # a malformed pattern shouldn't disable the whole gate
     return out
@@ -56,16 +65,20 @@ def _load_patterns(root):
 def _scan(path, text, rx, content_hits, name_hits):
     if path.endswith("leak-patterns.txt"):
         return  # the pattern file would self-match
-    for p, r in rx:
+    for p, r, _hard in rx:
         if r.search(path):
             name_hits.append((path, p))
             break
     for i, line in enumerate(text.split("\n"), 1):
-        if ALLOW_RE.search(line):
-            continue
-        for p, r in rx:
-            if r.search(line):
-                content_hits.append((path, i, p, line.strip()[:100]))
+        allowed = bool(ALLOW_RE.search(line))  # an intentional-placeholder line
+        for p, r, hard in rx:
+            if not r.search(line):
+                continue
+            if allowed and not hard:
+                continue  # soft format hit on a placeholder line — not a leak
+            # hard hits fire even on placeholder lines (real token = always a leak)
+            content_hits.append((path, i, p, line.strip()[:100]))
+            break
 
 
 def _report(content_hits, name_hits):
