@@ -24,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_REPO_ROOT))
 import llm_classifier as lc  # noqa: E402
 import rollup as r            # noqa: E402
 from derive.sources_config import org_match_tokens  # noqa: E402
