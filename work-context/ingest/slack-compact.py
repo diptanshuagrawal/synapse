@@ -49,7 +49,7 @@ _PKG_ROOT = Path(__file__).resolve().parent.parent
 if str(_PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(_PKG_ROOT))
 
-from ingest.common import get_db  # noqa: E402
+from ingest.common import get_db, delete_events  # noqa: E402
 
 ROOT = _PKG_ROOT
 PENDING_PATH = ROOT / "state" / "slack_compact_pending.json"
@@ -229,16 +229,15 @@ def cmd_apply(args: argparse.Namespace) -> None:
                        VALUES (?, '', '[]', ?, '[]', ?, 'slack', 'chat', ?)""",
                     (subject, digest[:500], confidence, _now_iso()),
                 )
-                # Delete event_refs + events for the thread (preserves raw JSONL).
+                # Delete events + event_refs + events_fts for the thread
+                # (preserves raw JSONL). Shared deleter cascades refs/fts so the
+                # thread's rows can't leak orphan refs once the parent is gone.
                 event_ids = [r[0] for r in conn.execute(
                     "SELECT id FROM events WHERE subject = ? AND source = 'slack'",
                     (subject,),
                 ).fetchall()]
                 if event_ids:
-                    ph = ",".join("?" * len(event_ids))
-                    conn.execute(f"DELETE FROM event_refs WHERE event_id IN ({ph})", event_ids)
-                    conn.execute("DELETE FROM events WHERE subject = ? AND source = 'slack'",
-                                 (subject,))
+                    delete_events(conn, event_ids, commit=False)
                 # thread_summary row also stale — drop it; if owner queries the
                 # subject later, subject_summary serves the digest.
                 conn.execute("DELETE FROM thread_summary WHERE subject = ?", (subject,))

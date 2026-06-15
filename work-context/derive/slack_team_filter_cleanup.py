@@ -40,7 +40,7 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
-from ingest.common import DB_PATH  # noqa: E402
+from ingest.common import DB_PATH, delete_events  # noqa: E402
 from derive.slack_team import load_team_slack_ids, load_team_subteam_ids  # noqa: E402
 
 CHANNELS_YAML = _REPO_ROOT / "config" / "slack_channels.yaml"
@@ -168,22 +168,14 @@ def _scan_channel(conn: sqlite3.Connection, channel_id: str,
 
 def _delete_batch(conn: sqlite3.Connection, channel_id: str,
                   ids: list[str], parent_ts_list: list[str]) -> dict:
-    """Delete events + event_refs + thread_summary in one transaction.
-    Returns counts."""
-    deleted_events = deleted_refs = deleted_summaries = 0
+    """Delete events + event_refs + events_fts + thread_summary in one
+    transaction. Returns counts."""
+    deleted_events = deleted_summaries = 0
     BATCH = 500
     with conn:
-        for i in range(0, len(ids), BATCH):
-            chunk = ids[i:i + BATCH]
-            placeholders = ",".join("?" * len(chunk))
-            cur = conn.execute(
-                f"DELETE FROM event_refs WHERE event_id IN ({placeholders})", chunk,
-            )
-            deleted_refs += cur.rowcount
-            cur = conn.execute(
-                f"DELETE FROM events WHERE id IN ({placeholders})", chunk,
-            )
-            deleted_events += cur.rowcount
+        # events + event_refs + events_fts via the shared deleter so refs/fts
+        # can't leak past their parent rows.
+        deleted_events = delete_events(conn, ids, commit=False)
         # thread_summary keyed by (channel_id, parent_ts)
         for i in range(0, len(parent_ts_list), BATCH):
             chunk = parent_ts_list[i:i + BATCH]
@@ -197,7 +189,7 @@ def _delete_batch(conn: sqlite3.Connection, channel_id: str,
             except sqlite3.OperationalError:
                 # thread_summary table may not exist on legacy DBs
                 pass
-    return {"events": deleted_events, "refs": deleted_refs, "summaries": deleted_summaries}
+    return {"events": deleted_events, "summaries": deleted_summaries}
 
 
 def main() -> int:
@@ -225,7 +217,7 @@ def main() -> int:
 
     conn = sqlite3.connect(DB_PATH)
 
-    overall = {"events": 0, "refs": 0, "summaries": 0}
+    overall = {"events": 0, "summaries": 0}
     print(f"{'channel':<35}  {'total':>7}  {'keep':>7}  {'drop_p':>7}  {'drop_r':>7}")
     print("-" * 75)
     for ch in channels:
@@ -246,16 +238,15 @@ def main() -> int:
 
         counts = _delete_batch(conn, cid, plan["ids_to_delete"], plan["parent_ts_to_delete"])
         overall["events"] += counts["events"]
-        overall["refs"] += counts["refs"]
         overall["summaries"] += counts["summaries"]
-        print(f"  deleted: events={counts['events']}  refs={counts['refs']}  summaries={counts['summaries']}")
+        print(f"  deleted: events={counts['events']} (+refs/fts cascaded)  summaries={counts['summaries']}")
 
     conn.close()
 
     print(f"\n[summary] mode={'APPLY' if args.apply else 'DRY-RUN'}")
     if args.apply:
-        print(f"[summary] total deleted: events={overall['events']}  "
-              f"refs={overall['refs']}  summaries={overall['summaries']}")
+        print(f"[summary] total deleted: events={overall['events']} (+refs/fts cascaded)  "
+              f"summaries={overall['summaries']}")
         print("[summary] backups in state/slack_team_cleanup_*.txt")
     else:
         print("[summary] re-run with --apply to commit deletes")
