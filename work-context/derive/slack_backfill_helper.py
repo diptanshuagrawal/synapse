@@ -418,6 +418,106 @@ def cmd_active_threads(args: argparse.Namespace) -> None:
         print(ts)
 
 
+# ── Pending reply-check queue (team_involved starvation backlog) ──────────────
+#
+# These operate on the `slack_pending_reply_check` table (schema in
+# ingest/common.py). They take an open conn rather than shelling out, because
+# the caller (ingest/slack_ingest_app.py team_involved path) already holds one
+# and we want the enqueue/dequeue inside the same fire transactionally.
+#
+# Lifecycle:
+#   enqueue  — a bot-rooted thread with replies was starved of reply-walk
+#              budget this fire; record it so a later fire can walk it.
+#   pop      — pull up to `cap` oldest-first queued parents to drain.
+#   dequeue  — the parent was resolved (kept or confirmed no-team); remove it.
+#   bump_attempts — the walk errored; leave queued but count the attempt so a
+#              permanently-broken parent eventually hits the abandon ceiling.
+
+
+def enqueue_pending_reply_check(
+    conn: sqlite3.Connection, channel_id: str, parent_ts: str,
+    reply_count: int | None,
+) -> None:
+    """Record a budget-starved bot-rooted parent for a later reply walk.
+
+    Idempotent: re-enqueuing an already-queued parent refreshes its declared
+    reply_count (it may have grown) but preserves first_seen + attempts.
+    """
+    now_iso = datetime.now(tz=timezone.utc).isoformat(
+        timespec="seconds").replace("+00:00", "Z")
+    with conn:
+        conn.execute(
+            """INSERT INTO slack_pending_reply_check
+                   (channel_id, parent_ts, reply_count, first_seen, attempts)
+               VALUES (?, ?, ?, ?, 0)
+               ON CONFLICT(channel_id, parent_ts) DO UPDATE SET
+                   reply_count = excluded.reply_count""",
+            (channel_id, parent_ts, reply_count, now_iso),
+        )
+
+
+def pop_pending_reply_checks(
+    conn: sqlite3.Connection, channel_id: str, cap: int,
+    max_attempts: int,
+) -> list[tuple[str, int | None, int]]:
+    """Return up to `cap` oldest queued parents for this channel to drain.
+
+    Skips (and removes) parents that have already exhausted `max_attempts`
+    drain tries — those are abandoned to avoid looping forever on a parent
+    whose replies endpoint keeps failing. Returns
+    [(parent_ts, reply_count, attempts), ...], oldest-first.
+    """
+    # Abandon parents past the attempt ceiling first (best-effort cleanup).
+    with conn:
+        conn.execute(
+            """DELETE FROM slack_pending_reply_check
+                WHERE channel_id=? AND attempts >= ?""",
+            (channel_id, max_attempts),
+        )
+    rows = conn.execute(
+        """SELECT parent_ts, reply_count, attempts
+             FROM slack_pending_reply_check
+            WHERE channel_id=?
+            ORDER BY first_seen ASC, parent_ts ASC
+            LIMIT ?""",
+        (channel_id, cap),
+    ).fetchall()
+    return [(r[0], r[1], r[2]) for r in rows]
+
+
+def dequeue_pending_reply_check(
+    conn: sqlite3.Connection, channel_id: str, parent_ts: str,
+) -> None:
+    """Remove a resolved parent from the queue."""
+    with conn:
+        conn.execute(
+            """DELETE FROM slack_pending_reply_check
+                WHERE channel_id=? AND parent_ts=?""",
+            (channel_id, parent_ts),
+        )
+
+
+def bump_pending_reply_attempt(
+    conn: sqlite3.Connection, channel_id: str, parent_ts: str,
+) -> None:
+    """Increment attempts for a parent whose drain errored (kept for retry)."""
+    with conn:
+        conn.execute(
+            """UPDATE slack_pending_reply_check
+                  SET attempts = attempts + 1
+                WHERE channel_id=? AND parent_ts=?""",
+            (channel_id, parent_ts),
+        )
+
+
+def count_pending_reply_checks(conn: sqlite3.Connection, channel_id: str) -> int:
+    """Current queue depth for a channel (for fire summaries / cron-status)."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM slack_pending_reply_check WHERE channel_id=?",
+        (channel_id,),
+    ).fetchone()[0]
+
+
 def cmd_stale_threads_all(args: argparse.Namespace) -> None:
     """Emit {channel_id: [stale_parent_ts, ...]} for every configured channel.
 

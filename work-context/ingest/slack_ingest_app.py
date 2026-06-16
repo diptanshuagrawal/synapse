@@ -59,7 +59,14 @@ from ingest.slack_backfill_app import (  # noqa: E402
     DB_PATH,
 )
 from derive.slack_upsert import upsert_messages, reconcile_window, upsert_event  # noqa: E402
-from derive.slack_backfill_helper import _clamp_parent_after_drain  # noqa: E402
+from derive.slack_backfill_helper import (  # noqa: E402
+    _clamp_parent_after_drain,
+    enqueue_pending_reply_check,
+    pop_pending_reply_checks,
+    dequeue_pending_reply_check,
+    bump_pending_reply_attempt,
+    count_pending_reply_checks,
+)
 from derive.slack_team import load_team_slack_ids, load_team_subteam_ids, is_team_involved  # noqa: E402
 
 SUCCESS_PATH = _PKG_ROOT / "state" / "last_slack_success.date"
@@ -75,6 +82,8 @@ RECONCILE_LOOKBACK_HOURS = 24    # trailing-window edit/delete reconcile
 RECONCILE_PAGE_CAP = 10          # ~2000 msgs/24h — enough headroom for alert channels
 RECONCILE_THREADS_CAP = 25       # max thread-reply edit-check fetches per fire
 TEAM_REPLY_CHECK_CAP = 40        # max non-team parents whose replies we fetch per fire to check team involvement
+PENDING_REPLY_DRAIN_CAP = 40     # max budget-starved bot parents whose replies we drain per fire (separate budget from TEAM_REPLY_CHECK_CAP)
+PENDING_REPLY_MAX_ATTEMPTS = 5   # abandon a queued parent after this many failed drain attempts (broken replies endpoint)
 BOOTSTRAP_LOOKBACK_DAYS = 365    # if channel has null cursor, start fetching from now-N days
 ACTIVE_THREAD_DAYS = 90          # re-drain threads with a reply in the last N days (catches late replies to old parents)
 
@@ -149,7 +158,7 @@ def fetch_history_team_filtered(
     subteams_cache: dict[str, str],
     team_slack_ids: set[str],
     team_subteam_ids: Optional[set[str]] = None,
-) -> tuple[int, int, Optional[str], int, int, int, bool]:
+) -> tuple[int, int, Optional[str], int, int, int, int, bool]:
     """Cursor-bound history fetch, FILTERED to threads where team participates.
 
     Decision per top-level msg:
@@ -157,13 +166,17 @@ def fetch_history_team_filtered(
       • Otherwise + reply_count > 0 + budget available → fetch replies, check.
         If any reply by team OR body mentions team → KEEP parent + replies.
         Else → DROP (don't upsert anything).
-      • Otherwise + reply_count == 0 → DROP.
+      • Otherwise + reply_count > 0 + budget EXHAUSTED → ENQUEUE for a later
+        fire's reply-check drain (slack_pending_reply_check). Critically we do
+        NOT silently drop: the cursor advances past this root, so without the
+        queue a team reply buried under a starved bot root is lost forever.
+      • Otherwise + reply_count == 0 → DROP (nothing to walk).
 
     Inline-fetches replies for tentative parents; skips Phase 2.5/2.7 for
     team_involved channels (replies handled here).
 
     Returns (top_inserted, replies_inserted, newest_ts, bot_skipped,
-             dropped_parents, deferred_checks, hit_cap).
+             dropped_parents, deferred_checks, starved_enqueued, hit_cap).
     """
     conn = sqlite3.connect(DB_PATH)
     inserted_total = 0
@@ -171,6 +184,7 @@ def fetch_history_team_filtered(
     bot_skipped = 0
     dropped = 0
     deferred_checks = 0
+    starved_enqueued = 0
     newest_ts: Optional[str] = None
     cursor: Optional[str] = None
     pages = 0
@@ -199,17 +213,42 @@ def fetch_history_team_filtered(
                 )
                 if root_team_involved:
                     if pm.is_bot and not keep_bot_messages:
-                        bot_skipped += 1
+                        # A bot root whose BODY tags a team member (e.g. a
+                        # release bot pinging the owner to approve a CMR). If it
+                        # has replies, the team member typically responds
+                        # IN-THREAD — so KEEP the root: once stored, Phase 2.5
+                        # reconcile walks its replies and captures that response.
+                        # The old `bot_skipped; continue` dropped the root AND
+                        # never walked the replies; because the cursor then
+                        # advances past the root and the late-reply re-drain only
+                        # revisits parents already in the DB, those replies (an
+                        # owner action item) were lost forever. See
+                        # tests/test_slack_team_reply_reconcile.py.
+                        if (msg.get("reply_count") or 0) > 0:
+                            keep_top.append(pm)
+                        else:
+                            # Team-tagged bot ping with no thread — nothing to recover.
+                            bot_skipped += 1
                         continue
                     keep_top.append(pm)
                     continue
 
                 reply_count = msg.get("reply_count") or 0
-                if reply_count <= 0 or deferred_checks >= TEAM_REPLY_CHECK_CAP:
+                if reply_count <= 0:
+                    # Genuinely no replies to walk — drop.
                     if pm.is_bot and not keep_bot_messages:
                         bot_skipped += 1
                     else:
                         dropped += 1
+                    continue
+                if deferred_checks >= TEAM_REPLY_CHECK_CAP:
+                    # Budget exhausted but this root HAS replies — a team reply
+                    # may be buried here. The cursor will advance past this root
+                    # this fire, so we must not drop-and-forget: enqueue it for a
+                    # later fire's reply-check drain (see reconcile_pending_reply_checks).
+                    if not dry_run:
+                        enqueue_pending_reply_check(conn, channel_id, ts, reply_count)
+                    starved_enqueued += 1
                     continue
 
                 deferred_checks += 1
@@ -267,7 +306,103 @@ def fetch_history_team_filtered(
         conn.close()
 
     return (inserted_total, replies_inserted, newest_ts, bot_skipped,
-            dropped, deferred_checks, hit_cap)
+            dropped, deferred_checks, starved_enqueued, hit_cap)
+
+
+def reconcile_pending_reply_checks(
+    client: SlackClient,
+    channel_id: str,
+    dry_run: bool,
+    users_cache: dict[str, str],
+    keep_bot_messages: bool,
+    name_resolver,
+    subteams_cache: dict[str, str],
+    team_slack_ids: set[str],
+    team_subteam_ids: Optional[set[str]] = None,
+) -> dict:
+    """Drain budget-starved bot-rooted parents queued by the history pass.
+
+    For each queued parent (oldest-first, capped at PENDING_REPLY_DRAIN_CAP):
+      • Walk its replies via conversations.replies. The root comes back as the
+        ts==parent_ts element — we parse it to recover the (bot) root we never
+        stored, the rest are replies.
+      • If the root OR any reply is team-involved → upsert root (kept regardless
+        of bot flag, like the inline path) + replies, then dequeue.
+      • Else → dequeue (confirmed no team — nothing of ours in this thread).
+      • On API error → bump attempts and leave queued (retried next fire until
+        PENDING_REPLY_MAX_ATTEMPTS, then abandoned by pop_pending_reply_checks).
+
+    Decouples the reply-walk from the cursor, so a team reply buried under a
+    bot root that the history pass starved still lands in events.db on a later
+    fire. Returns a summary dict of counters.
+    """
+    out = {
+        "queue_in": 0, "drained": 0, "kept": 0, "no_team": 0,
+        "root_inserted": 0, "replies_inserted": 0, "errors": [],
+        "queue_out": 0,
+    }
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        out["queue_in"] = count_pending_reply_checks(conn, channel_id)
+        queued = pop_pending_reply_checks(
+            conn, channel_id, PENDING_REPLY_DRAIN_CAP, PENDING_REPLY_MAX_ATTEMPTS,
+        )
+        for parent_ts, _declared_rc, _attempts in queued:
+            try:
+                root_pm = None
+                replies: list = []
+                team_in_thread = False
+                for raw in client.iter_replies(channel_id, parent_ts, limit=LIMIT):
+                    rpm = api_message_to_parsed(
+                        raw, users_cache, name_resolver=name_resolver,
+                        subteams_cache=subteams_cache,
+                    )
+                    if raw.get("ts") == parent_ts:
+                        root_pm = rpm
+                        if is_team_involved(rpm.actor_id, rpm.body,
+                                            team_slack_ids, team_subteam_ids):
+                            team_in_thread = True
+                        continue
+                    if rpm.is_bot and not keep_bot_messages:
+                        continue
+                    replies.append(rpm)
+                    if is_team_involved(rpm.actor_id, rpm.body,
+                                        team_slack_ids, team_subteam_ids):
+                        team_in_thread = True
+
+                out["drained"] += 1
+                if team_in_thread:
+                    out["kept"] += 1
+                    if not dry_run:
+                        if root_pm is not None:
+                            # Keep the root regardless of bot flag — it gives the
+                            # replies meaning (matches inline keep_top behaviour).
+                            res = upsert_messages(
+                                conn, [root_pm], channel_id, thread_parent_ts=None,
+                            )
+                            out["root_inserted"] += res.inserted
+                        if replies:
+                            res = upsert_messages(
+                                conn, replies, channel_id, thread_parent_ts=parent_ts,
+                            )
+                            out["replies_inserted"] += res.inserted
+                        dequeue_pending_reply_check(conn, channel_id, parent_ts)
+                    else:
+                        out["root_inserted"] += 1 if root_pm is not None else 0
+                        out["replies_inserted"] += len(replies)
+                else:
+                    out["no_team"] += 1
+                    if not dry_run:
+                        dequeue_pending_reply_check(conn, channel_id, parent_ts)
+            except Exception as e:
+                out["errors"].append(f"{parent_ts}: {e}")
+                if not dry_run:
+                    bump_pending_reply_attempt(conn, channel_id, parent_ts)
+
+        out["queue_out"] = count_pending_reply_checks(conn, channel_id)
+    finally:
+        conn.close()
+    return out
 
 
 def fetch_threads_capped(
@@ -528,7 +663,7 @@ def ingest_channel(
         # non-team parents). Team-authored parents are upserted bare; their
         # replies are fetched by Phase 2.5 stale-thread reconcile below.
         (inserted, repl_inserted_inline, newest_ts, hist_bot,
-         dropped, deferred, hit_hist_cap) = fetch_history_team_filtered(
+         dropped, deferred, starved_enqueued, hit_hist_cap) = fetch_history_team_filtered(
             client, cid, existing_cursor, dry_run, users_cache, keep_bot_messages,
             name_resolver, subteams_cache, team_slack_ids, team_subteam_ids,
         )
@@ -537,7 +672,26 @@ def ingest_channel(
             "hist_bot_skipped": hist_bot, "hist_hit_cap": hit_hist_cap,
             "team_filter_dropped_parents": dropped,
             "team_filter_deferred_checks": deferred,
+            "team_filter_starved_enqueued": starved_enqueued,
         })
+
+        # Phase 2.4 — drain budget-starved bot-rooted parents queued by this or
+        # a prior fire. Walks their replies regardless of cursor position so a
+        # team reply buried under a starved bot root is never lost (the original
+        # release-notification channel / CMR-approval failure mode).
+        pend = reconcile_pending_reply_checks(
+            client, cid, dry_run, users_cache, keep_bot_messages,
+            name_resolver, subteams_cache, team_slack_ids, team_subteam_ids,
+        )
+        summary.update({
+            "pending_reply_queue_in": pend["queue_in"],
+            "pending_reply_drained": pend["drained"],
+            "pending_reply_kept": pend["kept"],
+            "pending_reply_root_inserted": pend["root_inserted"],
+            "pending_reply_replies_inserted": pend["replies_inserted"],
+            "pending_reply_queue_out": pend["queue_out"],
+        })
+        summary["errors"].extend(pend["errors"])
 
         # Phase 2.5 — stale-thread reconcile (fetches replies for any DB parent
         # with declared reply_count > replies-in-db). Safely operates only on
@@ -553,7 +707,10 @@ def ingest_channel(
         summary.update({
             "thread_parents_seen": len(parents),
             "thread_parents_fetched": min(len(parents), STALE_CAP),
-            "replies_inserted": repl_inserted_inline + repl_late,
+            # Fold the starved-parent drain into the headline counts so totals
+            # (and the success/cron-status tally) reflect recovered messages.
+            "top_inserted": inserted + pend["root_inserted"],
+            "replies_inserted": repl_inserted_inline + repl_late + pend["replies_inserted"],
             "thread_bot_skipped": thread_bot,
             "thread_hit_cap": thread_hit_cap,
             # Phase 2.7 skipped — reconcile_window's upsert phase would re-add
@@ -565,7 +722,8 @@ def ingest_channel(
         summary["errors"].extend(thread_errs)
 
         # Phase 3 — refresh thread_summary for affected threads (cheap, idempotent).
-        if not dry_run and (inserted > 0 or repl_inserted_inline > 0 or repl_late > 0):
+        if not dry_run and (inserted > 0 or repl_inserted_inline > 0 or repl_late > 0
+                            or pend["root_inserted"] > 0 or pend["replies_inserted"] > 0):
             from subprocess import run
             run([".venv/bin/python", "derive/build_thread_summary.py", "--channel", cid],
                 cwd=str(_PKG_ROOT), check=False, capture_output=True)
