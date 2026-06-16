@@ -297,6 +297,50 @@ def cmd_filter_new(args):
         sys.stderr.write(f"deduped {len(skipped)} already-tracked finding(s)\n")
 
 
+def cmd_discover_merge(args):
+    """Self-maintaining inventory. Input: discovered candidates already filtered by chat
+    to (team-owned service + team-member author + design-doc, not ops/RCA/oncall):
+    [{id, title, author|owner, repo}]. Compares against ALL ids already known in the
+    inventory (monitor + needs_confirm + excluded) and returns only the NEW ones.
+    With --write, append-inserts the new ids under `needs_confirm:` in the inventory file
+    (append-only, comment-preserving — never rewrites the hand-curated buckets). New docs
+    land in needs_confirm so the sweep NEVER auto-comments on them until the owner promotes
+    them to `monitor`."""
+    import yaml as _yaml
+    with open(args.candidates) as f:
+        cands = json.load(f)
+    if isinstance(cands, dict):
+        cands = cands.get("candidates", cands.get("discovered", []))
+    inv = _yaml.safe_load(open(args.inventory)) or {}
+    known = set()
+    for bucket in ("monitor", "needs_confirm", "excluded"):
+        for r in (inv.get(bucket) or []):
+            if r.get("id"):
+                known.add(str(r["id"]))
+    new = [c for c in cands if str(c.get("id")) not in known]
+    summary = {"candidates": len(cands), "already_known": len(cands) - len(new), "new": len(new)}
+    if args.write and new:
+        lines = open(args.inventory).read().splitlines(keepends=True)
+        # find the `needs_confirm:` key line; insert new entries right after it
+        idx = next((i for i, ln in enumerate(lines) if ln.rstrip() == "needs_confirm:"), None)
+        if idx is None:
+            sys.stderr.write("needs_confirm: section not found — not writing\n")
+        else:
+            def esc(s): return '"' + str(s or "").replace('\\', '\\\\').replace('"', '\\"') + '"'
+            ins = []
+            for c in new:
+                ins.append(
+                    f'  - {{id: "{c.get("id")}", title: {esc(c.get("title"))}, '
+                    f'author: {esc(c.get("author") or c.get("owner"))}, '
+                    f'repo: {c.get("repo","?")}, why: newly_discovered}}\n'
+                )
+            lines[idx + 1:idx + 1] = ins
+            with open(args.inventory, "w") as f:
+                f.writelines(lines)
+            summary["written_to"] = args.inventory
+    print(json.dumps({"summary": summary, "new": new}, indent=2))
+
+
 def cmd_list(args):
     rows = _fetch(open_only=args.open)
     for r in rows:
@@ -321,6 +365,10 @@ def main():
     p.add_argument("--file", required=True); p.add_argument("--out")
     p.add_argument("--allow-resolved-reflag", action="store_true")
     p.set_defaults(fn=cmd_filter_new)
+    p = sub.add_parser("discover-merge")
+    p.add_argument("--inventory", required=True); p.add_argument("--candidates", required=True)
+    p.add_argument("--write", action="store_true")
+    p.set_defaults(fn=cmd_discover_merge)
     p = sub.add_parser("list"); p.add_argument("--open", action="store_true"); p.set_defaults(fn=cmd_list)
     args = ap.parse_args()
     args.fn(args)

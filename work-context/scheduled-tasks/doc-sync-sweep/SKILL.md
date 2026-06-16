@@ -13,7 +13,13 @@ STEP 0 — Resolve a yaml-capable python:
 
 STEP 1 — Run the sweep skill EXACTLY as defined in `.claude/commands/doc-sync-sweep.md`,
 with options:  `--dry-run --target dm --run-id <YYYY-MM>`  (current year-month, IST).
-- Loads `config/doc_sync_inventory.yaml` → `monitor` list ONLY.
+- Phase 0.5 DISCOVERY (runs even in dry-run): CQL-discover team docs across the spaces +
+  keywords in inventory `meta` (spaces_scanned / discovery_terms / owned_services),
+  apply the 3-part filter (owned service + team author + not ops/RCA/oncall), then
+  `$PY work-context/derive/doc_sync_state.py discover-merge --inventory … --candidates … --write`
+  to append only NEW ids to `needs_confirm`. Surface "🔎 N newly-discovered" in the DM.
+  New docs are NOT swept this run (owner promotes them to `monitor` first).
+- Loads `config/doc_sync_inventory.yaml` → `monitor` list ONLY for the drift checks.
 - Per doc: fetch page, gather code truth (graph + migrations + source), run the five
   drift checks + DIRECTION GATE, keep BACKWARD-drift findings only.
 - Diagrams: a scheduled run has NO interactive work browser, so ZenUML/image diagrams

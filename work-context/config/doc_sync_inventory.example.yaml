@@ -17,6 +17,8 @@ meta:
   generated: "YYYY-MM-DD"
   spaces_scanned: [SPACEKEY1, SPACEKEY2]
   owned_services: [svc-one, svc-two, svc-three]
+  # Phase 0.5 discovery title-keywords (CQL `title ~ <term>`) — your services + domains.
+  discovery_terms: [Feature-A, Feature-B, schema, sequence, "API Contract", migration]
   team_authors: [dev-a, dev-b, dev-c]
   exclude_reasons:
     - non_team_author

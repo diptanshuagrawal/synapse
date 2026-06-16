@@ -54,6 +54,35 @@ cd $HOME/context/work-context
 
 `doc_sync_state.py init` (idempotent) before anything.
 
+## Phase 0.5 — Discover new team docs (self-maintaining inventory)
+
+Before checking, refresh the doc universe so newly-created docs get caught. Discovery
+NEVER auto-monitors — new docs land in `needs_confirm` for the owner to promote.
+
+1. Run CQL over the team's spaces (inventory `meta.spaces_scanned`) using the
+   service/domain keywords in inventory `meta.discovery_terms` (the same terms that
+   seeded the inventory): `searchConfluenceUsingCql`
+   `(title ~ <term> OR …) AND lastmodified >= <~120d>`. Read both lists from
+   `config/doc_sync_inventory.yaml` `meta` — never hardcode space keys or service names here.
+2. Apply the FULL inclusion filter to each hit (all three — same as the inventory):
+   (a) about an owned service (inventory `meta.owned_services`); (b) author ∈
+   `config/people.yaml` `scope: team`; (c) NOT ops/RCA/oncall/incident/report/perf/
+   setup/tracking. Drop anything failing any leg.
+3. Write the surviving candidates to `state/doc_sync_discovered.json`
+   (`{"candidates":[{id, title, author, repo}]}`).
+4. Merge — append only the genuinely-NEW ids to `needs_confirm` (dedup vs every bucket):
+   ```bash
+   .venv/bin/python derive/doc_sync_state.py discover-merge \
+       --inventory config/doc_sync_inventory.yaml \
+       --candidates state/doc_sync_discovered.json --write
+   ```
+5. If it reports `new > 0`, include a "🔎 N newly-discovered docs added to needs_confirm —
+   review + promote to monitor" block in the Slack summary (with titles + owners). These
+   are NOT swept this run — only the existing `monitor` list is checked below.
+
+This step runs even on `--dry-run` (inventory maintenance is safe — it posts no comments).
+It works headless/cron (CQL is available without a browser).
+
 ## Phase 1 — Per-doc drift check (reuse `/doc-sync`)
 
 For each `monitor` doc, run the **exact `/doc-sync` mechanics** — do not reinvent them.
