@@ -55,3 +55,17 @@ routines:
     enabled: false                # off by default
     needs: [slack_mcp]
     permissions: []
+
+  - id: doc-sync-sweep
+    cron: "0 10 1 * *"            # monthly, 1st at 10:00 IST
+    enabled: true
+    needs: []                     # posts to owner DM (config doc_sync.yaml); no channel token
+    permissions: [Bash]
+    # SKILL runs with --dry-run --target dm: safe monthly PREVIEW to DM (no live
+    # comments) until the owner flips off --dry-run + fills the channel id.
+
+  - id: doc-sync-digest
+    cron: "0 13 * * 1,3,5"        # Mon/Wed/Fri 13:00 IST
+    enabled: true
+    needs: []                     # read-only; posts pending-review list to owner DM
+    permissions: [Bash]
