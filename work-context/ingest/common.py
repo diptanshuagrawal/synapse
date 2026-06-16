@@ -317,6 +317,36 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             is_leave      INTEGER NOT NULL,          -- 1 = real leave, 0 = false positive
             confidence    REAL
         );
+
+        -- ── slack_pending_reply_check ────────────────────────────────────
+        -- Reply-walk backlog for team_involved-mode channels.
+        --
+        -- In team_involved mode a bot-rooted thread is only KEPT if a reply
+        -- walk confirms a team member participated. That walk is budget-capped
+        -- per fire (TEAM_REPLY_CHECK_CAP). On a high-noise bot channel
+        -- (e.g. a release-notification room) the budget is consumed by earlier release-bot
+        -- threads, so a later bot root gets DROPPED without ever walking its
+        -- replies — and the channel cursor still advances past it, so no future
+        -- fire re-examines it. A genuine team reply buried under that root
+        -- (e.g. an owner CMR-approval ask) is then lost forever.
+        --
+        -- This queue decouples the reply-walk from the cursor: when a bot root
+        -- with replies is starved of budget, we enqueue (channel_id, parent_ts)
+        -- here instead of silently dropping it. A bounded drain pass on a later
+        -- fire walks the queued parents' replies regardless of cursor position;
+        -- team-involved threads get the root + replies upserted, the rest are
+        -- dequeued. Mirrors the stale/active reconcile pattern, but for parents
+        -- that were never stored in events at all.
+        CREATE TABLE IF NOT EXISTS slack_pending_reply_check (
+            channel_id   TEXT NOT NULL,
+            parent_ts    TEXT NOT NULL,            -- Slack epoch ts of the (bot) root
+            reply_count  INTEGER,                  -- declared reply_count at enqueue time
+            first_seen   TEXT NOT NULL,            -- ISO ts first enqueued
+            attempts     INTEGER NOT NULL DEFAULT 0,  -- drain attempts so far (retry/abandon ceiling)
+            PRIMARY KEY (channel_id, parent_ts)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pending_reply_check_chan
+            ON slack_pending_reply_check(channel_id, parent_ts);
     """)
 
     # Indexes for Slack workloads.
