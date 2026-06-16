@@ -115,6 +115,11 @@ def matterai_bot() -> str:
     """Login of the org's MatterAI PR-review bot."""
     return _get("github.matterai_bot", default="matterai-example[bot]")
 
+def claude_review_marker() -> str:
+    """HTML-comment marker that prefixes the Claude Code Review bot's summary comment.
+    Reliable identifier because the bot posts as github-actions[bot] (overloaded)."""
+    return _get("github.claude_review_marker", default="<!-- add-pr-comment:claude-review-summary -->")
+
 def codegraph_repos() -> list[str]:
     """Repo short-names mirrored for the code-graph build (may differ from github.repos)."""
     return _as_list(_get("github.codegraph_repos", default=["service-a", "service-b", "service-c"]))

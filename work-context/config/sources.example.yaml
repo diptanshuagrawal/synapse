@@ -17,6 +17,9 @@ github:
     - "example-org/service-b"
   handle_prefixes: ["example-", "org-"]
   matterai_bot: "matterai-example[bot]"
+  # PR-review bot summary marker (Claude Code Review posts as github-actions[bot];
+  # match by this body marker, not the actor, which is overloaded with CI noise).
+  claude_review_marker: "<!-- add-pr-comment:claude-review-summary -->"
   codegraph_repos: ["service-a", "service-c", "service-b"]
 teams:
   home: "home-team"

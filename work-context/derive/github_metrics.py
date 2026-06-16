@@ -112,7 +112,7 @@ CATEGORY_WEIGHTS: dict[str, float] = {
     "praise":         0.0,
 }
 # Human comments are stronger signal than a bot flag.
-SOURCE_WEIGHT: dict[str, float] = {"human": 1.0, "matterai": 0.5}
+SOURCE_WEIGHT: dict[str, float] = {"human": 1.0, "matterai": 0.5, "claude": 0.5}
 
 # Mechanical component weights.
 W_CHANGES_REQUESTED = 8.0   # per CHANGES_REQUESTED human review
@@ -440,7 +440,8 @@ def coverage_gap(conn: sqlite3.Connection, since: Optional[str] = None,
         for cat, by_src in cats.items():
             b = buckets.setdefault(cat, {"bot_covered": 0, "human_only": 0, "bot_only": 0})
             has_h = by_src.get("human", 0) > 0
-            has_b = by_src.get("matterai", 0) > 0
+            # bot = MatterAI (legacy) OR Claude Code Review (current).
+            has_b = (by_src.get("matterai", 0) + by_src.get("claude", 0)) > 0
             if has_h and has_b:
                 b["bot_covered"] += 1
             elif has_h:
