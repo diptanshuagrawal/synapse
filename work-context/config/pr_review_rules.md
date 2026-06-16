@@ -23,8 +23,8 @@ author's process broke down.
 | `nit` | style, formatting, typos, import order, trivially cosmetic | 0.1 |
 | `praise` | positive feedback, "LGTM", approval with no ask | 0.0 |
 
-Weights drive the friction score (human comments count more than matterai —
-that's applied by the scorer, not you). Pick the category, not the weight.
+Weights drive the friction score (human comments count more than bot reviews —
+matterai/claude — that's applied by the scorer, not you). Pick the category, not the weight.
 
 ## How to choose
 
@@ -35,8 +35,9 @@ that's applied by the scorer, not you). Pick the category, not the weight.
    the spec wants"; correctness = "this code is buggy regardless of spec".
 3. **design vs naming:** module/boundary/abstraction = design; a single
    identifier = naming.
-4. **Bot vs human:** classify matterai comments with the SAME taxonomy. Source
-   (human/matterai) is already recorded — do NOT put it in the verdict.
+4. **Bot vs human:** classify matterai AND Claude Code Review comments with the
+   SAME taxonomy. Source (human/matterai/claude) is already recorded — do NOT put
+   it in the verdict.
 5. **Pure CI/automation chatter** (coverage bot tables, build logs) is already
    filtered out at dump time; you should not see it. If you do, tag `nit`.
 6. **Low confidence:** if the body is too terse to judge, emit confidence < 0.6

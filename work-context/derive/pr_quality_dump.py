@@ -7,8 +7,9 @@ chat-classify pass.
 
 Selects review/comment events on MERGED PRs that:
   - have a non-empty body,
-  - are authored by a HUMAN reviewer or matterai (other bots — github-actions,
-    codecoverage, qa-bvt — are CI chatter, excluded),
+  - are authored by a HUMAN reviewer, matterai, or the Claude Code Review bot
+    (github-actions[bot] comment carrying the claude_review_marker). Other bot
+    chatter — codecoverage, qa-bvt, unmarked github-actions CI — is excluded,
   - are NOT the PR author's own comments (those are replies, not review signal),
   - are NOT already classified (event_id absent from pr_comment_class).
 
@@ -36,7 +37,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from ingest.common import get_db  # noqa: E402
 from derive.github_metrics import team_login_set  # noqa: E402
-from derive.sources_config import matterai_bot  # noqa: E402
+from derive.sources_config import claude_review_marker, matterai_bot  # noqa: E402
 
 STATE_DIR = _REPO_ROOT / "state"
 PENDING_JSON = STATE_DIR / "pending_pr_comments.json"
@@ -44,6 +45,7 @@ RULES_MD = STATE_DIR / "pending_pr_comments.rules.md"
 RULES_SRC = _REPO_ROOT / "config" / "pr_review_rules.md"
 
 MATTERAI = matterai_bot()
+CLAUDE_MARKER = claude_review_marker()
 BODY_MAX = 1200  # enough context to classify; matterai comments can be long
 DEFAULT_LIMIT = 300
 
@@ -110,15 +112,15 @@ def main() -> int:
         where_ts = "AND e.ts >= ?"
         params.append(since)
 
-    # Human OR matterai; exclude other bots; exclude the PR author's own comments;
-    # only merged PRs; non-empty body; not already classified.
+    # Human OR matterai OR Claude-review (github-actions[bot] w/ marker); exclude other
+    # bots; exclude the PR author's own comments; merged PRs; non-empty body; unclassified.
     q = f"""
         SELECT e.id, e.subject, e.actor, e.ts, e.event_type, e.title, e.body, e.url
         FROM events e
         WHERE e.source = 'github'
           AND e.event_type IN ('review','comment','issue_comment')
           AND length(trim(COALESCE(e.body,''))) > 0
-          AND (e.actor = ? OR e.actor NOT LIKE '%[bot]')
+          AND (e.actor = ? OR e.actor NOT LIKE '%[bot]' OR instr(COALESCE(e.body,''), ?) > 0)
           {_NOISE_SQL}
           {_ECHO_SQL}
           {where_ts}
@@ -134,7 +136,7 @@ def main() -> int:
         ORDER BY e.ts ASC
         LIMIT ?
     """
-    rows = conn.execute(q, [MATTERAI, *params, args.limit]).fetchall()
+    rows = conn.execute(q, [MATTERAI, CLAUDE_MARKER, *params, args.limit]).fetchall()
 
     pending = []
     for r in rows:
@@ -143,7 +145,11 @@ def main() -> int:
         pending.append({
             "event_id": r["id"],
             "subject": r["subject"],
-            "source": "matterai" if r["actor"] == MATTERAI else "human",
+            "source": (
+                "matterai" if r["actor"] == MATTERAI
+                else "claude" if CLAUDE_MARKER in (r["body"] or "")
+                else "human"
+            ),
             "actor": r["actor"],
             "ts": r["ts"],
             "kind": r["event_type"],
@@ -156,7 +162,7 @@ def main() -> int:
         f"""SELECT COUNT(*) FROM events e
             WHERE e.source='github' AND e.event_type IN ('review','comment','issue_comment')
               AND length(trim(COALESCE(e.body,'')))>0
-              AND (e.actor=? OR e.actor NOT LIKE '%[bot]')
+              AND (e.actor=? OR e.actor NOT LIKE '%[bot]' OR instr(COALESCE(e.body,''), ?) > 0)
               {_NOISE_SQL}
               {_ECHO_SQL}
               {where_ts}
@@ -165,7 +171,7 @@ def main() -> int:
                                   AND a.event_type IN ('pr_merged','pr_opened','pr_closed') AND a.actor IS NOT NULL)
               {team_sql}
               AND e.id NOT IN (SELECT event_id FROM pr_comment_class)""",
-        [MATTERAI, *params],
+        [MATTERAI, CLAUDE_MARKER, *params],
     ).fetchone()[0]
 
     payload = {

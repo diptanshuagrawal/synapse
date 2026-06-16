@@ -38,6 +38,58 @@ LOG_FILE = ROOT / "logs" / "rollup.log"
 BOT_LIKE = "%[bot]%"
 MATTERAI_SUMMARY_RE = re.compile(r"^🧪 PR Review is completed:\s*(.+?)(?:\n|$)", re.MULTILINE)
 
+import sources_config  # noqa: E402
+
+# Claude Code Review bot (replaced MatterAI ~2026-05). Posts as github-actions[bot],
+# identified by a body marker. Summary = the intro prose before the first findings
+# section/table. Strip the boilerplate "## Claude Code Review" heading + the marker.
+CLAUDE_REVIEW_MARKER = sources_config.claude_review_marker()
+_CLAUDE_BOILERPLATE_RE = re.compile(r"^\s*##\s*Claude Code Review\s*$", re.MULTILINE)
+_CLAUDE_STOP_RE = re.compile(r"^\s*(?:###\s|\|)", re.MULTILINE)  # first ### section or md table
+# Explicit summary section, when the bot uses one (varies run to run).
+_CLAUDE_SUMMARY_SEC_RE = re.compile(
+    r"^\s*###\s*(?:Summary|What (?:this |the )?PR does|What changed|Overview)\b[^\n]*\n(.*?)(?=^\s*###\s|^\s*\||\Z)",
+    re.MULTILINE | re.DOTALL | re.IGNORECASE,
+)
+
+
+def extract_claude_summary(body: str | None) -> str | None:
+    """Pull the human-readable summary out of a Claude Code Review comment.
+
+    The bot's layout varies: sometimes an intro paragraph sits directly under the
+    PR-title heading, sometimes the prose lives in a ``### Summary`` /
+    ``### What this PR does`` section. Capture the PR-title heading as a lead, then
+    that section if present, else the intro prose before the first ``###``/table.
+    Returns None if the marker is absent."""
+    if not body or CLAUDE_REVIEW_MARKER not in body:
+        return None
+    text = body.replace(CLAUDE_REVIEW_MARKER, "")
+    text = _CLAUDE_BOILERPLATE_RE.sub("", text)
+
+    # PR-title heading lead (first "## ..." line), e.g. "Code Review — PR #859".
+    lead = ""
+    for ln in text.splitlines():
+        s = ln.strip()
+        if s.startswith("##"):
+            lead = s.lstrip("# ").strip()
+            break
+
+    sec = _CLAUDE_SUMMARY_SEC_RE.search(text)
+    if sec:
+        prose = sec.group(1)
+    else:
+        m = _CLAUDE_STOP_RE.search(text)
+        prose = text[: m.start()] if m else text
+
+    lines = [ln.lstrip("# ").rstrip() for ln in prose.splitlines()]
+    prose_clean = "\n".join(ln for ln in lines if ln).strip()
+    # De-dup when lead already appears in prose (intro-paragraph layout).
+    if lead and prose_clean.startswith(lead):
+        summary = prose_clean
+    else:
+        summary = "\n".join(p for p in (lead, prose_clean) if p).strip()
+    return summary or None
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -191,17 +243,34 @@ def collect_subjects(conn: sqlite3.Connection, since: str,
             "sprint_state": sstate or "",
         }
 
-    # MatterAI summary + severity per github subject (from review event).
+    # Bot PR-review summary + severity per github subject.
+    # MatterAI (legacy, review event) + Claude Code Review (current, comment event w/ marker).
+    # Both coexist in long windows; MatterAI was replaced ~2026-05.
+    matterai: dict[str, dict] = {}
     cur.execute("""
         SELECT subject, body FROM events
         WHERE actor LIKE '%matterai%' AND event_type = 'review' AND ts >= ?
     """, (since,))
-    matterai: dict[str, dict] = {}
     for sub, mbody in cur.fetchall():
         s = extract_matterai_summary(mbody)
         sev = severity_count(mbody)
         if sub:
             matterai[sub] = {"summary": s or "", "severity": sev}
+
+    # Claude Code Review comments (github-actions[bot]; identified by body marker).
+    cur.execute("""
+        SELECT subject, body FROM events
+        WHERE event_type = 'comment' AND instr(body, ?) > 0 AND ts >= ?
+        ORDER BY ts ASC
+    """, (CLAUDE_REVIEW_MARKER, since))
+    for sub, cbody in cur.fetchall():
+        if not sub:
+            continue
+        s = extract_claude_summary(cbody)
+        sev = severity_count(cbody)
+        # Prefer Claude when present (current bot); only fill if no real matterai summary.
+        if s and not (matterai.get(sub, {}).get("summary")):
+            matterai[sub] = {"summary": s, "severity": sev}
 
     # Epic body lookup: any subject whose title carries [Epic X-N] → fetch X-N body.
     epic_keys: set[str] = set()

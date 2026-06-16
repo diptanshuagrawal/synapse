@@ -40,7 +40,7 @@ CREATE INDEX IF NOT EXISTS idx_pr_meta_state ON pr_meta(state);
 CREATE TABLE IF NOT EXISTS pr_comment_class (
     event_id      TEXT PRIMARY KEY,   -- events.id of the review / comment
     subject       TEXT NOT NULL,      -- owner/repo#N
-    source        TEXT NOT NULL,      -- human | matterai
+    source        TEXT NOT NULL,      -- human | matterai | claude
     category      TEXT NOT NULL,      -- business-logic | correctness | test-gap |
                                       -- design | security | naming | nit |
                                       -- question | praise

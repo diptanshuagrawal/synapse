@@ -247,14 +247,19 @@ def _github_content(conn: sqlite3.Connection, subject: str) -> str:
     if len(combined) >= _MIN_USEFUL_CONTENT:
         return combined
 
-    # 2. matterai-bot summary comment (richest auto-generated PR description)
+    # 2. bot summary comment (richest auto-generated PR description).
+    #    Matches MatterAI (legacy) OR the Claude Code Review bot (current; posts as
+    #    github-actions[bot], identified by the body marker not the actor).
+    from derive.sources_config import claude_review_marker
+    marker = claude_review_marker()
     row = conn.execute(
         """SELECT body FROM events
             WHERE subject = ? AND source = 'github' AND event_type = 'comment'
-              AND (actor LIKE 'matterai%' OR actor LIKE '%matterai%')
+              AND ( actor LIKE 'matterai%' OR actor LIKE '%matterai%'
+                    OR instr(COALESCE(body,''), ?) > 0 )
               AND body IS NOT NULL AND length(body) > 80
             ORDER BY length(body) DESC LIMIT 1""",
-        (subject,),
+        (subject, marker),
     ).fetchone()
     if row and row[0]:
         mai = _truncate(row[0], _MAX_GH)
