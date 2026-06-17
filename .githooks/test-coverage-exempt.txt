@@ -15,7 +15,6 @@ work-context/bin/migrate-commit-actors.py
 work-context/bin/refresh-event-refs.py
 work-context/derive/_shard_dump.py
 work-context/derive/_size15_dump.py
-work-context/derive/actor_behavior.py
 work-context/derive/anthropic_client.py
 work-context/derive/apply_epic_slugs.py
 work-context/derive/apply_leaves.py
@@ -27,7 +26,6 @@ work-context/derive/ask_engine.py
 work-context/derive/auto_recurring.py
 work-context/derive/build_thread_summary.py
 work-context/derive/build_trd_owners.py
-work-context/derive/cluster_diff.py
 work-context/derive/cluster_noise_filter.py
 work-context/derive/cluster_ownership_rollup.py
 work-context/derive/cluster_subjects.py
@@ -45,7 +43,6 @@ work-context/derive/feature_narrative.py
 work-context/derive/feature_resolve.py
 work-context/derive/feature_stages.py
 work-context/derive/finalize_refresh.py
-work-context/derive/github_metrics.py
 work-context/derive/github_validate.py
 work-context/derive/identity_reconcile.py
 work-context/derive/identity_signals.py
@@ -54,7 +51,6 @@ work-context/derive/jira_validate.py
 work-context/derive/label_clusters.py
 work-context/derive/leaves_dump.py
 work-context/derive/link_clusters_to_projects.py
-work-context/derive/llm_classifier.py
 work-context/derive/mom_extractor.py
 work-context/derive/narrative.py
 work-context/derive/openai_client.py
@@ -73,7 +69,6 @@ work-context/derive/render_leaves.py
 work-context/derive/restore_people.py
 work-context/derive/restore_people_ids.py
 work-context/derive/retro_census.py
-work-context/derive/rollup.py
 work-context/derive/sample_subjects.py
 work-context/derive/service_derive/build_skeletons.py
 work-context/derive/service_derive/go_extractor.py
