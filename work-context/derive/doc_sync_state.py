@@ -169,12 +169,12 @@ def cmd_set_status(args):
     n = 0
     with _conn() as c:
         for r in rows:
-            c.execute(
+            cur = c.execute(
                 "UPDATE doc_sync_comments SET resolution_status=?, last_checked_ts=? "
                 "WHERE comment_id=?",
                 (r.get("resolution_status"), r.get("last_checked_ts"), r["comment_id"]),
             )
-            n += c.rowcount
+            n += cur.rowcount
     print(f"updated {n} status row(s)")
 
 
