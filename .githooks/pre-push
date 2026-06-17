@@ -8,8 +8,10 @@ set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 SCANNER="$REPO_ROOT/.githooks/leak_scan.py"
+GATE="$REPO_ROOT/work-context/bin/check_test_coverage.py"
 Z="0000000000000000000000000000000000000000"
 fail=0
+gate_fail=0
 
 [ -f "$SCANNER" ] || { echo "leak-guard: $SCANNER missing — refusing push." >&2; exit 1; }
 
@@ -21,6 +23,14 @@ while read -r localref localsha remoteref remotesha; do
   else
     python3 "$SCANNER" range "$localsha" "$remotesha" || fail=1   # only the new commits
   fi
+  # Test-coverage gate: in-scope source changed → its test must change too.
+  if [ "${SKIP_TEST_GATE:-0}" != "1" ] && [ -f "$GATE" ]; then
+    if [ "$remotesha" = "$Z" ]; then
+      python3 "$GATE" range "$localsha" || gate_fail=1
+    else
+      python3 "$GATE" range "$localsha" "$remotesha" || gate_fail=1
+    fi
+  fi
 done
 
 if [ "$fail" -ne 0 ]; then
@@ -28,6 +38,14 @@ if [ "$fail" -ne 0 ]; then
   echo "pre-push BLOCKED — sensitive data in the commits being pushed (see above)." >&2
   echo "It may live in an OLDER commit even if your latest files look clean —" >&2
   echo "rewrite history (git rebase -i / filter-repo) to scrub it before pushing." >&2
+  exit 1
+fi
+
+if [ "$gate_fail" -ne 0 ]; then
+  echo "" >&2
+  echo "pre-push BLOCKED — changed source is missing matching test changes (see above)." >&2
+  echo "Add/update the test, exempt the file in .githooks/test-coverage-exempt.txt," >&2
+  echo "or SKIP_TEST_GATE=1 git push to override." >&2
   exit 1
 fi
 

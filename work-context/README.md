@@ -284,8 +284,16 @@ Coverage focuses on the highest-leverage, most-regressable code:
 | `test_slack_parse.py` | bot block/attachment recovery, mention/subteam expand, files, reactions, thread-reply detection |
 | `test_slack_upsert.py` | id-vs-subject thread split, ts/url builders, UPSERT insert/update/unchanged |
 
-Opt-in pre-push gate: `export RUN_TESTS=1` makes `.githooks/pre-push` block a
-push when the suite is red (off by default — a routine push is never gated).
+Two pre-push gates in `.githooks/pre-push` (server-side mirror in
+`.github/workflows/tests.yml`):
+
+- **suite gate** — runs the full suite; blocks the push if red. `SKIP_TESTS=1` to bypass.
+- **coverage gate** (`bin/check_test_coverage.py`) — if a push changes an
+  in-scope source module (`ingest/`, `derive/`, `bin/*.py`), a test that
+  *imports* that module must change in the same push. New/untested files block
+  too. Carve-outs live in `.githooks/test-coverage-exempt.txt` (seeded with the
+  modules that had no test when the gate landed — remove an entry as you add its
+  test). `SKIP_TEST_GATE=1` to bypass.
 
 **2. Data validators** (`derive/*_validate.py`) — runtime PASS/WARN/FAIL checks
 on the live DB, refreshed after each ingest and rendered by `cron-status`:
