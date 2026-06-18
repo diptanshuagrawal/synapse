@@ -38,7 +38,6 @@ work-context/derive/label_clusters.py
 work-context/derive/leaves_dump.py
 work-context/derive/mom_extractor.py
 work-context/derive/narrative.py
-work-context/derive/openai_client.py
 work-context/derive/ownership_corrections.py
 work-context/derive/person_deepread.py
 work-context/derive/person_profile.py
