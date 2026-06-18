@@ -18,7 +18,6 @@ work-context/derive/_size15_dump.py
 work-context/derive/apply_epic_slugs.py
 work-context/derive/apply_narratives.py
 work-context/derive/apply_ownership_sample.py
-work-context/derive/auto_recurring.py
 work-context/derive/build_thread_summary.py
 work-context/derive/build_trd_owners.py
 work-context/derive/cluster_noise_filter.py
