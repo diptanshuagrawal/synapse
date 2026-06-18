@@ -31,11 +31,19 @@ def test_incoming_ticket_from_pr(seeded_db):
     assert all(l.direction == "in" for l in links)
 
 
-def test_neighbours_dedup(seeded_db):
+def test_neighbours_merges_both_directions(seeded_db):
+    # EX-2301 has BOTH an incoming edge (PR references it) and an outgoing edge
+    # (its title carries the [Epic EX-2238] anchor → ticket ref). neighbours()
+    # must surface both directions, deduped. (Review: the old test only checked
+    # set==list on an already-deduped result — tautological.)
     g = StoryGraph(seeded_db)
-    n = g.neighbours(PR)
+    n = g.neighbours(STORY)
     keys = [(l.from_subject, l.to_subject, l.via_ref_type, l.via_ref_value) for l in n]
-    assert len(keys) == len(set(keys))   # no duplicate edges
+    assert len(keys) == len(set(keys))                      # deduped
+    dirs = {l.direction for l in n}
+    assert dirs == {"in", "out"}                            # both directions merged
+    assert any(l.from_subject == PR for l in n)             # incoming from the PR
+    assert any(l.via_ref_value == "EX-2238" for l in n)     # outgoing to the epic
 
 
 def test_walk_reaches_ticket(seeded_db):
