@@ -34,6 +34,16 @@ from ingest.common import get_db  # noqa: E402
 CONFIG_PATH = _PKG_ROOT / "config" / "cluster_exclude.yaml"
 SLACK_CHANNELS_PATH = _PKG_ROOT / "config" / "slack_channels.yaml"
 
+# Generic automation-root markers (case-insensitive substring on the thread ROOT
+# title+body) for the tier-5 content-share test. Channel-agnostic, so new alert
+# channels are caught without onboarding. Groomable via `automation_patterns:`.
+DEFAULT_AUTOMATION_PATTERNS = [
+    "[firing", "[resolved", "[alerting", "[grafana]", "[prometheus", "opsg.in",
+    "acknowledged alert", "closed alert", "acknowledged the alert", "alert api closed",
+    "request approved for", "request denied for", "new issue reported",
+    "daily oncall stats", "sentry", "pagerduty",
+]
+
 
 def _now_iso() -> str:
     from datetime import datetime, timezone
@@ -44,11 +54,39 @@ def load_config() -> dict:
     cfg = yaml.safe_load(CONFIG_PATH.read_text()) or {}
     cfg.setdefault("noise_ratio_threshold", 0.90)
     cfg.setdefault("min_subjects_for_ratio", 20)
+    cfg.setdefault("channel_automation_share", 0.90)
     cfg.setdefault("protect_classes", ["team", "cross-team", "working-group"])
     cfg.setdefault("name_patterns", [])
+    cfg.setdefault("automation_patterns", DEFAULT_AUTOMATION_PATTERNS)
     cfg.setdefault("force_include", [])
     cfg.setdefault("force_exclude", [])
     return cfg
+
+
+def _automation_root_share(conn, patterns) -> dict[str, tuple[int, int]]:
+    """Per slack channel: (automation_root_count, total_subjects).
+
+    A subject's ROOT = its earliest event. Label-independent — reads message
+    content only, so it catches automation channels whose clusters are still
+    unlabeled (the gap the RECURRING-ratio tier can't see)."""
+    pats = [str(p).lower() for p in patterns]
+    auto: dict[str, int] = {}
+    tot: dict[str, int] = {}
+    seen: set[str] = set()
+    for subject, title, body, ch in conn.execute(
+        "SELECT subject, title, body, channel_id FROM events "
+        "WHERE source='slack' AND subject IS NOT NULL ORDER BY subject, ts"
+    ):
+        if subject in seen:
+            continue
+        seen.add(subject)
+        if not ch:
+            continue
+        tot[ch] = tot.get(ch, 0) + 1
+        text = ((title or "") + " " + (body or "")).lower()
+        if any(p in text for p in pats):
+            auto[ch] = auto.get(ch, 0) + 1
+    return {ch: (auto.get(ch, 0), n) for ch, n in tot.items()}
 
 
 def _channel_meta() -> dict[str, dict]:
@@ -84,6 +122,7 @@ def compute_excluded(conn) -> dict[str, dict]:
     meta = _channel_meta()
     th = float(cfg["noise_ratio_threshold"])
     min_n = int(cfg["min_subjects_for_ratio"])
+    share_th = float(cfg["channel_automation_share"])
     protect = set(cfg["protect_classes"])
     name_re = (
         re.compile("|".join(re.escape(p) for p in cfg["name_patterns"]), re.I)
@@ -91,6 +130,7 @@ def compute_excluded(conn) -> dict[str, dict]:
     )
     force_inc = {str(x) for x in cfg["force_include"]}
     force_exc = {str(x) for x in cfg["force_exclude"]}
+    auto_share = _automation_root_share(conn, cfg["automation_patterns"])
 
     # name <-> id resolution for the override lists
     name_to_id = {(m.get("name") or ""): cid for cid, m in meta.items()}
@@ -140,12 +180,22 @@ def compute_excluded(conn) -> dict[str, dict]:
             continue
         if cls in protect:
             continue
-        if tot >= min_n:
-            if ratio >= th:
-                out[cid] = {"name": name, "reason": "ratio", "noise": noise, "real": real, "ratio": round(ratio, 3)}
-        else:
-            if name_re and name_re.search(name):
-                out[cid] = {"name": name, "reason": "name-bootstrap", "noise": noise, "real": real, "ratio": round(ratio, 3)}
+        # tier 4 — label-based RECURRING ratio (data-rich, labeled channels)
+        if tot >= min_n and ratio >= th:
+            out[cid] = {"name": name, "reason": "ratio", "noise": noise, "real": real, "ratio": round(ratio, 3)}
+            continue
+        # tier 5 — GENERIC content automation-root share (label-independent;
+        # catches pure-alert channels the name list misses and whose clusters
+        # are still unlabeled so the ratio can't see them).
+        c_auto, c_tot = auto_share.get(cid, (0, 0))
+        c_share = c_auto / c_tot if c_tot else 0.0
+        if c_tot >= min_n and c_share >= share_th:
+            out[cid] = {"name": name, "reason": "content-share", "noise": noise,
+                        "real": real, "ratio": round(c_share, 3)}
+            continue
+        # tier 6 — name bootstrap for channels too sparse for tiers 4/5
+        if tot < min_n and name_re and name_re.search(name):
+            out[cid] = {"name": name, "reason": "name-bootstrap", "noise": noise, "real": real, "ratio": round(ratio, 3)}
     return out
 
 
@@ -199,7 +249,7 @@ def cmd_refresh(_args) -> int:
         "excluded_subjects_total": len(excl_subj),
         "by_reason": {
             r: sum(1 for d in decided.values() if d["reason"] == r)
-            for r in ("force_exclude", "ratio", "name-bootstrap")
+            for r in ("force_exclude", "ratio", "content-share", "name-bootstrap")
         },
     }, indent=2))
     print("\nExcluded channels (name | reason | noise/real | ratio):", file=sys.stderr)
