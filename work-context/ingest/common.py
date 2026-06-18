@@ -458,6 +458,14 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # script ran before the ingest schema was up-to-date.
     _add_column_if_missing(conn, "topic_brief", "root_cause", "TEXT")
     _add_column_if_missing(conn, "topic_brief", "confidence", "REAL")
+    # v2 enrichment columns (migration 006) + ownership rollup column. These
+    # were historically ALTERed in ad-hoc by derive/label_clusters._ensure_tables
+    # and derive/cluster_ownership_rollup, so a fresh DB that ran ask_engine /
+    # topic_brief_validate before those derive steps hit "no such column".
+    # Declaring them here makes _ensure_schema the single source of truth.
+    for _col in ("outcomes_json", "followups_json", "risk_areas_json",
+                 "stakeholders_json", "artifacts_json", "owner_distribution_json"):
+        _add_column_if_missing(conn, "topic_brief", _col, "TEXT")
 
     conn.commit()
 

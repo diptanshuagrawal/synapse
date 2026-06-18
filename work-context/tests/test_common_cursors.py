@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
+
 from ingest import common
 
 
@@ -32,7 +34,14 @@ def test_write_cursor_preserves_other_sources(tmp_paths):
     assert common.read_cursor("github") == "G1"
 
 
-def test_write_success_date_writes_today(tmp_paths):
+def test_write_success_date_writes_today(tmp_paths, monkeypatch):
+    # Pin "now" so the test can't flake across a midnight boundary between the
+    # write and the assertion (review finding).
+    class _FixedDT(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 6, 15, 9, 0, 0)
+    monkeypatch.setattr(common, "datetime", _FixedDT)
     common.write_success_date("jira")
     marker = tmp_paths.state_path.parent / "last_jira_success.date"
-    assert marker.read_text().strip() == datetime.now().strftime("%Y-%m-%d")
+    assert marker.read_text().strip() == "2026-06-15"
