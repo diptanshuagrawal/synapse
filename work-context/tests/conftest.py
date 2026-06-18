@@ -143,9 +143,9 @@ SEED_PEOPLE = [
      "jira_id": "acc-bob", "slack_id": "U0BOB", "scope": "team"},
 ]
 SEED_PROJECTS = [
-    {"slug": "payments", "keywords": ["withholding", "payout"],
+    {"slug": "payments", "name": "Payments", "keywords": ["withholding", "payout"],
      "jira_epics": ["EX-2238"], "confluence_pages": ["123456789"]},
-    {"slug": "ledger", "keywords": ["ledger"], "jira_epics": [],
+    {"slug": "ledger", "name": "Ledger", "keywords": ["ledger"], "jira_epics": [],
      "confluence_pages": []},
 ]
 
@@ -271,6 +271,10 @@ def build_seed(conn):
     )
 
     # ── topic_brief incident cluster + member (slack thread) ─────────────
+    # v2 columns (migration 006) the validators read but base schema lacks.
+    for col in ("outcomes_json", "followups_json", "risk_areas_json",
+                "stakeholders_json", "artifacts_json"):
+        common._add_column_if_missing(conn, "topic_brief", col, "TEXT")
     conn.execute("INSERT INTO topic_brief (cluster_id, label, root_cause, status) "
                  "VALUES (1, 'Payout outage', 'job crash', 'RESOLVED')")
     conn.execute("INSERT INTO topic_brief_member (cluster_id, subject, source) "
