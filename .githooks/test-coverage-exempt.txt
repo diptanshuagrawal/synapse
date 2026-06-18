@@ -15,7 +15,6 @@ work-context/bin/migrate-commit-actors.py
 work-context/bin/refresh-event-refs.py
 work-context/derive/_shard_dump.py
 work-context/derive/_size15_dump.py
-work-context/derive/anthropic_client.py
 work-context/derive/apply_epic_slugs.py
 work-context/derive/apply_narratives.py
 work-context/derive/apply_ownership_sample.py
