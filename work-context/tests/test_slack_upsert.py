@@ -103,3 +103,35 @@ def test_upsert_resolves_mention_ref(db_conn, patch_config):
     refs = {r[0] for r in db_conn.execute(
         "SELECT ref_value FROM event_refs WHERE ref_type='person'")}
     assert "carol" in refs
+
+
+# ── uncovered branches: cursor, DM detection, reactions/reply_count updates ──
+
+def test_extract_cursor():
+    assert su.extract_cursor("End of results") is None
+    assert su.extract_cursor("") is None
+
+
+def test_is_dm_channel_dict():
+    assert su.is_dm_channel({"is_im": True}) is True
+    assert su.is_dm_channel({"is_mpim": True}) is True
+    assert su.is_dm_channel({"is_private": True, "is_im": False}) is False
+
+
+def test_upsert_reactions_update_without_body_change(db_conn, patch_config):
+    su.upsert_event(db_conn, _pm(), "C01")
+    # same body, new reactions → 'updated' (reactions refreshed silently).
+    r = su.upsert_event(db_conn, _pm(reactions_json='{"tada": 2}'), "C01")
+    assert r == "updated"
+    rj = db_conn.execute(
+        "SELECT reactions_json FROM events WHERE id='slack:C01:1700000000.000100'").fetchone()[0]
+    assert rj == '{"tada": 2}'
+
+
+def test_upsert_reply_count_grows_without_body_change(db_conn, patch_config):
+    su.upsert_event(db_conn, _pm(reply_count=1), "C01")
+    r = su.upsert_event(db_conn, _pm(reply_count=5), "C01")   # only reply_count changed
+    assert r == "updated"
+    rc = db_conn.execute(
+        "SELECT reply_count FROM events WHERE id='slack:C01:1700000000.000100'").fetchone()[0]
+    assert rc == 5
