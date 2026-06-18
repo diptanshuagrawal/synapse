@@ -52,7 +52,6 @@ work-context/derive/refresh_embeddings.py
 work-context/derive/render_leaves.py
 work-context/derive/restore_people.py
 work-context/derive/restore_people_ids.py
-work-context/derive/retro_census.py
 work-context/derive/sample_subjects.py
 work-context/derive/service_derive/build_skeletons.py
 work-context/derive/service_derive/go_extractor.py
