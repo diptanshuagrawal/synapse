@@ -290,23 +290,36 @@ def build_seed(conn):
 
 @pytest.fixture
 def fake_anthropic():
-    """Factory: fake_anthropic({subject: {domains, summary, …}}) -> client.
+    """Factory for a stub Anthropic client.
 
-    Each create() call emits one tool_use block per configured subject; the
-    classifier filters to the subjects actually in its batch. Override token
-    counts with in_tok / out_tok.
+    Call as fake_anthropic(resp1, resp2, …) where each resp is a verdict map
+    {subject: {domains, summary, confidence, "_tool": <tool_name>}}. Successive
+    .messages.create() calls return successive responses (last repeats), so a
+    pass-1 → pass-2 flow can hand back different tool calls each time.
+
+    Per-subject "_tool" sets the tool_use block name (default
+    'record_classification', the verdict tool); use 'request_diff' to force the
+    pass-2 diff escalation. A subject omitted from the map gets no tool call.
     """
-    def _make(verdicts: dict[str, dict], *, tool_name: str = "classify_subject",
-              in_tok: int = 10, out_tok: int = 20):
-        blocks = [
-            SimpleNamespace(type="tool_use", name=tool_name, input={"subject": s, **v})
-            for s, v in verdicts.items()
-        ]
-        resp = SimpleNamespace(
-            content=blocks,
-            usage=SimpleNamespace(input_tokens=in_tok, output_tokens=out_tok),
-        )
-        return SimpleNamespace(messages=SimpleNamespace(create=lambda **kw: resp))
+    def _make(*responses: dict, in_tok: int = 10, out_tok: int = 20):
+        seq = list(responses) or [{}]
+        state = {"i": 0}
+
+        def create(**kw):
+            idx = min(state["i"], len(seq) - 1)
+            state["i"] += 1
+            vmap = seq[idx]
+            blocks = []
+            for subject, v in vmap.items():
+                v = dict(v)
+                tool = v.pop("_tool", "record_classification")
+                blocks.append(SimpleNamespace(
+                    type="tool_use", name=tool, input={"subject": subject, **v}))
+            return SimpleNamespace(
+                content=blocks,
+                usage=SimpleNamespace(input_tokens=in_tok, output_tokens=out_tok))
+
+        return SimpleNamespace(messages=SimpleNamespace(create=create))
 
     return _make
 
