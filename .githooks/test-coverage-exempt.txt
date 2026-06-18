@@ -46,7 +46,6 @@ work-context/derive/narrative.py
 work-context/derive/openai_client.py
 work-context/derive/ownership_corrections.py
 work-context/derive/ownership_resolve.py
-work-context/derive/person_census.py
 work-context/derive/person_deepread.py
 work-context/derive/person_profile.py
 work-context/derive/person_v4_manifest.py
