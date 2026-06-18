@@ -87,5 +87,6 @@ def test_embed_count_mismatch_errors(seeded_db, monkeypatch):
 def test_existing_embeddings(wired):
     s1 = es.embed_subjects(SUBJECTS)
     ex = es._existing_embeddings(wired, SUBJECTS, es.DEFAULT_MODEL)
-    # reports back exactly the embedded subjects (the empty-body epic is skipped).
-    assert len(ex) == s1["embedded"] and set(ex) <= set(SUBJECTS)
+    # reports back EXACTLY the embedded subjects = all but the empty-body epic.
+    assert set(ex) == set(SUBJECTS) - {SEED_SUBJECTS["epic"]}
+    assert len(ex) == s1["embedded"]

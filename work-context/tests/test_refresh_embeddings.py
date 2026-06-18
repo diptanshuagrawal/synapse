@@ -60,5 +60,6 @@ def test_delta_drift_detected(wired):
 
 def test_delta_sha_cache_hit_on_rerun(wired):
     re_mod.detect_delta(wired, MODEL)         # first pass populates embed_content_cache
-    d2 = re_mod.detect_delta(wired, MODEL)    # second pass should hit the cache
-    assert d2["sha_cache_hits"] > 0
+    d2 = re_mod.detect_delta(wired, MODEL)    # second pass: every corpus subject hits cache
+    assert d2["sha_cache_hits"] == len(SUBJECTS)   # all 5 cached (incl. no-content epic)
+    assert d2["sha_recomputed"] == 0
