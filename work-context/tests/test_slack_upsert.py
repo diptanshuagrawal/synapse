@@ -135,3 +135,58 @@ def test_upsert_reply_count_grows_without_body_change(db_conn, patch_config):
     rc = db_conn.execute(
         "SELECT reply_count FROM events WHERE id='slack:C01:1700000000.000100'").fetchone()[0]
     assert rc == 5
+
+
+# ── parse_mcp_messages (the MCP text parser) ─────────────────────────────────
+
+def test_parse_mcp_empty():
+    assert su.parse_mcp_messages("") == []
+    assert su.parse_mcp_messages("no headers here") == []
+
+
+def test_parse_mcp_channel_format():
+    text = (
+        "=== Message from Alice (U0ALICE) at 2026-06-10 09:00 ===\n"
+        "Message TS: 1700000000.000100\n"
+        "deploying the payout fix now\n"
+        "Reactions: tada (2)\n"
+        "\n"
+        "=== Message from Bob (U0BOB) at 2026-06-10 09:05 (edited) ===\n"
+        "Message TS: 1700000050.000200\n"
+        "lgtm\n"
+    )
+    msgs = su.parse_mcp_messages(text)
+    assert len(msgs) == 2
+    assert msgs[0].actor_id == "U0ALICE" and "payout fix" in msgs[0].body
+    assert msgs[0].reactions_json is not None        # reactions line parsed out of body
+    assert "Reactions:" not in msgs[0].body
+    assert msgs[1].edited is True                    # (edited) marker on the header
+
+
+def test_parse_mcp_thread_format():
+    text = (
+        "=== THREAD PARENT MESSAGE ===\n"
+        "From: Alice (U0ALICE)\n"
+        "Time: 2026-06-10 09:00\n"
+        "Message TS: 1700000000.000100\n"
+        "prod is down\n"
+        "Thread: 1 reply\n"
+        "--- Reply 1 of 1 ---\n"
+        "From: Bob (U0BOB)\n"
+        "Time: 2026-06-10 09:02\n"
+        "Message TS: 1700000050.000200\n"
+        "on it, rolling back\n"
+    )
+    msgs = su.parse_mcp_messages(text)
+    assert [m.actor_id for m in msgs] == ["U0ALICE", "U0BOB"]
+    assert msgs[0].reply_count == 1                  # "Thread: 1 reply" captured
+    assert "Thread: 1 reply" not in msgs[0].body
+    assert "rolling back" in msgs[1].body
+
+
+def test_parse_mcp_bot_detection():
+    text = ("=== Message from OpsgenieBot (B0OPS) at 2026-06-10 ===\n"
+            "Message TS: 1700000000.000100\n"
+            "P1 alert fired\n")
+    msgs = su.parse_mcp_messages(text)
+    assert msgs[0].is_bot is True                    # actor id starts with B
