@@ -26,7 +26,6 @@ work-context/derive/cluster_ownership_rollup.py
 work-context/derive/cluster_subjects.py
 work-context/derive/compare_person_versions.py
 work-context/derive/diff_fetcher.py
-work-context/derive/doc_sync_state.py
 work-context/derive/dump_pending.py
 work-context/derive/dump_pending_narrative.py
 work-context/derive/embedding_query.py
