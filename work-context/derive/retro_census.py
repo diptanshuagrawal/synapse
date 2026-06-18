@@ -267,8 +267,13 @@ def _load_incident_channels() -> tuple[set[str], set[str]]:
     signal. Derived from channel names in slack_channels.yaml.
     """
     import yaml
-    ch = yaml.safe_load((_REPO_ROOT / "config" / "slack_channels.yaml").read_text())["channels"]
     response, feed = set(), set()
+    cfg = _REPO_ROOT / "config" / "slack_channels.yaml"
+    if not cfg.exists():
+        # gitignored private config — absent in CI / fresh checkouts; degrade to no
+        # structural incident/alert channels rather than crashing.
+        return response, feed
+    ch = yaml.safe_load(cfg.read_text())["channels"]
     for c in ch:
         n = (c.get("name") or "").lower()
         cid = c.get("id")
