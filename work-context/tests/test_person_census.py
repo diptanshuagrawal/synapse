@@ -59,8 +59,16 @@ def test_person_role_participant(seeded_db):
 
 # ── build_person_census (seed, stubbed aliases) ──────────────────────────────
 
-def test_build_person_census_smoke(seeded_db, monkeypatch):
+def test_build_person_census_computed_values(seeded_db, monkeypatch):
     monkeypatch.setattr(pc, "get_aliases_for", lambda c: ALICE)
     census = pc.build_person_census(seeded_db, "alice", SINCE, UNTIL)
-    assert isinstance(census, dict)
-    assert "own_by_signal" in census   # the field person_v3 consumes
+    # assert the COMPUTED census, not just shape (review finding): alice touches
+    # all 5 seed subjects, fully classified.
+    assert census["totals"]["subjects"] == 5
+    assert census["totals"]["represented"] == 5
+    assert census["coverage_ok"] is True
+    # signal routing: epic + confluence page = 2 design; story Done = delivery;
+    # PR = discussion (no domain-owned weight); slack incident thread = incident.
+    assert census["own_by_signal"]["design"] == 2
+    assert census["own_by_signal"]["delivery"] == 1
+    assert census["own_by_signal"]["incident"] == 1
