@@ -19,9 +19,15 @@ and the ~1,630 members of real work were squeezed into ~22 coarse buckets.
 ## How it decides
 
 - Logic: `derive/cluster_noise_filter.py` + `config/cluster_exclude.yaml`.
-- The 5-step decision ladder (force_include → force_exclude → protect_classes →
-  measured ratio → name bootstrap) is documented in the
-  **`config/cluster_exclude.yaml` header** — not repeated here.
+- The decision ladder (force_include → force_exclude → protect_classes →
+  measured RECURRING ratio → **automation-root content share** → name bootstrap)
+  is documented in the **`config/cluster_exclude.yaml` header** — not repeated here.
+- The content-share tier is GENERIC and label-independent: it excludes a channel
+  whose thread ROOTS match `automation_patterns` at >= `channel_automation_share`.
+  It catches pure-alert channels the name list misses AND whose clusters are
+  still unlabeled (so the ratio can't see them) — e.g. a Grafana/Opsgenie alert
+  feed (~0.97) and an access-approval bot channel (~0.93) — while keeping mixed
+  on-call triage channels (share < 0.90) where humans reply to the alerts.
 - `refresh` snapshots the decision into the `cluster_excluded_channel` table, so
   exclusions stay stable after excluded subjects leave `topic_brief`.
 
