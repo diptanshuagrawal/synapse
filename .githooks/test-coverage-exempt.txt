@@ -18,7 +18,6 @@ work-context/derive/_size15_dump.py
 work-context/derive/apply_epic_slugs.py
 work-context/derive/apply_narratives.py
 work-context/derive/apply_ownership_sample.py
-work-context/derive/build_thread_summary.py
 work-context/derive/build_trd_owners.py
 work-context/derive/cluster_noise_filter.py
 work-context/derive/cluster_ownership_rollup.py
@@ -33,7 +32,6 @@ work-context/derive/feature_narrative.py
 work-context/derive/jira_backfill_status.py
 work-context/derive/label_clusters.py
 work-context/derive/leaves_dump.py
-work-context/derive/mom_extractor.py
 work-context/derive/narrative.py
 work-context/derive/ownership_corrections.py
 work-context/derive/person_deepread.py
