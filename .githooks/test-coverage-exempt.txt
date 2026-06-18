@@ -22,7 +22,6 @@ work-context/derive/apply_narratives.py
 work-context/derive/apply_ownership_sample.py
 work-context/derive/apply_pr_classes.py
 work-context/derive/apply_verdicts.py
-work-context/derive/ask_engine.py
 work-context/derive/auto_recurring.py
 work-context/derive/build_thread_summary.py
 work-context/derive/build_trd_owners.py
@@ -56,7 +55,6 @@ work-context/derive/ownership_resolve.py
 work-context/derive/person_census.py
 work-context/derive/person_deepread.py
 work-context/derive/person_profile.py
-work-context/derive/person_v3.py
 work-context/derive/person_v4_manifest.py
 work-context/derive/pr_quality_dump.py
 work-context/derive/pr_quality_report.py
