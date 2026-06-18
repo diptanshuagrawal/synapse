@@ -66,12 +66,15 @@ It emits, per roster member, in a single pass:
   `answered_by_member` flag (the §4b heavy scan, pre-computed).
 
 It also emits an **`OWNER FOCUS`** block at the end (always — even on a `team` run, the
-owner is the audience): the manager's own **reply-pending @-asks** (mentions of the owner
-unanswered by them in-thread over the past 2 days), **owner board items needing a decision** (open CMRs
-to approve/execute + In-Review assigned to them), and **`DAY SIGNALS`** (release/CMR
-transitions in the window + beta/prod deploy slack callouts). This block feeds the two
-owner-facing messages §7a (📅 Day update — DAY SIGNALS) and §7b (⚠️ Your queue —
-reply-pending asks + approvals/decisions).
+owner is the audience): the manager's own **reply-pending @-asks** (slack mentions of the
+owner unanswered by them in-thread, over a LONGER 5-day owner lookback — `direct` <@owner>
+mentions AND `subteam` pings of the handles the owner belongs to, tagged `via=`),
+**reply-pending confluence @-mentions** (someone tagged the owner on a doc via
+`ri:account-id`), **owner board items needing a decision** (open CMRs to approve/execute +
+In-Review assigned to them), and **`DAY SIGNALS`** (release/CMR transitions in the window +
+beta/prod deploy slack callouts). This block feeds the two owner-facing messages §7a
+(📅 Day update — DAY SIGNALS) and §7b (⚠️ Your queue — reply-pending asks/mentions +
+approvals/decisions).
 
 It also emits **`# ONCALL`** (live Opsgenie, config-driven — §6), **`# LEAVES`**
 (durable `team_leaves` overlapping the day + 14d upcoming, plus `LIVE-SIGNAL` rows from
@@ -376,14 +379,22 @@ surfaced in the per-member scan. Triage and rank; do not dump the raw list. Most
 first:
 
 - **Your reply is pending** — `OWNER @-asks` where the owner is mentioned and hasn't
-  replied in-thread. Keep the real asks of *him* (decision, opinion, join a call, confirm).
-  Drop pure-cc / FYI mentions and asks aimed at someone else in the same ping. Lead with
-  what's asked + who's waiting + how long it's sat.
+  replied in-thread. The gather casts a wide net (5-day lookback; `via=direct` <@owner>
+  AND `via=subteam` pings of his handles; plus `OWNER confluence @-mentions`) — so YOU must
+  triage hard: keep the real asks of *him* (decision, opinion, join a call, confirm/approve),
+  drop pure-cc / FYI mentions, asks aimed at someone else in the same ping, and anything he
+  has clearly already actioned elsewhere (e.g. a "kindly approve" whose CMR is now Approved
+  on the board). A `via=subteam` ping counts only if it genuinely needs the owner (his team
+  is being asked to triage / an incident pulls in the IC) — not every team-handle broadcast.
+  Lead with what's asked + who's waiting + how long it's sat. Because the lookback is 5
+  days, weight staleness: a 4-day-old unanswered ask is more urgent to flag, not less.
 - **Approvals pending on you** — open CMRs awaiting the owner's approval/execution, and any
-  "kindly approve the CMR @owner" slack asks. CMR approvals gate prod rectifications — high
-  priority.
+  "kindly approve the CMR @owner" slack asks (now caught even when several days old). CMR
+  approvals gate prod rectifications — high priority. Cross-check the board: if the CMR has
+  since moved to Approved/Released, the ask is resolved — drop it.
 - **Reviews awaiting you** — PRDs / TRDs / API contracts shared for the owner's review
-  (slack "review this @owner" + In-Review items assigned to him).
+  (slack "review this @owner" + subteam "please review" pings + `OWNER confluence
+  @-mentions` on a doc + In-Review items assigned to him).
 - **Decisions / escalations** — team blockers needing a *manager* call (timeline crunch,
   ownership gaps, unowned incidents, an unresolved LEAVE×ONCALL rota swap), framed as the
   decision he owns.

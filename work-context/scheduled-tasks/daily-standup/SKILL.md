@@ -23,19 +23,21 @@ STEP 1 — Determine the target date (previous WORKING day, IST):
 
 STEP 2 — Run the standup skill for that date, team scope:
 - Invoke the /standup skill with: team <target-date-YYYY-MM-DD>
-- This is the SAME skill at .claude/commands/standup.md. Follow it exactly: roster = config/people.yaml scope:team (EXCLUDE the manager), credit by assignee/author not transitioner, in-progress/up-next/blockers = current board state, leave + on-call from the gather's `# LEAVES` / `# ONCALL` blocks (explicit On-call line), CMRs as ops, describe+enrich+link every ticket.
+- This is the SAME skill at .claude/commands/standup.md. Follow it exactly: roster = config/people.yaml scope:team (EXCLUDE the manager), credit by assignee/author not transitioner, in-progress/up-next/blockers = current board state, leave + on-call from the gather's `# LEAVES` / `# ONCALL` blocks (explicit On-call line), sprint-ahead leave + on-call-rota collisions/coverage gaps from `# ONCALL FORECAST` / `# RISKS` (surface in §7a Day update), CMRs as ops, describe+enrich+link every ticket.
 - Do NOT write md files (changed 2026-06-12, owner decision) — the Slack post is the only deliverable. Render the team digest directly.
 
-STEP 3 — Post the team digest to Slack:
-- Send the rendered team digest to channel ID __STANDUP_CHANNEL__ (the private team-standup channel).
-- Use the slack send-message tool with that channel ID. If the post cannot be delivered (bot not a member, channel archived), DO NOT silently fail — report the error clearly in this run's output so it can be fixed.
-- Lead the Slack message with a one-line header: "Team standup — <target-date> (for previous working day)".
+STEP 3 — Post the team standup to Slack as THREE separate root messages:
+- The /standup `team` output is THREE distinct top-level posts (§7), in this order, all to channel ID __STANDUP_CHANNEL__ (the private team-standup channel):
+  1. `📅 Day update — <target-date>` (§7a — decisions, announcements, timelines, ships, prod/ops watch, team status & sprint-ahead risk).
+  2. `⚠️ Your queue — <target-date>` (§7b — the owner's personal action items; if empty, `Nothing pending your action.`).
+  3. `👥 Dev updates — <target-date>` (§7c — per-person standup in nested bullets + Team summary).
+- Send each as its OWN root message (NOT threaded under one another) via the slack send-message tool with that channel ID. Post in order 1 → 2 → 3.
+- If any post cannot be delivered (bot not a member, channel archived), DO NOT silently fail — report the error clearly in this run's output so it can be fixed.
 
 - FORMATTING (the send tool renders STANDARD markdown — write `[text](url)` and `**bold**` directly; do NOT draft in Slack mrkdwn `<url|text>` / `*bold*`, that just forces a conversion pass):
   - HYPERLINK EVERY Jira ticket and PR inline — `[KEY-NNNN](<jira-base-url>/browse/KEY-NNNN)`, `[PR #N](github-url)`, `[thread](slack-permalink)`. A bare `KEY-NNNN` in the Slack post is a regression — links are the whole point of the digest.
-  - The send tool caps a message at **5000 chars per text element**; the full digest with links is usually ~7K. To fit WITHOUT dropping ticket links: trim PROSE (shorten descriptions, cut In-progress/Up-next to the top 2-3 items per person), never the hyperlinks.
-  - If it still won't fit under 5000 with links intact, split at PERSON boundaries: parent message = owner sections (§7b/§7c) + first few people; threaded replies (thread_ts = parent ts) = remaining people, then the Team summary. Never drop links to fit.
-  - Use `•` bullets.
+  - NESTED bullets per §7c: bold status header as a `- ` parent bullet, items as 4-space-indented `    - ` sub-bullets. Don't flatten back to single-level `•`.
+  - The send tool caps a message at **5000 chars per text element**. Messages 1 & 2 fit easily; Message 3 (Dev updates) usually won't. When a single message exceeds 5000 with links intact, split THAT message at PERSON boundaries into threaded replies under it (thread_ts = that message's own ts) — first few people in the root, the rest + Team summary in replies. Never drop links to fit; trim PROSE (shorten descriptions, cut In-progress/Up-next to top 2-3 per person) instead.
 
 Read-only on all data sources (events.db, Jira, Confluence, on-call). The ONLY write is the Slack post — no md files.
 
