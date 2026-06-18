@@ -1,0 +1,48 @@
+# Coverage config for the ingest/derive test suite.
+#   .venv/bin/python -m coverage run -m pytest && .venv/bin/python -m coverage report
+#
+# `omit` defines an HONEST denominator: files excluded here are
+# orchestration / CLI / one-shot scripts that aren't worth unit-testing, so the
+# coverage % reflects the logic we actually intend to cover (the 80% target is
+# measured against this scoped set, not throwaway glue).
+
+[run]
+source =
+    ingest
+    derive
+    bin
+branch = True
+omit =
+    # test suite + venv
+    tests/*
+    .venv/*
+    */__init__.py
+    # one-shot backfills / migrations (run once, then dead)
+    ingest/backfill-*.py
+    ingest/*backfill*.py
+    ingest/slack_mpim_oneshot.py
+    derive/backfill*.py
+    derive/restore_people*.py
+    derive/migrate-*.py
+    bin/backfill-*.py
+    bin/migrate-*.py
+    # UI / status dashboards (rendered output, not logic)
+    bin/dashboard.py
+    bin/cron-status.sh
+    bin/_codegraph_status.py
+    # shard/debug dumps
+    derive/_shard_dump.py
+    derive/_size15_dump.py
+
+[report]
+# Lines we never count against coverage.
+exclude_lines =
+    pragma: no cover
+    def main\(
+    if __name__ == .__main__.:
+    def _selftest
+    raise NotImplementedError
+    if TYPE_CHECKING:
+show_missing = True
+skip_empty = True
+precision = 1
