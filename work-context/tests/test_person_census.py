@@ -8,12 +8,22 @@ stubbed to the seed roster, since the real one reads the live people.yaml).
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from derive import person_census as pc
 
 ALICE = ["alice-gh", "alice@example.com", "acc-alice", "U0ALICE"]
 SINCE, UNTIL = "2026-05-01T00:00:00Z", "2026-06-30T00:00:00Z"
+
+# build_person_census transitively loads config/tier_expectations.yaml, which is
+# gitignored (real config) and absent in CI. The pure-detector tests below run
+# everywhere; the full-census integration test skips when that config is missing.
+_TIER_CFG = Path(__file__).resolve().parent.parent / "config" / "tier_expectations.yaml"
+_needs_cfg = pytest.mark.skipif(
+    not _TIER_CFG.exists(),
+    reason="needs gitignored config/tier_expectations.yaml (absent in CI)")
 
 
 # ── _source_of (github_org-aware) ────────────────────────────────────────────
@@ -59,6 +69,7 @@ def test_person_role_participant(seeded_db):
 
 # ── build_person_census (seed, stubbed aliases) ──────────────────────────────
 
+@_needs_cfg
 def test_build_person_census_computed_values(seeded_db, monkeypatch):
     monkeypatch.setattr(pc, "get_aliases_for", lambda c: ALICE)
     census = pc.build_person_census(seeded_db, "alice", SINCE, UNTIL)
