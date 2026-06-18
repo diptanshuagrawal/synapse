@@ -35,8 +35,6 @@ work-context/derive/embedding_query.py
 work-context/derive/enrich_clusters.py
 work-context/derive/feature_narrative.py
 work-context/derive/finalize_refresh.py
-work-context/derive/identity_reconcile.py
-work-context/derive/identity_signals.py
 work-context/derive/jira_backfill_status.py
 work-context/derive/label_clusters.py
 work-context/derive/leaves_dump.py
