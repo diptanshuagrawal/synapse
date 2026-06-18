@@ -31,7 +31,6 @@ work-context/derive/cluster_ownership_rollup.py
 work-context/derive/cluster_subjects.py
 work-context/derive/cmr_releases.py
 work-context/derive/compare_person_versions.py
-work-context/derive/confluence_validate.py
 work-context/derive/diff_fetcher.py
 work-context/derive/doc_sync_state.py
 work-context/derive/dump_pending.py
@@ -43,11 +42,9 @@ work-context/derive/feature_narrative.py
 work-context/derive/feature_resolve.py
 work-context/derive/feature_stages.py
 work-context/derive/finalize_refresh.py
-work-context/derive/github_validate.py
 work-context/derive/identity_reconcile.py
 work-context/derive/identity_signals.py
 work-context/derive/jira_backfill_status.py
-work-context/derive/jira_validate.py
 work-context/derive/label_clusters.py
 work-context/derive/leaves_dump.py
 work-context/derive/link_clusters_to_projects.py
@@ -87,7 +84,6 @@ work-context/derive/slack_validate.py
 work-context/derive/sources_config.py
 work-context/derive/story_graph.py
 work-context/derive/subject_content.py
-work-context/derive/topic_brief_validate.py
 work-context/derive/trd/build_context_pack.py
 work-context/derive/trd/extract_trd_artifacts.py
 work-context/derive/validate_embeddings.py
