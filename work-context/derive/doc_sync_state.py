@@ -341,6 +341,85 @@ def cmd_discover_merge(args):
     print(json.dumps({"summary": summary, "new": new}, indent=2))
 
 
+def _name_to_canonical(name):
+    """Map a Confluence author display name → people.yaml canonical slug (best-effort)."""
+    if not name:
+        return name
+    norm = lambda s: re.sub(r"[^a-z]", "", str(s).lower())
+    target = norm(name)
+    try:
+        import yaml as _yaml
+        ppl = _yaml.safe_load(open(PEOPLE_YAML)) or {}
+    except Exception:
+        return name
+    for p in (ppl.get("people") or []):
+        names = [p.get("name"), p.get("canonical"), p.get("slack_handle")]
+        names += (p.get("git_names") or []) + (p.get("github_aliases") or [])
+        if any(norm(n) == target for n in names if n):
+            return p.get("canonical") or name
+    return name
+
+
+def _inv_region(lines, header):
+    """[start,end) line range of a top-level bucket `header:` (e.g. 'needs_confirm')."""
+    start = next((i for i, ln in enumerate(lines) if ln.rstrip() == f"{header}:"), None)
+    if start is None:
+        return None, None
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        s = lines[j]
+        if s.strip() and not s[0].isspace() and not s.lstrip().startswith("#"):
+            end = j
+            break
+    return start, end
+
+
+def cmd_move(args):
+    """Promote/Reject a discovered doc. promote: needs_confirm → monitor (sweep will check it).
+    exclude: needs_confirm → excluded (with reason). Comment-preserving line surgery; only the
+    matching id within needs_confirm is moved. Idempotent: no-op if id is already in the target."""
+    import yaml as _yaml
+    pid = str(args.id)
+    inv = _yaml.safe_load(open(args.inventory)) or {}
+    target = "monitor" if args.to == "promote" else "excluded"
+    # already in target? idempotent success.
+    if any(str(r.get("id")) == pid for r in (inv.get(target) or [])):
+        print(json.dumps({"ok": True, "id": pid, "moved_to": target, "noop": "already there"}))
+        return
+    entry = next((r for r in (inv.get("needs_confirm") or []) if str(r.get("id")) == pid), None)
+    if entry is None:
+        sys.stderr.write(f"id {pid} not in needs_confirm — nothing to move\n")
+        sys.exit(2)
+    lines = open(args.inventory).read().splitlines(keepends=True)
+    nc_start, nc_end = _inv_region(lines, "needs_confirm")
+    if nc_start is None:
+        sys.stderr.write("needs_confirm: section not found\n"); sys.exit(2)
+    row_idx = next((i for i in range(nc_start + 1, nc_end)
+                    if re.search(rf'id:\s*"?{re.escape(pid)}"?\b', lines[i])), None)
+    if row_idx is None:
+        sys.stderr.write(f"id {pid} line not found in needs_confirm region\n"); sys.exit(2)
+    del lines[row_idx]
+    def esc(s): return '"' + str(s or "").replace('\\', '\\\\').replace('"', '\\"') + '"'
+    title = entry.get("title"); repo = entry.get("repo", "?")
+    author = entry.get("author") or entry.get("owner")
+    if target == "monitor":
+        owner = _name_to_canonical(author)
+        kind = entry.get("kind", "design")
+        new_line = (f'  - {{id: "{pid}", title: {esc(title)}, owner: {owner}, '
+                    f'repo: {repo}, kind: {kind}, note: {esc("promoted via relay " + (args.run_id or ""))}}}\n')
+    else:
+        new_line = (f'  - {{id: "{pid}", title: {esc(title)}, reason: discovery_rejected, '
+                    f'author: {esc(author)}}}\n')
+    # region indices shifted by the delete; recompute target header
+    tgt_idx = next((i for i, ln in enumerate(lines) if ln.rstrip() == f"{target}:"), None)
+    if tgt_idx is None:
+        sys.stderr.write(f"{target}: section not found\n"); sys.exit(2)
+    lines[tgt_idx + 1:tgt_idx + 1] = [new_line]
+    with open(args.inventory, "w") as f:
+        f.writelines(lines)
+    print(json.dumps({"ok": True, "id": pid, "moved_to": target, "title": title}))
+
+
 def cmd_list(args):
     rows = _fetch(open_only=args.open)
     for r in rows:
@@ -369,6 +448,11 @@ def main():
     p.add_argument("--inventory", required=True); p.add_argument("--candidates", required=True)
     p.add_argument("--write", action="store_true")
     p.set_defaults(fn=cmd_discover_merge)
+    p = sub.add_parser("move", help="promote/reject a discovered doc: needs_confirm -> monitor|excluded")
+    p.add_argument("--inventory", required=True); p.add_argument("--id", required=True)
+    p.add_argument("--to", required=True, choices=["promote", "exclude"])
+    p.add_argument("--run-id")
+    p.set_defaults(fn=cmd_move)
     p = sub.add_parser("list"); p.add_argument("--open", action="store_true"); p.set_defaults(fn=cmd_list)
     args = ap.parse_args()
     args.fn(args)

@@ -16,7 +16,9 @@ gate guarantees a finding is commented at most once.
 **Options:**
 - `--target dm|channel` — where the Slack summary goes. Default `dm` (test). `channel`
   posts to the team room (see `config/doc_sync.yaml`).
-- `--dry-run` — do everything EXCEPT post comments / Slack. Prints what it *would* post.
+- `--dry-run` — do everything EXCEPT write to Confluence (no inline comments). It STILL posts
+  the rendered preview to the `--target` Slack destination (channel-preview mode), prefixed
+  `[doc-sync sweep PREVIEW]`, and still posts discovery Approve/Reject cards.
 - `--only <pageId>` — sweep a single doc (debug / re-check one).
 - `--run-id <YYYY-MM>` — label for this sweep. Default = current year-month.
 - `--allow-resolved-reflag` — re-raise a finding whose only prior comment was Resolved
@@ -99,19 +101,44 @@ Read `.claude/commands/doc-sync.md` Phases 2–4:
 Notes:
 - `repo: casa-orch` or any unregistered repo → skip the doc, log "not checkable here".
 - An empty/placeholder page → skip, log it.
-- **Diagrams (sequence drift):** only check a diagram when its SOURCE is machine-readable
-  — i.e. inline Mermaid text (```mermaid fences) in the page body/ADF. The team's docs
-  mostly use the **ZenUML "Diagram as Code Lite" macro** (source lives in app custom-content,
-  NOT in the page API) or **image/PNG blobs** — for those the steps are NOT extractable.
-  When a doc's flow lives in a non-readable diagram, do NOT infer steps from the title or
-  guess. Emit at most ONE low-severity note ("sequence diagram is ZenUML/image — source not
-  machine-readable, verify manually") and move on. Never fabricate a sequence-drift finding
-  from an unreadable diagram. (Fetch ADF to detect: a `zenuml-sequence-macro-lite` extension
-  or `mediaSingle`/blob = not readable; a `codeBlock` with language mermaid = readable.)
+- **Diagrams (sequence drift):** the page-API body/ADF only carries inline Mermaid
+  (```mermaid fences / `codeBlock` lang=mermaid). ZenUML "Diagram as Code Lite" macros and
+  image/PNG blobs are NOT in the API — those need the **Chrome diagram pass (Phase 1.5)** to
+  read. In the text-only Phase 1, if a doc's flow lives in a ZenUML/image diagram, do NOT
+  infer steps; mark it `diagram_pending` and let Phase 1.5 resolve it. Never fabricate a
+  sequence-drift finding from a diagram you have not actually read.
 - Keep findings tight and high-confidence — this posts to a shared doc. When unsure,
   drop it. A clean doc producing zero findings is a good outcome.
 
-Pool all candidates → write `state/doc_sync_candidates.json` (`{"candidates":[...]}`).
+Pool the text/schema candidates → write `state/doc_sync_candidates.json` (`{"candidates":[...]}`)
+and the `diagram_pending` page list → `state/doc_sync_diagram_pending.json`.
+
+## Phase 1.5 — Chrome diagram pass (MANDATORY — attempt every run; degrade gracefully)
+
+ZenUML/image diagrams are unreadable from the page API but ARE readable in a logged-in work
+browser. This phase reads them visually and runs the same sequence-drift check + DIRECTION
+GATE against code. It is REQUIRED every run, but **headless/cron fires have no browser** —
+so it is attempt-with-fallback, never a hard failure.
+
+1. `mcp__Claude_in_Chrome__list_connected_browsers`. If NONE is connected (typical headless
+   cron fire) → emit, for each `diagram_pending` doc, the one-line note "diagram source not
+   machine-readable — Chrome pass skipped (no work browser connected this run); verify
+   manually" and SKIP the rest of this phase. Record `diagram_pass: skipped_no_browser` in the
+   run summary so the reader knows diagrams were not read. NEVER fabricate steps.
+2. If a browser is connected but >1, pick the one signed into Confluence (your-org.atlassian.net)
+   — `select_browser`; if ambiguous in an attended run, ask. `tabs_context_mcp` → a tab.
+3. For each `diagram_pending` doc: `navigate` to the page, wait for load, expand collapsed
+   diagram macros (click "Click here to expand…"), `screenshot` + `zoom` the rendered SVG/PNG
+   **top-to-bottom**. Transcribe EVERY participant + message + opt/alt block in order (per the
+   rigor rules in `.claude/commands/doc-sync.md` §3-sequence). If a page is an empty stub
+   (heading-only, no diagram) → verdict `skipped`/`empty` (NOT "uncheckable"). Image diagrams
+   describing a planned/forward architecture → forward, not drift.
+4. Diff each transcribed diagram STEP-BY-STEP against the real code path (graph + source +
+   migration DDL — e.g. a diagram step `Insert tds_transactions` must be checked against the
+   actual table name in `migration/postgresql_sql/`). Keep ONLY high-confidence BACKWARD-drift,
+   incl. table/field NAME mismatches and reordered steps. Append these to
+   `state/doc_sync_candidates.json` (same candidate schema, `check_type: sequence`).
+5. Note in the run summary which diagrams the Chrome pass actually read vs. fell back on.
 
 ## Phase 2 — Dedup gate (MANDATORY — never skip)
 
@@ -147,11 +174,36 @@ Collect into a record batch with all state columns + `sweep_run_id` + `resolutio
     --date "<DD Mon YYYY>" --cc <cc_account_id>
 ```
 
-Post the rendered message to the Slack target (`--target`). Use `slack_send_message`
-(markdown + `<@slack_id>` mentions). Skip the Slack post on `--dry-run` (print instead).
+Post the rendered message to the Slack target (`--target`, resolved from `config/doc_sync.yaml`
+`slack.channel_id` for `channel` or `slack.dm_user_id` for `dm`). Use `slack_send_message`
+(markdown + `<@slack_id>` mentions).
+
+**`--dry-run` posting (channel-preview mode):** `--dry-run` suppresses ALL Confluence writes
+(Phase 3 is skipped) but STILL posts the rendered preview to the `--target` Slack destination,
+prefixed `[doc-sync sweep PREVIEW]`. So `--dry-run --target channel` → preview lands in
+`#doc-sweep`, zero Confluence comments. (Earlier behaviour was DM-only on dry-run; the target
+is now honoured.) Include the Phase 1.5 `diagram_pass` status line so readers know whether
+diagrams were actually read this run.
 
 If `new` is empty: post a one-line "Monthly sweep — all <N> docs clean, no new drift."
-(or just log it on `--dry-run`). A clean sweep is a valid, valuable result.
+A clean sweep is a valid, valuable result.
+
+## Phase 4.5 — Discovery approve/reject via Relay (interactive)
+
+The Phase 0.5 discovery appended new docs to `needs_confirm`. Post them to the same channel as
+buttoned Approve/Reject cards via the Relay socket-mode bot (same bot `/ticketize` uses) so the
+owner promotes/drops each without editing yaml by hand:
+
+```bash
+$PY bin/relay_bot.py --post-docsync <run-id>
+```
+
+It reads `state/doc_sync_discovered.json` (this run's NEW ids only) and posts one card per
+discovered doc with the title + author + repo. On click the Relay LaunchAgent applies live
+(owner-gated): **Approve → promote the id from `needs_confirm` to `monitor`** (so next sweep
+checks it); **Reject → move it to `excluded`** with reason `discovery_rejected`. Both call
+`derive/doc_sync_state.py promote|exclude`. If the bot errors (not in channel / token), DO NOT
+silently fail — report stderr. If discovery found nothing new this run, skip the post.
 
 ## Phase 5 — Chat reply
 
@@ -167,7 +219,12 @@ record.
 - Honour the direction gate — forward/planned findings are not drift, do not post them.
 - `repo` not registered → "not checkable here", skip. Never fabricate a finding.
 - Owner + cc come from config — never hardcode names/ids in the skill.
-- Default `--target dm` until the owner flips it to `channel`.
+- Target comes from config (`slack.channel_id` / `dm_user_id`); current default is `channel`
+  (#doc-sweep) in channel-preview mode (`--dry-run` keeps Confluence comments OFF).
+- Phase 1.5 Chrome pass is attempt-with-fallback: read diagrams when a work browser is
+  connected, else emit the "verify manually" note. NEVER fabricate diagram steps.
+- Discovery never auto-promotes — Relay Approve/Reject (Phase 4.5) is the only path from
+  `needs_confirm` to `monitor`/`excluded`.
 
 ## Anti-patterns (refuse)
 

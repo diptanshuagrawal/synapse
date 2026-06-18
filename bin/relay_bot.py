@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """relay_bot.py — shared owner-only Slack bot (Socket Mode) for the work-context skills.
 
-First consumer: /ticketize. Two roles:
-  --post <date>   : read management/standup/<date>/ticket-candidates.md and post the OPEN
-                    candidates to the ticketize channel with Approve/Reject buttons.
-  (no args)       : run the Socket Mode listener — handle button clicks (owner-only),
-                    apply the decision, and update the message.
+Consumers: /ticketize and /doc-sync-sweep. Roles:
+  --post <date>          : read management/standup/<date>/ticket-candidates.md and post the
+                           OPEN candidates to the ticketize channel with Approve/Reject buttons.
+  --post-docsync <run-id>: read state/doc_sync_discovered.json and post one Approve/Reject card
+                           per newly-discovered doc to the doc-sweep channel (config doc_sync.yaml).
+                           Approve → promote needs_confirm→monitor; Reject → move to excluded
+                           (both via derive/doc_sync_state.py move). Owner-gated, RELAY_APPLY_MODE-gated.
+  (no args)              : run the Socket Mode listener — handle tkz: and dsc: button clicks
+                           (owner-only), apply the decision, and update the message.
 
 Config: work-context/config/ticketize.yaml (channel_id, owner_slack_id, fallback_epic, …).
 Tokens: ~/.secrets/relay_slack_bot_token (xoxb), ~/.secrets/relay_slack_app_token (xapp).
@@ -166,6 +170,68 @@ def do_post(date):
     print(f"posted {len(opens)} candidates to {ch} ts={r['ts']}")
 
 
+# ---------- doc-sync discovery cards ----------
+DOCSYNC_CFG = os.path.join(ROOT, "work-context/config/doc_sync.yaml")
+DOCSYNC_INVENTORY = os.path.join(ROOT, "work-context/config/doc_sync_inventory.yaml")
+DOCSYNC_DISCOVERED = os.path.join(ROOT, "work-context/state/doc_sync_discovered.json")
+DOCSYNC_STATE = os.path.join(ROOT, "work-context/derive/doc_sync_state.py")
+
+
+def load_docsync_cfg():
+    import yaml
+    return yaml.safe_load(open(DOCSYNC_CFG))
+
+
+def _docsync_discovered():
+    """This run's NEW discovered docs: [{id, title, author, repo}]."""
+    if not os.path.exists(DOCSYNC_DISCOVERED):
+        return None
+    d = json.load(open(DOCSYNC_DISCOVERED))
+    return d.get("candidates", d) if isinstance(d, dict) else d
+
+
+def build_docsync_blocks(run_id, docs):
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": f"🔎 Newly-discovered docs — {run_id}"}},
+        {"type": "context", "elements": [{"type": "mrkdwn",
+            "text": "Team-authored design docs I found. *Approve* → I add it to the monitored set (next sweep checks it). *Reject* → I drop it to excluded. (only you can act)"}]},
+        {"type": "divider"},
+    ]
+    for c in docs:
+        pid = str(c.get("id"))
+        url = c.get("webUrl") or c.get("page_url") or ""
+        title = c.get("title", "(untitled)")
+        title_md = f"<{url}|{title}>" if url else title
+        lines = [f"*{title_md}*",
+                 f"✍️ {c.get('author') or c.get('owner') or '?'}   ·   📦 `{c.get('repo','?')}`   ·   `{pid}`"]
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}})
+        blocks.append({"type": "actions", "block_id": f"dscact_{pid}", "elements": [
+            {"type": "button", "style": "primary", "text": {"type": "plain_text", "text": "✓ Approve → monitor"},
+             "action_id": f"dsc:{run_id}:{pid}:approve", "value": pid},
+            {"type": "button", "style": "danger", "text": {"type": "plain_text", "text": "✕ Reject → excluded"},
+             "action_id": f"dsc:{run_id}:{pid}:reject", "value": pid},
+        ]})
+        blocks.append({"type": "divider"})
+    blocks.append({"type": "context", "elements": [
+        {"type": "mrkdwn", "text": f"{len(docs)} discovered · Approve promotes to the monitor list · Reject excludes it"}]})
+    return blocks
+
+
+def do_post_docsync(run_id):
+    from slack_sdk import WebClient
+    cfg = load_docsync_cfg()
+    ch = cfg["slack"]["channel_id"]
+    if not ch:
+        print("no doc_sync channel_id configured — skipping", file=sys.stderr); sys.exit(1)
+    docs = _docsync_discovered()
+    client = WebClient(token=secret("relay_slack_bot_token"))
+    if not docs:
+        print("posted: no newly-discovered docs this run"); return
+    r = client.chat_postMessage(channel=ch, text=f"{len(docs)} newly-discovered docs — {run_id}",
+                                blocks=build_docsync_blocks(run_id, docs))
+    print(f"posted {len(docs)} discovery cards to {ch} ts={r['ts']}")
+
+
 # ---------- listener ----------
 def run_listener():
     from slack_bolt import App
@@ -245,6 +311,39 @@ def run_listener():
         client.chat_postMessage(channel=body["channel"]["id"], thread_ts=body["message"]["ts"],
                                 text=f"🗑️ *{label}* rejected — {note}")
 
+    # ---- doc-sync discovery: Approve → monitor, Reject → excluded ----
+    def docsync_apply(page_id, decision, run_id):
+        to = "promote" if decision == "approve" else "exclude"
+        if mode != "live":
+            return True, f"🧪 dry — would {to} {page_id}; set RELAY_APPLY_MODE=live to action"
+        cmd = [sys.executable, DOCSYNC_STATE, "move",
+               "--inventory", DOCSYNC_INVENTORY, "--id", page_id, "--to", to]
+        if run_id:
+            cmd += ["--run-id", run_id]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        out = (res.stdout.strip() or res.stderr.strip() or "")
+        return res.returncode == 0, (out.splitlines()[-1] if out else "")
+
+    @app.action(re.compile(r"^dsc:.*:approve$"))
+    def on_docsync_approve(ack, body, client, action):
+        ack()
+        if not is_owner(body, client):
+            return
+        _, run_id, pid, verb = action["action_id"].split(":", 3)
+        ok, note = docsync_apply(pid, "approve", run_id)
+        client.chat_postMessage(channel=body["channel"]["id"], thread_ts=body["message"]["ts"],
+                                text=f"{'✅' if ok else '⚠️'} `{pid}` promoted to *monitor* — {note}")
+
+    @app.action(re.compile(r"^dsc:.*:reject$"))
+    def on_docsync_reject(ack, body, client, action):
+        ack()
+        if not is_owner(body, client):
+            return
+        _, run_id, pid, verb = action["action_id"].split(":", 3)
+        ok, note = docsync_apply(pid, "reject", run_id)
+        client.chat_postMessage(channel=body["channel"]["id"], thread_ts=body["message"]["ts"],
+                                text=f"{'🗑️' if ok else '⚠️'} `{pid}` moved to *excluded* — {note}")
+
     print(f"relay_bot listening (apply mode = {mode}) …")
     SocketModeHandler(app, secret("relay_slack_app_token")).start()
 
@@ -252,6 +351,8 @@ def run_listener():
 def main():
     if len(sys.argv) >= 3 and sys.argv[1] == "--post":
         do_post(sys.argv[2])
+    elif len(sys.argv) >= 3 and sys.argv[1] == "--post-docsync":
+        do_post_docsync(sys.argv[2])
     elif len(sys.argv) == 1 or sys.argv[1] == "--listen":
         run_listener()
     else:

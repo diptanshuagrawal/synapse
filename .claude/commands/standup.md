@@ -70,11 +70,14 @@ owner is the audience): the manager's own **reply-pending @-asks** (mentions of 
 unanswered by them in-thread over the past 2 days), **owner board items needing a decision** (open CMRs
 to approve/execute + In-Review assigned to them), and **`DAY SIGNALS`** (release/CMR
 transitions in the window + beta/prod deploy slack callouts). This block feeds the two
-owner-facing sections §7b (Needs your attention) and §7c (For your day).
+owner-facing messages §7a (📅 Day update — DAY SIGNALS) and §7b (⚠️ Your queue —
+reply-pending asks + approvals/decisions).
 
-It also emits **`# ONCALL`** (live Opsgenie, config-driven — §6) and **`# LEAVES`**
+It also emits **`# ONCALL`** (live Opsgenie, config-driven — §6), **`# LEAVES`**
 (durable `team_leaves` overlapping the day + 14d upcoming, plus `LIVE-SIGNAL` rows from
-the slack leave scan — §5) right after the freshness header, so on-call and leave need
+the slack leave scan — §5), **`# ONCALL FORECAST`** (per-day on-call primary for the next
+14d = 1 sprint) and **`# RISKS`** (LEAVE×ONCALL collisions + COVERAGE gaps, one sprint
+ahead — §6c) right after the freshness header, so on-call, leave, forecast and risk need
 NO separate tool calls.
 
 Read its output, then go straight to formatting (§7). Only fall back to ad-hoc SQL /
@@ -262,6 +265,10 @@ Mark members who are on leave for the window; don't expect a standup line or cal
 - Render on-leave members as `### <Name> — 🌴 on leave (sick/ooo, <date>)` with the
   permalink; skip the four-line block. Mention near-term `UPCOMING` leave as a one-line
   note in that member's section.
+- **ANNOUNCE upcoming leave one sprint (14d) ahead.** Every `UPCOMING` row (rolling 14
+  days = one sprint) MUST surface in **Message 1 — 📅 Day update** under team status, not
+  only buried in the member's section — so the owner sees who's out across the sprint with
+  enough runway to plan. Collapse consecutive dates into a range ("22 Jun–1 Jul").
 
 (Manual fallback if the gather block is missing: query `team_leaves` + scan roster slack
 `body` for `leave|sick|fever|unwell|ooo|out of office|day off|wfh|working from home`.)
@@ -291,6 +298,25 @@ chased, and CMRs worked. Don't bury it; it's the bulk of their day. Example:
 "On-call: triaging the category order failure; pushed a recent TB-diff rectification
 ([EX-NNNN]) to Change-Approved."
 
+## 6c. ON-CALL FORECAST + RISKS — read `# ONCALL FORECAST` and `# RISKS` (one sprint ahead)
+
+The gather also forecasts the on-call primary for the next 14 days (rolling = one sprint)
+via per-day `on-calls?date=` lookups, then cross-refs it against `team_leaves` to emit a
+`# RISKS` block. Two risk types, both surfaced in **Message 1 — 📅 Day update** (never
+silently dropped):
+
+- **`LEAVE×ONCALL`** — a roster member is scheduled on-call on a day they're also on leave.
+  This is a coverage hole that needs a swap NOW — render it as a clear, dated callout and
+  name the date + who, e.g. "⚠️ 25 Jun — Carol is on-call but on leave (vacation); needs a
+  rota swap." Announce it a sprint ahead so there's time to fix.
+- **`COVERAGE`** — ≥2 roster members out the same day. Flag thin-coverage stretches:
+  "⚠️ 22 Jun–1 Jul — Dan + Eve both out; thin coverage." Collapse consecutive
+  dates into a range.
+
+If `# RISKS` shows `(none)`, say nothing (don't pad). If `# ONCALL FORECAST` shows
+`?(lookup failed)` rows, the rota for those days is unknown — say "rota unknown" rather
+than implying no risk. Rank LEAVE×ONCALL above COVERAGE (a named hole beats a thin stretch).
+
 ## 6b. CMRs — production rectifications (ops, surface separately)
 
 CMRs (`issue_type='CMR'`) are production change/rectification tickets — TB-diff fixes,
@@ -304,76 +330,129 @@ rectification CMRs is real work even with zero feature tickets. (Validated: a TB
 CMR was Change-Approved during the window and the first pass mis-filed it as feature
 work.)
 
-## 7. Output — person-first, team summary at the end
+## 7. Output — THREE root messages (team scope), in this order
 
-One section per roster member (on-leave members get the one-line leave badge instead).
-Each active member:
+A `team` run produces **three separate top-level Slack messages** (not one parent +
+threaded replies — three distinct posts, each free to grow its own thread). Post them in
+this order; each is self-contained:
 
-```
-### <Name>  [· <primary domain>]  [📟 on-call]
-- Done: <plain description of work THEY OWN> ([EX-NNNN](browse-url) / [PR #N]) — real ships only
-- In progress: <plain description> ([link]) — proxy for "today"
-- Blockers: <what's stuck, in words> — <the one-line ask> ([thread link]) — or "none"
-- Up next: <top 3-5 pick-up candidates they own / are asked for; ranked> ([link])
-```
+1. **📅 Day update** (§7a) — everything from the day the owner should know.
+2. **⚠️ Your queue** (§7b) — the owner's personal action items.
+3. **👥 Dev updates** (§7c) — the per-person standup + team summary.
 
-Then at the END, `## Team summary`:
-- **Blocked / needs attention** — consolidated, most urgent first (what you raise in standup).
-- **Notable ships** — 2-4 headline deliveries (by owner).
-- **Unowned / stalled** — tickets needing a picker (unassigned / bounced to To-Do), untriaged alerts.
-- **Out today** — on-leave members (one line) + the on-call name.
+For `me` / `<person>` (interactive, non-team): skip the 3-message split — just render
+that one person's section (§7c per-person format) in the chat reply.
 
-For `me` / `<person>`: just their section.
+### 7a. Message 1 — `📅 Day update — <date>`
 
-## 7b. `## ⚠️ Needs your attention` — the owner's own action queue (team scope)
+The owner's day-level briefing: **everything of importance from the day**, even if no
+action is needed (action items live in Message 2, not here). Synthesise from the gather's
+`DAY SIGNALS`, `# RISKS`, `# ONCALL FORECAST`, `# LEAVES`, and the per-member slack/jira
+scans. Group as short bullets under bold headers; each item carries its link:
 
-A dedicated owner-facing section, rendered **at the very top of the `team` digest**
-(above the per-person sections — it's what the manager reads first), AND repeated in the
-chat reply before anything else. Source = the gather's `OWNER FOCUS` block + escalations
-already surfaced in the per-member scan. This is *only* things **the owner must personally
-act on or decide** — not the team's work. Triage and rank; do not dump the raw list.
+- **Decisions & announcements** — calls made or broadcast today: design/architecture
+  decisions, MOM outcomes, public or team-wide announcements, anything announced *to the
+  owner*. Reword the decision, link the thread.
+- **Timelines & dates** — go-live dates, beta cuts, cycle-day callouts, deadlines
+  committed today (e.g. "DCMS go-live end of month; QA from 24th").
+- **Shipping / rolling out** — releases, beta cuts, prod deploys done or in flight
+  (DAY SIGNALS release/CMR transitions + deploy callouts), with the owner of each.
+- **Prod / ops watch** — live incidents, TB-diffs, alert bursts, stuck-txn / 5xx threads
+  the team is chasing (esp. on the on-call).
+- **Team status & risk (next sprint)** — who's out over the rolling 14d (§5 UPCOMING,
+  date ranges), who's on-call now + upcoming (§6c forecast), and **every `# RISKS` line**:
+  LEAVE×ONCALL collisions first (dated, named, "needs a swap"), then COVERAGE gaps. This is
+  the sprint-ahead heads-up — never omit a risk to save space.
+- **Cross-team** — notable asks/decisions from sister teams touching this team's surface.
 
-Pull together, most-urgent-first:
+Keep it tight but complete; this is FYI awareness, so don't duplicate Message 2's action
+items here. If a whole group is empty, drop the header.
+
+### 7b. Message 2 — `⚠️ Your queue — <date>`
+
+The owner's own action queue — *only* things **the owner must personally act on or
+decide**, not the team's work. Source = the gather's `OWNER FOCUS` block + escalations
+surfaced in the per-member scan. Triage and rank; do not dump the raw list. Most-urgent
+first:
+
 - **Your reply is pending** — `OWNER @-asks` where the owner is mentioned and hasn't
-  replied in-thread. Keep the ones that are a real ask of *him* (decision, opinion, join a
-  call, confirm). Drop pure-cc / FYI mentions and asks clearly aimed at someone else in the
-  same ping. Lead with what's being asked + who's waiting + how long it's sat.
-- **Approvals pending on you** — open CMRs awaiting the owner's approval/execution, and
-  any "kindly approve the CMR @owner" slack asks. CMR approvals gate prod rectifications —
-  treat as high priority.
+  replied in-thread. Keep the real asks of *him* (decision, opinion, join a call, confirm).
+  Drop pure-cc / FYI mentions and asks aimed at someone else in the same ping. Lead with
+  what's asked + who's waiting + how long it's sat.
+- **Approvals pending on you** — open CMRs awaiting the owner's approval/execution, and any
+  "kindly approve the CMR @owner" slack asks. CMR approvals gate prod rectifications — high
+  priority.
 - **Reviews awaiting you** — PRDs / TRDs / API contracts shared for the owner's review
   (slack "review this @owner" + In-Review items assigned to him).
-- **Decisions / escalations** — team blockers from the Team summary that need a *manager*
-  call (timeline crunch, ownership gaps, unowned incidents), framed as the decision he owns.
+- **Decisions / escalations** — team blockers needing a *manager* call (timeline crunch,
+  ownership gaps, unowned incidents, an unresolved LEAVE×ONCALL rota swap), framed as the
+  decision he owns.
 
 Each line: one-sentence what + who's waiting + age, then the clickable link
 (`[thread](…)` / `[EX-NNNN](…)`). Rank by (prod/customer impact × staleness). If the queue
 is genuinely empty, say `Nothing pending your action.` — never pad.
 
-## 7c. `## 📋 For your day` — info dump (team scope)
+### 7c. Message 3 — `👥 Dev updates — <date>`
 
-A second owner-facing section, rendered right after §7b (and after it in the chat reply).
-This is **situational awareness** — important things to *know* today, even if no action is
-needed. Synthesise from the gather's `DAY SIGNALS` + the per-member blocks; group as short
-bullets, not prose:
-- **Shipping / rolling out** — releases, beta cuts, prod deploys happening or just done
-  (DAY SIGNALS release/CMR transitions + deploy callouts), with the owner of each.
-- **Prod / ops watch** — live incidents, TB-diffs, alert bursts, stuck-txn / 5xx threads
-  the team is chasing (esp. on the on-call).
-- **Timelines / dates called out** — go-live dates, beta deadlines, cycle-day callouts
-  surfaced in slack this window.
-- **Team status** — who's out (leave) + who's on-call, one line.
-- **Cross-team** — notable asks/decisions from sister teams touching this team's surface.
+One section per roster member (on-leave members get the one-line leave badge instead). Use
+**nested bullets**: each status is a **bold parent bullet**, and every item sits as an
+indented sub-bullet under it. **Omit any section that has no items** — never render an
+empty "Done". Order the sections Done → In review → In progress → Reviewing → Blockers →
+Up next:
 
-Keep it tight (≤ ~8 bullets). Each item carries its link. This section is FYI — never
-duplicate the action items from §7b here; if something needs the owner to act, it belongs
-in §7b, not here.
+```
+### <Name> · <primary domain>  [📟 on-call]
+- **Done**
+    - <plain description of work THEY OWN> ([EX-NNNN](url) / [PR #N](url)) — real ships only
+- **In review**
+    - <desc> — awaiting reviewer (or "<Reviewer> reviewing") ([link])
+- **In progress**
+    - <desc> ([link]) — proxy for "today"
+- **Reviewing**
+    - reviewing <Dev>'s <ticket> ([link]) — someone else's work
+- **Blockers**
+    - <what's stuck> — <the one-line ask> ([thread])
+- **Up next**
+    - <top 3-5 pick-up candidates they own / are asked for; ranked> ([link])
+```
+
+On-call member: add an **`On-call`** bold bullet (per §6) with the ops load as sub-bullets.
+Members on leave: `### <Name> — 🌴 on leave (<reason>, <date>)` + a one-line upcoming-leave
+note, no sub-bullets.
+
+Then at the END of Message 3, `## Team summary`:
+- **Blocked / needs attention** — consolidated, most urgent first (what you raise in standup).
+- **Notable ships** — 2-4 headline deliveries (by owner).
+- **Unowned / stalled** — tickets needing a picker (unassigned / bounced to To-Do), untriaged alerts.
+- **Out / on-call** — on-leave members (one line) + the on-call name.
 
 ## 8. Describe every item — never a bare ID, enrich from body + slack
 
 - Lead each item with a plain-English phrase of WHAT it is (reworded from the ticket's
   real summary — pull from its `issue_created` title, NOT a `status_change` transition
   string), then the ID as a trailing clickable link.
+- **EVERY link carries a plain-English description of WHAT IT DOES — applies to PRs too,
+  not just tickets.** A bare `[#850]` is a regression; so is a terse title-slug like
+  `[#850 order-type check]` or `[#845 Alice's core-svc PR]` — those are still unreadable in
+  the Slack render (validated twice: the owner could not tell the PRs apart from either a
+  bare number OR a 2-word slug). Describe the PR the way you'd describe a ticket: a short
+  clause saying what it changes, reworded from the PR **title + body**, not a slug.
+  Examples — `[#865](url) adds CIB & RIB internet-banking channel types to the product
+  enum`, `[#867](url) CI gate that pushes images to ECR on non-prod builds`,
+  `[#845](url) the lien/unlien/modify gRPC flow (ApplyLien/Unlien/Modify + reconciler)`.
+- **The descriptor is DETERMINISTIC — read it from the gather's `# PR INDEX` block, do
+  NOT re-derive it.** `standup_gather.py` emits, for every PR referenced in the window,
+  a line `#N (repo) author=<canonical> title="..." :: <first body line>` built straight
+  from the `pr_opened`/`pr_merged` row in `events.db` (review/comment rows carry no title,
+  so this is the ONLY place a review-only PR gets a description). Use that `author` and
+  that `title`/`desc` verbatim — same DB → same wording every run. Never call `gh pr view`
+  (the PR repo is usually invisible to the local token) and never paraphrase from memory.
+- **NEVER guess a PR's author from who reviewed/commented on it.** The `# PR INDEX`
+  `author=` field is the opener (gh login → roster canonical), resolved deterministically.
+  A reviewer's section referencing a PR is reviewing SOMEONE ELSE's work unless that
+  person IS the PR INDEX author — render `[#N] <author>'s <what-it-does>` straight from
+  the index. (Validated bug: #845 was rendered as "Alice's PR" under a reviewer, but
+  PR INDEX `author=bob-example` — it was Bob's own lien feature.)
 - **Enrich** the rendered items with one substantive clause from beyond the title — the
   ticket body/comments, the slack thread that discusses it (search slack `body` for the
   ID or the key domain term), and the parent epic. One line, not a paragraph. Example:
@@ -394,6 +473,8 @@ in §7b, not here.
   a teammate quote). Each MUST carry a `[thread](…)` link from the gather's `link=` field.
   If a referenced row truly has no `link=` (rare), append `(no linkable ts)` so the gap is
   explicit — a bare slack reference with no link is a bug, not an option.
+  ALSO scan every link — `[#N]`, `[EX-NNNN]`, Confluence, build — and confirm each has an
+  inline descriptor next to it (not just the number). A bare `[#N]` with no label is a bug.
 
 ## 9. Daily-signal honesty
 
@@ -411,21 +492,28 @@ in §7b, not here.
 `management/standup/<date>/` team.md + per-person files cost ~3 min of duplicate
 generation per run and weren't being read). Read-only on all sources; the only outputs:
 
-- **Scheduled `team` run** → the Slack post (per the scheduled task's Step 3) +
-  this chat transcript.
-- **Interactive run (any scope)** → the chat reply only.
+- **Scheduled `team` run** → THREE root Slack posts (per the scheduled task's Step 3),
+  in order: 📅 Day update (§7a) → ⚠️ Your queue (§7b) → 👥 Dev updates (§7c) + Team
+  summary. Plus this chat transcript.
+- **Interactive run (any scope)** → the chat reply only. For `team`, render the same
+  three sections in order (📅 Day update → ⚠️ Your queue → 👥 Dev updates); for
+  `me`/`<person>`, just that person's §7c section.
 
-The chat reply **leads with `⚠️ Needs your attention` (§7b) and `📋 For your day`
-(§7c)**, then the per-person sections, then `## Team summary`. The "pre-save check"
-(§8) still applies — run it on the rendered digest before posting/replying.
+The "pre-save check" (§8) still applies — run it on all three messages before posting.
 
 ## Hard constraints
 
 - Roster = `scope: team` only. Non-roster name in output = bug.
 - Credit by assignee/author, never the transitioner.
 - On-leave members badged, not expected to report; on-call member badged, incident work expected.
-- Never a bare ticket ID; describe + enrich + link.
-- `team` digest leads with `⚠️ Needs your attention` (§7b) + `📋 For your day` (§7c);
-  §7b = owner's own action queue only (reply-pending / approvals / reviews / decisions),
-  §7c = FYI awareness only — never duplicate action items into §7c. Empty §7b says so, no padding.
+- Never a bare ticket ID OR bare PR number; describe + enrich + link. Every `[#N]` PR
+  link gets a 2–4 word inline label (§8) — a bare `#845/#850/#865` is a regression.
+- `team` output = THREE root messages in order: 📅 Day update (§7a) → ⚠️ Your queue
+  (§7b) → 👥 Dev updates (§7c). §7a = FYI awareness (decisions/announcements/timelines/
+  risk), §7b = owner's own action queue only, §7c = per-person standup. Never duplicate
+  §7b action items into §7a. Empty §7b says `Nothing pending your action.` — no padding.
+- Per-person uses NESTED bullets — bold status header (Done/In review/In progress/
+  Reviewing/Blockers/Up next) as parent, items as sub-bullets; omit empty sections.
+- Announce leave + LEAVE×ONCALL/COVERAGE risks ONE SPRINT (14d) ahead in §7a — never drop
+  a `# RISKS` line to save space.
 - Read-only — no writes to events.db, Confluence, Jira, Opsgenie.

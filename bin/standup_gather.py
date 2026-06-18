@@ -43,30 +43,106 @@ def load_roster():
     return out
 
 
+def _opsgenie_cfg():
+    """Return (schedule, identifier_type, key) from config/oncall.yaml + secrets.
+    Raises on missing config/key so callers can fail-soft uniformly."""
+    import yaml
+    og = yaml.safe_load(open(os.path.join(ROOT, "work-context/config/oncall.yaml")))["opsgenie"]
+    env = og.get("api_key_env", "OPSGENIE_API_KEY")
+    key = os.environ.get(env, "")
+    if not key:
+        sec = os.path.expanduser("~/.secrets/opsgenie_api_key")
+        if os.path.exists(sec):
+            key = open(sec).read().strip()
+    if not key:
+        raise RuntimeError(f"no API key ({env} unset, no ~/.secrets/opsgenie_api_key)")
+    return og["schedule"], og.get("identifier_type", "name"), key
+
+
+def _oncall_at(sched, idtype, key, date_iso=None):
+    """Who's on-call now (date_iso=None) or at a future instant. Uses flat=true so
+    the response is a plain list of recipient emails (onCallRecipients)."""
+    import urllib.request, urllib.parse
+    qs = {"scheduleIdentifierType": idtype, "flat": "true"}
+    if date_iso:
+        qs["date"] = date_iso
+    url = (f"https://api.opsgenie.com/v2/schedules/{sched}/on-calls?"
+           + urllib.parse.urlencode(qs))
+    req = urllib.request.Request(url, headers={"Authorization": "GenieKey " + key})
+    d = json.load(urllib.request.urlopen(req, timeout=10))
+    return d.get("data", {}).get("onCallRecipients", []) or []
+
+
 def gather_oncall(roster):
     """Live Opsgenie who's-on-call, config-driven (config/oncall.yaml). Fail-soft:
     a dead Opsgenie must not kill the gather — emit a warning line instead."""
-    import yaml, urllib.request
-    cfg_path = os.path.join(ROOT, "work-context/config/oncall.yaml")
     try:
-        og = yaml.safe_load(open(cfg_path))["opsgenie"]
-        env = og.get("api_key_env", "OPSGENIE_API_KEY")
-        key = os.environ.get(env, "")
-        if not key:
-            sec = os.path.expanduser("~/.secrets/opsgenie_api_key")
-            if os.path.exists(sec):
-                key = open(sec).read().strip()
-        if not key:
-            return [f"  ⚠️ no API key ({env} unset, no ~/.secrets/opsgenie_api_key)"]
-        url = (f"https://api.opsgenie.com/v2/schedules/{og['schedule']}/on-calls"
-               f"?scheduleIdentifierType={og.get('identifier_type', 'name')}")
-        req = urllib.request.Request(url, headers={"Authorization": "GenieKey " + key})
-        d = json.load(urllib.request.urlopen(req, timeout=10))
-        names = [p.get("name", "") for p in d.get("data", {}).get("onCallParticipants", [])]
+        sched, idtype, key = _opsgenie_cfg()
+        emails = _oncall_at(sched, idtype, key)
         by_email = {v.get("email", ""): k for k, v in roster.items()}
-        return [f"  {n}  canonical={by_email.get(n, '?(not roster)')}" for n in names] or ["  (none returned)"]
+        return [f"  {e}  canonical={by_email.get(e, '?(not roster)')}" for e in emails] or ["  (none returned)"]
     except Exception as e:
         return [f"  ⚠️ opsgenie lookup failed: {e}"]
+
+
+def gather_oncall_forecast(roster, date_str, days=14):
+    """Forecast the on-call primary for each of the next `days` days (rolling, =1
+    sprint). Returns (lines, forecast) where forecast={iso_date: canonical|email|None}.
+    One on-calls?date= query per day (noon UTC); each is independently fail-soft so a
+    single dead day degrades to None rather than killing the whole forecast."""
+    by_email = {v.get("email", ""): k for k, v in roster.items()}
+    forecast, lines = {}, []
+    try:
+        sched, idtype, key = _opsgenie_cfg()
+    except Exception as e:
+        return [f"  ⚠️ forecast unavailable: {e}"], forecast
+    d0 = datetime.date.fromisoformat(date_str)
+    for i in range(days):
+        day = (d0 + datetime.timedelta(days=i)).isoformat()
+        try:
+            emails = _oncall_at(sched, idtype, key, f"{day}T12:00:00Z")
+            who = by_email.get(emails[0], emails[0]) if emails else None
+        except Exception:
+            who = None  # leave a hole; don't abort the rest of the sprint
+        forecast[day] = who
+        lines.append(f"  {day} {who or '?(lookup failed)'}")
+    return lines, forecast
+
+
+def gather_risks(cur, roster, date_str, forecast, days=14):
+    """Risk/collision scan over the next `days` days (rolling sprint):
+      • LEAVE×ONCALL — a roster member scheduled on-call on a day they're on leave.
+      • COVERAGE     — ≥2 roster members out the same day (thin coverage).
+    Cross-refs the on-call forecast against durable team_leaves. Fail-soft."""
+    horizon = (datetime.date.fromisoformat(date_str) + datetime.timedelta(days=days)).isoformat()
+    # per-day set of on-leave roster canonicals + the reason for messaging
+    onleave, reason = {}, {}
+    try:
+        for a, ds, de, rs in cur.execute(
+                "SELECT actor,date_start,date_end,reason FROM team_leaves "
+                "WHERE date_end>=? AND date_start<=? ORDER BY date_start",
+                (date_str, horizon)).fetchall():
+            if a not in roster or not (ds and de):
+                continue
+            d = datetime.date.fromisoformat(ds)
+            end = datetime.date.fromisoformat(de)
+            while d <= end:
+                iso = d.isoformat()
+                if date_str <= iso <= horizon:
+                    onleave.setdefault(iso, set()).add(a)
+                    reason[(a, iso)] = f"{rs} {ds}..{de}"
+                d += datetime.timedelta(days=1)
+    except sqlite3.Error as e:
+        return [f"  ⚠️ team_leaves read failed: {e}"]
+    risks = []
+    for day in sorted(set(list(forecast) + list(onleave))):
+        out_today = sorted(onleave.get(day, set()))
+        oc = forecast.get(day)
+        if oc and oc in onleave.get(day, set()):
+            risks.append(f"  ⚠️ LEAVE×ONCALL {oc} on-call {day} but ON LEAVE ({reason.get((oc, day), 'leave')})")
+        if len(out_today) >= 2:
+            risks.append(f"  ⚠️ COVERAGE {day}: {len(out_today)} out ({', '.join(out_today)})")
+    return risks or ["  (none)"]
 
 
 def gather_leaves(cur, roster, date_str, W1, WL):
@@ -193,6 +269,28 @@ def main():
     conf_titles = {}
     for sub, ti in cur.execute("SELECT subject,title FROM events WHERE source='confluence' AND title IS NOT NULL"):
         conf_titles[sub] = ti
+    # --- github PR INDEX: DETERMINISTIC per-PR descriptor ---
+    # author (gh login → roster canonical) + title + first body line, keyed by PR number,
+    # built from pr_opened/pr_merged rows — the ONLY github rows carrying the real PR
+    # title/body. Review/comment rows have neither, so a member who only REVIEWED a PR
+    # still gets a full descriptor here. The formatter COPIES this verbatim — it must never
+    # re-derive a PR's purpose or guess its author from who reviewed it. pr_opened wins for
+    # author (the opener); scoped to PRs referenced in this window to keep the block small.
+    def _pr_num(subject):
+        return subject.rsplit("#", 1)[-1] if subject and "#" in subject else None
+    gh_login_to_canon = {v: k for k, v in ghs.items() if v}
+    win_pr_nums = {n for n in (_pr_num(s) for (_, _, s, _, _) in win_gh) if n}
+    pr_index = {}
+    for sub, actor, ti, bo in cur.execute(
+            "SELECT subject,actor,title,substr(body,1,200) FROM events "
+            "WHERE source='github' AND event_type IN ('pr_opened','pr_merged') "
+            "ORDER BY CASE event_type WHEN 'pr_opened' THEN 0 ELSE 1 END, ts"):
+        n = _pr_num(sub)
+        if not n or n not in win_pr_nums or n in pr_index:
+            continue
+        author = gh_login_to_canon.get(actor, actor or "?")
+        desc = next((l.strip(" -*\t") for l in (bo or "").splitlines() if l.strip(" -*\t")), "")
+        pr_index[n] = (sub, author, (ti or "").strip(), desc)
     # --- SLACK authored in window + mentions over the 2-day lookback ---
     slack_auth = cur.execute(
         "SELECT actor,ts,channel_id,thread_ts,substr(body,1,260),subject FROM events "
@@ -251,6 +349,19 @@ def main():
     out.extend(gather_oncall(roster))
     out.append("# LEAVES (team_leaves overlapping day + upcoming 14d; LIVE-SIGNAL = slack scan lookback..window-end)")
     out.extend(gather_leaves(cur, roster, date_str, W1, WL))
+    out.append("# ONCALL FORECAST (14d rolling = 1 sprint; per-day primary via on-calls?date=)")
+    fc_lines, forecast = gather_oncall_forecast(roster, date_str)
+    out.extend(fc_lines)
+    out.append("# RISKS (14d rolling: LEAVE×ONCALL collisions + COVERAGE gaps; surface in Day update §A)")
+    out.extend(gather_risks(cur, roster, date_str, forecast))
+    # PR INDEX — copy these descriptors VERBATIM when rendering any PR; never guess.
+    out.append("# PR INDEX (deterministic: author=pr_opened actor→canonical, title+desc from events.db — COPY VERBATIM, never re-derive)")
+    for n in sorted(pr_index, key=lambda x: int(x) if x.isdigit() else 0):
+        sub, author, title, desc = pr_index[n]
+        line = f"  #{n} ({sub}) author={author} title=\"{title}\""
+        if desc:
+            line += f" :: {desc[:140]}"
+        out.append(line)
     out.append("")
 
     for m in members:
