@@ -72,6 +72,8 @@ def test_epic_created_ts(seeded_db):
 
 
 def test_subjects_by_project_ref_groups_by_source(seeded_db):
-    # enrich_refs tagged the seed's payments subjects (keyword/epic).
+    # enrich_refs tagged the seed's payments subjects (keyword/epic). Assert the
+    # specific expected subject, not just "something non-empty" (review finding).
     out = fr._subjects_by_project_ref(seeded_db, "payments")
-    assert any(out.values())  # at least one source has payments-tagged subjects
+    assert "EX-2301" in out.get("jira", [])
+    assert "org/repo#10" in out.get("github", [])

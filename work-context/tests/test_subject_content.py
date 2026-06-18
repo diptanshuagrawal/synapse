@@ -50,12 +50,13 @@ def test_content_sha_stable_and_changes():
 
 def test_get_content_jira(seeded_db):
     source, content = sc.get_content(seeded_db, SEED_SUBJECTS["story"])
-    assert source == "jira" and content.strip()
+    # assert the actual extracted text, not just non-empty (review finding).
+    assert source == "jira" and "payout" in content.lower()
 
 
 def test_get_content_github(seeded_db):
     source, content = sc.get_content(seeded_db, SEED_SUBJECTS["pr"])
-    assert source == "github" and content.strip()
+    assert source == "github" and "payout" in content.lower()
 
 
 def test_get_content_confluence(seeded_db):
