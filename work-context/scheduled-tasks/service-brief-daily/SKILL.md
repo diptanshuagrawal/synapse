@@ -1,6 +1,6 @@
 ---
 name: service-brief-daily
-description: Daily 18:30 IST — refresh Go service skeletons and re-brief only those whose skeleton content changed.
+description: Daily from 18:00 IST (retries every 30 min until it succeeds once) — refresh Go service skeletons and re-brief only those whose skeleton content changed.
 ---
 
 Daily diff-gated service-brief routine for the engineering-management copilot.
@@ -8,6 +8,15 @@ Daily diff-gated service-brief routine for the engineering-management copilot.
 Working dir: __REPO__/work-context
 
 GOAL: keep the service briefs current, but spend LLM tokens ONLY on services whose code skeleton actually changed today. (Which services are in scope is config-driven — see derive/service_derive/refresh-skeletons.sh.)
+
+## RUN-ONCE GATE (idempotent — this routine retries every 30 min until it succeeds once today)
+Before doing ANY work, run this and obey it:
+
+    MARK=__REPO__/work-context/state/last_routine_service_brief_success.date
+    TODAY=$(TZ=Asia/Kolkata date +%F)
+    if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$TODAY" ]; then echo "GATE: service-brief already succeeded today ($TODAY) — idle"; else echo "GATE: service-brief not done today — proceed"; fi
+
+If it prints "already succeeded today" → STOP NOW: do not refresh skeletons, brief, or ingest anything; end the run. Only proceed to the steps below if it prints "not done today".
 
 ## Step 1 — deterministic refresh + diff gate (no LLM)
 Run from the working dir:
@@ -42,4 +51,11 @@ This runs without a human at the keyboard. NEVER pause for permission prompts.
 - Owner has `defaultMode: bypassPermissions` in `__REPO__/.claude/settings.local.json` — proceed as if all tools are auto-allowed.
 - If a tool unexpectedly hangs on a permission gate: abort, log the error, and exit. Do NOT wait for human input. The next scheduled fire is the retry.
 
-Note: this routine fires 30 min after the 18:00 codegraph LaunchAgent, so the mirrors are already warm; the helper re-pins them anyway for safety.
+Note: the first fire is 18:00 IST, alongside the 18:00 codegraph LaunchAgent. Ordering doesn't matter — refresh-skeletons.sh re-pins the mirrors to origin HEAD itself, so the briefs reflect the latest code regardless of which ran first.
+
+## RECORD SUCCESS (final step — gates the 30-min retry)
+ONLY after this run is CONFIRMED complete — every changed service's brief was written + ingested, OR Step 2's gate found no skeleton diffs — stamp the marker so the rest of today's fires idle:
+
+    TZ=Asia/Kolkata date +%F > __REPO__/work-context/state/last_routine_service_brief_success.date
+
+The early-STOP "no skeleton diffs today" branch counts as success — stamp it before stopping. If refresh-skeletons.sh or any brief write errored, do NOT stamp: leave the marker so the next 30-min fire retries.

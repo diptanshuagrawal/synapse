@@ -1,6 +1,6 @@
 ---
 name: rollup-classify
-description: Weekday 15:00 IST — runs the full /rollup (240-day window): keyword pass → chat-classify pending subjects → apply verdicts → derived rebuild, then posts a run-summary to the #rollup channel.
+description: Weekdays from 15:00 IST (retries every 30 min until it succeeds once) — runs the full /rollup (240-day window): keyword pass → chat-classify pending subjects → apply verdicts → derived rebuild, then posts a run-summary to the #rollup channel.
 ---
 
 Run the full activity rollup and post a run-summary to Slack.
@@ -8,6 +8,15 @@ Run the full activity rollup and post a run-summary to Slack.
 This is the SAME skill at __REPO__/.claude/commands/rollup.md. Follow it EXACTLY — do not reimplement. Working dir: __REPO__/work-context.
 
 CADENCE: weekday 15:00 IST. Lookback window = FULL 240 days (the rollup default). The dump only surfaces PENDING (unclassified) subjects, so most runs will be small even with the 240-day window.
+
+## RUN-ONCE GATE (idempotent — this routine retries every 30 min until it succeeds once today)
+Before doing ANY work, run this and obey it:
+
+    MARK=__REPO__/work-context/state/last_routine_rollup_success.date
+    TODAY=$(TZ=Asia/Kolkata date +%F)
+    if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$TODAY" ]; then echo "GATE: rollup already succeeded today ($TODAY) — idle"; else echo "GATE: rollup not done today — proceed"; fi
+
+If it prints "already succeeded today" → STOP NOW: do not dump, classify, apply, or post anything; end the run. Only proceed to the steps below if it prints "not done today".
 
 STEP 1 — Phase 1 (keyword pass + dump):
   cd __REPO__/work-context && DAYS=240 derive/manual-rollup.sh dump
@@ -40,3 +49,10 @@ STEP 4 — Post a run-summary to Slack channel #rollup (channel ID __ROLLUP_CHAN
 - If the post cannot be delivered (bot not a member of #rollup, channel archived): DO NOT silently fail — report the error clearly in this run's output so it can be fixed. The bot must be invited to #rollup (__ROLLUP_CHANNEL__) for the post to land.
 
 Read-only on all data SOURCES (events.db reads, Jira, Confluence, gh). The ONLY writes are: the rollup apply (subject_summary + ownership cols + derived rebuild, which is the skill's job) and the Slack post.
+
+## RECORD SUCCESS (final step — gates the 30-min retry)
+ONLY after this run is CONFIRMED complete — the apply finished (or there was nothing pending) AND the run-summary landed in #rollup — stamp the marker so the rest of today's fires idle:
+
+    TZ=Asia/Kolkata date +%F > __REPO__/work-context/state/last_routine_rollup_success.date
+
+A "nothing pending" run counts as success — stamp it. If the dump/classify/apply errored or the summary could not be delivered, do NOT stamp: leave the marker so the next 30-min fire retries.

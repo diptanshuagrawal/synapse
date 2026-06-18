@@ -1,11 +1,20 @@
 ---
 name: track-work-ticketize
-description: Weekday 12:15 IST — runs /ticketize DETECT for the previous working day and posts the ticket-candidate list to the #track-work channel. DETECT only; never applies (apply stays gated on owner reply).
+description: Weekdays from 06:15 IST (retries every 30 min until it succeeds once) — runs /ticketize DETECT for the previous working day and posts the ticket-candidate list to the #track-work channel. DETECT only; never applies (apply stays gated on owner reply).
 ---
 
 Run the daily /ticketize DETECT and post the candidate list to Slack. This is READ-ONLY on Jira — it ONLY proposes; it must NEVER create/transition Jira issues. Apply happens separately, gated on the owner's reply.
 
 Working dir: __REPO__
+
+## RUN-ONCE GATE (idempotent — this routine retries every 30 min until it succeeds once today)
+Before doing ANY work, run this and obey it:
+
+    MARK=__REPO__/work-context/state/last_routine_ticketize_success.date
+    TODAY=$(TZ=Asia/Kolkata date +%F)
+    if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$TODAY" ]; then echo "GATE: ticketize already succeeded today ($TODAY) — idle"; else echo "GATE: ticketize not done today — proceed"; fi
+
+If it prints "already succeeded today" → STOP NOW: do not gather, detect, write the candidate md, or invoke the bot; end the run. Only proceed to the steps below if it prints "not done today".
 
 STEP 0 — Resolve a yaml-capable python (the interactive/cron shell may pick a bare python3 without pyyaml):
   PY=$(for p in /opt/homebrew/bin/python3 python3 /usr/local/bin/python3; do "$p" -c 'import yaml' 2>/dev/null && { echo "$p"; break; }; done)
@@ -46,3 +55,10 @@ STEP 3 — Post to #track-work via the Relay bot (v1.5c — buttons):
 HARD RULES: DETECT only — this routine performs ZERO Jira writes (the bot does the gated apply on
 click). Roster = scope:team reports, on-call suppressed. Read-only on events.db / Jira / Slack-read;
 the only writes are the candidate md file + invoking the bot post.
+
+## RECORD SUCCESS (final step — gates the 30-min retry)
+ONLY after the DETECT run is CONFIRMED complete — the candidate md was written and the Relay bot post landed (or the bot correctly posted "no new ticketable gaps") — stamp the marker so the rest of today's fires idle:
+
+    TZ=Asia/Kolkata date +%F > __REPO__/work-context/state/last_routine_ticketize_success.date
+
+A clean "no new gaps" run counts as success — stamp it. If the gather/detect errored or the bot post could not be delivered, do NOT stamp: leave the marker so the next 30-min fire retries.
