@@ -34,7 +34,6 @@ work-context/derive/embed_subjects.py
 work-context/derive/embedding_query.py
 work-context/derive/enrich_clusters.py
 work-context/derive/feature_narrative.py
-work-context/derive/feature_stages.py
 work-context/derive/finalize_refresh.py
 work-context/derive/identity_reconcile.py
 work-context/derive/identity_signals.py
@@ -76,7 +75,6 @@ work-context/derive/slack_team_filter_cleanup.py
 work-context/derive/slack_validate.py
 work-context/derive/sources_config.py
 work-context/derive/story_graph.py
-work-context/derive/subject_content.py
 work-context/derive/trd/build_context_pack.py
 work-context/derive/trd/extract_trd_artifacts.py
 work-context/derive/validate_embeddings.py
