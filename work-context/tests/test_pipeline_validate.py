@@ -136,6 +136,15 @@ def test_recent_future_within_skew_passes():
     assert _sev(report, "ts_future") == "PASS"
 
 
+def test_future_ts_exactly_at_boundary_passes():
+    # Check is strict `ts > now+skew`, so a ts exactly at the boundary is OK.
+    edge = (NOW + timedelta(hours=pv.FUTURE_SKEW_H)).isoformat(
+        timespec="seconds").replace("+00:00", "Z")
+    conn = _mini_db([_evt(), _evt(id="e2", ts=edge)])
+    report = pv.compute(conn)
+    assert _sev(report, "ts_future") == "PASS"
+
+
 # ── vocabulary ───────────────────────────────────────────────────────────────
 
 def test_unknown_source_warns():

@@ -21,6 +21,18 @@ def _refs_for(conn, event_id):
     }
 
 
+def test_topic_brief_has_all_queried_columns(db_conn):
+    # Regression guard (review finding): ask_engine / topic_brief_validate /
+    # cluster_ownership_rollup query these columns; _ensure_schema must create
+    # them, not rely on a later derive step ALTERing them in (order-of-execution
+    # crash on a fresh DB).
+    cols = {r[1] for r in db_conn.execute("PRAGMA table_info(topic_brief)")}
+    required = {"root_cause", "confidence", "outcomes_json", "followups_json",
+                "risk_areas_json", "stakeholders_json", "artifacts_json",
+                "owner_distribution_json"}
+    assert required <= cols, f"missing: {required - cols}"
+
+
 def test_insert_returns_true_then_false_on_dup(db_conn, make_event):
     ev = make_event(id="dup-1")
     assert common.insert_event(db_conn, ev) is True

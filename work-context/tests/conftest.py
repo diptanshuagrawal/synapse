@@ -271,10 +271,7 @@ def build_seed(conn):
     )
 
     # ── topic_brief incident cluster + member (slack thread) ─────────────
-    # v2 columns (migration 006) the validators read but base schema lacks.
-    for col in ("outcomes_json", "followups_json", "risk_areas_json",
-                "stakeholders_json", "artifacts_json", "owner_distribution_json"):
-        common._add_column_if_missing(conn, "topic_brief", col, "TEXT")
+    # (v2 + ownership columns now come from _ensure_schema — no manual adds.)
     conn.execute("INSERT INTO topic_brief (cluster_id, label, root_cause, status) "
                  "VALUES (1, 'Payout outage', 'job crash', 'RESOLVED')")
     conn.execute("INSERT INTO topic_brief_member (cluster_id, subject, source) "

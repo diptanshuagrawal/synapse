@@ -47,14 +47,16 @@ def test_build_person_profile_returns_markdown(seeded_db, cfg):
     md = rollup.build_person_profile(
         seeded_db, "alice-gh", SINCE, cfg["projects"], cfg["people"],
         cfg["alias_map"], cfg["verdicts"])
-    assert isinstance(md, str) and md.strip()
+    # behavioral, not just non-empty: the profile names the person.
+    assert isinstance(md, str) and "alice" in md.lower()
 
 
 def test_build_project_rollup_payments(seeded_db, cfg):
     payments = next(p for p in SEED_PROJECTS if p["slug"] == "payments")
     md = rollup.build_project_rollup(
         seeded_db, payments, SINCE, cfg["people"], cfg["alias_map"], cfg["verdicts"])
-    assert isinstance(md, str) and md.strip()
+    # build_project_rollup emits "# {proj['name']}" — assert the real header.
+    assert md.startswith("# Payments")
 
 
 def test_build_weekly_returns_name_and_body(seeded_db, cfg):
