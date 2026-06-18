@@ -112,7 +112,15 @@ def test_iter_history_paginates(monkeypatch):
         {"messages": [{"ts": "1"}], "response_metadata": {"next_cursor": "c2"}},
         {"messages": [{"ts": "2"}], "response_metadata": {"next_cursor": ""}},
     ]
-    state = {"i": 0}
-    monkeypatch.setattr(c, "_call", lambda method, params: pages[state.__setitem__("i", state["i"] + 1) or state["i"] - 1])
+    seen_cursors = []
+
+    def fake_call(method, params):
+        # record the cursor actually threaded into each call (review: prove the
+        # next_cursor is passed back in, not just that two calls happen).
+        seen_cursors.append(params.get("cursor"))
+        return pages[len(seen_cursors) - 1]
+
+    monkeypatch.setattr(c, "_call", fake_call)
     out = [m["ts"] for m in c.iter_history("C0X")]
     assert out == ["1", "2"]
+    assert seen_cursors == [None, "c2"]   # 1st call no cursor, 2nd threads next_cursor
