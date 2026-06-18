@@ -57,9 +57,6 @@ def test_owner_name():
 
 # ── _inv_region (yaml-bucket locator) ────────────────────────────────────────
 
-@pytest.mark.skipif(not hasattr(ds, "_inv_region"),
-                    reason="_inv_region only in the in-flight doc-sync refactor; "
-                           "activates once committed")
 def test_inv_region_finds_bucket():
     lines = [
         "monitor:",
@@ -74,8 +71,6 @@ def test_inv_region_finds_bucket():
     assert (start, end) == (2, 5)   # the needs_confirm block, up to 'excluded:'
 
 
-@pytest.mark.skipif(not hasattr(ds, "_inv_region"),
-                    reason="_inv_region only in the in-flight doc-sync refactor")
 def test_inv_region_missing():
     assert ds._inv_region(["monitor:"], "needs_confirm") == (None, None)
 

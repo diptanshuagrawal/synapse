@@ -36,6 +36,11 @@ hard rules below are non-negotiable.
    new posting/validation API. Anything the TRD left `(unknown)`/`(assign)`
    becomes a `// TODO(trd): …` with a matching PR-body checklist item.
 6. **Never** force-push, never target `main` directly, never auto-merge.
+7. **Read the flow before you build it:** ZenUML/image diagrams are NOT in the page
+   API. If the PRD (or a Confluence-URL TRD) carries an unreadable diagram macro and no
+   work browser is connected to read it (Step 1.5), STOP — implementing flow logic from a
+   diagram you have not actually read would violate rule 5. Docs whose flow is all inline
+   ` ```mermaid ` (already in the artifacts) or that carry no diagram are NOT gated.
 
 ## Steps
 
@@ -48,6 +53,38 @@ Read the resulting `<trd>.artifacts.json`: `ddl_blocks`, `endpoints`,
 `open_questions`, `mermaid_blocks`, `todo_markers`. Read the full TRD too (§8.1
 chosen approach, §8.6 logic). Materialize the PRD (Confluence → fetch via
 Atlassian MCP) for intent + acceptance criteria.
+
+`mermaid_blocks` only captures inline ` ```mermaid ` fences from the local TRD. The
+**canonical flow often lives in a ZenUML "Diagram as Code Lite" macro or a PNG/image**
+on the PRD (or a Confluence-URL TRD) — those are NOT in the page API. While fetching the
+PRD body, note whether it contains such a diagram macro (the macro element is present in
+the ADF/body even though its rendered content is not). If so, the **Step 1.5 Chrome
+diagram pass** must read it before you implement the flow.
+
+**1.5. Chrome diagram pass (read the canonical flow before building it)**
+
+If Step 1 found NO ZenUML/image diagram macro on the PRD/TRD — flow is inline mermaid or
+absent — SKIP this phase and proceed. Otherwise it is REQUIRED (rule 7):
+
+1. `mcp__Claude_in_Chrome__list_connected_browsers`. If NONE is connected → **STOP**
+   (rule 7): report that the PRD/TRD's flow lives in an unreadable diagram macro and no
+   work browser is connected to read it, and ask the user to open the doc in their signed-in
+   work browser and re-run. Do NOT infer the flow and do NOT proceed to implement it.
+2. If >1 browser, pick the one signed into Confluence (your-org.atlassian.net) —
+   `select_browser`; if ambiguous, ask. `tabs_context_mcp` → a tab.
+3. For each doc with a diagram (the Confluence PRD always; the TRD too when `<trd>` was
+   passed as a Confluence URL): `navigate` to the page, wait for load, expand collapsed
+   diagram macros (click "Click here to expand…"), `screenshot` + zoom the rendered SVG/PNG
+   **top-to-bottom**. Transcribe EVERY participant + message + opt/alt block in order, per
+   the rigor rules in `.claude/commands/doc-sync.md` §3-sequence. An empty stub (heading-only,
+   no diagram) → nothing to transcribe; note it and move on.
+4. Reconcile the transcribed flow with the TRD §8.6 logic and `mermaid_blocks`. This
+   transcription is an IMPLEMENTATION INPUT, not a drift finding — it tells you the exact
+   step order, branch (opt/alt) conditions, and participant calls the handler must make.
+   Where the diagram and the TRD prose disagree, treat it as a TRD `(unknown)` → `// TODO(trd)`
+   + checklist item (rule 5); do not silently pick one.
+5. Record which diagrams were actually read (vs. stub/empty) — surfaced at the Step 6
+   checkpoint and in the PR body.
 
 **2. Preflight the dev repo**
 ```bash
@@ -78,7 +115,10 @@ Do NOT bulk-read the repo — follow the sibling's call path only.
   fields from the TRD endpoint contract. Then `make generate-proto`.
 - **Handler + domain logic** — add the sibling-method(s) in the same server file,
   delegating to the SAME domain/posting service the sibling uses. Implement the
-  flow per TRD §8.6; for any branch the TRD marks unknown, emit `// TODO(trd)`.
+  flow per TRD §8.6 **and the Step 1.5 diagram transcription** (step order, opt/alt
+  branch conditions, participant calls) — they are the same flow at two altitudes; the
+  diagram is authoritative on sequence and branching. For any branch the TRD marks unknown,
+  or any diagram↔prose disagreement, emit `// TODO(trd)`.
 - **Mocks/wiring** — `make generate-all` (mocks, swagger) and register routes the
   way siblings are registered.
 - **Tests** — add unit + integration mirroring the sibling's test
@@ -118,6 +158,7 @@ Commit with a conventional message (co-author trailer per repo norms). Then STOP
 and present to the user:
 - diffstat (`git diff --stat main`)
 - test results summary
+- which diagrams the Step 1.5 Chrome pass read (vs. stub/empty / none present)
 - every `// TODO(trd)` + unresolved open question
 - the PR title + body you will use
 Wait for explicit "push" / "go".
@@ -152,6 +193,9 @@ PR body MUST contain, in order:
   especially ledger/posting logic."
 - Links: PRD + TRD.
 - Summary (from PRD intent) + what changed (migrations / proto / handler / tests).
+- **Flow source** — which diagram(s) the Step 1.5 Chrome pass read to ground the handler
+  flow (or "flow from inline mermaid / TRD prose — no diagram macro present"), so reviewers
+  know the sequence logic traces to the canonical diagram.
 - **Open items checklist** — every TRD open question + every `// TODO(trd)`,
   as unchecked boxes so reviewers see exactly what's unverified.
 - Test evidence (commands run + pass/fail).
@@ -164,6 +208,6 @@ branch · PR url · files changed · test status · count of TODO(trd) + open it
 Reads/writes under `$HOME/git/<svc>/**`, `$HOME/context/**`,
 `/tmp/**`; Bash `make *`, `git *` (NO force-push), `gh *`, `python3 *`; reading
 `~/.secrets/github_pat` for the step-7 auth fallback (value never printed);
-Atlassian + code-review-graph MCP — pre-approved. The push CHECKPOINT (rule 4) still
+Atlassian + code-review-graph + Claude-in-Chrome MCP (Step 1.5 diagram pass) — pre-approved. The push CHECKPOINT (rule 4) still
 applies: if no human is present to confirm, STOP at step 6 and leave the branch
 local. Never open a PR without confirmation.
