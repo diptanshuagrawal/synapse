@@ -17,11 +17,8 @@ work-context/derive/_shard_dump.py
 work-context/derive/_size15_dump.py
 work-context/derive/anthropic_client.py
 work-context/derive/apply_epic_slugs.py
-work-context/derive/apply_leaves.py
 work-context/derive/apply_narratives.py
 work-context/derive/apply_ownership_sample.py
-work-context/derive/apply_pr_classes.py
-work-context/derive/apply_verdicts.py
 work-context/derive/auto_recurring.py
 work-context/derive/build_thread_summary.py
 work-context/derive/build_trd_owners.py
