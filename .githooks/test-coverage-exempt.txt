@@ -25,7 +25,6 @@ work-context/derive/build_trd_owners.py
 work-context/derive/cluster_noise_filter.py
 work-context/derive/cluster_ownership_rollup.py
 work-context/derive/cluster_subjects.py
-work-context/derive/cmr_releases.py
 work-context/derive/compare_person_versions.py
 work-context/derive/diff_fetcher.py
 work-context/derive/doc_sync_state.py
