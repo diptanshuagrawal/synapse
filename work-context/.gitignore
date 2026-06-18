@@ -7,3 +7,8 @@ __pycache__/
 *.pyc
 .venv/
 .DS_Store
+# coverage.py data files (regenerable; written by the pre-push coverage gate).
+# Keep .coveragerc tracked — it's the config — but never the run data.
+.coverage
+.coverage.*
+htmlcov/
