@@ -8,18 +8,24 @@ TODAY="$(date +%Y-%m-%d)"
 
 # Two ingest windows/day (see LaunchAgent schedule):
 #   morning (~11:00, 5-min retry) feeds the 11:45 standup with the FULL previous day;
-#   evening (18:00–23:00, 30-min retry) is a same-day safety net so the day's data
-#   through ~6pm is captured even if the next morning's run fails.
+#     idempotent — skips once today's morning run has succeeded.
+#   evening (18:00–23:00, 30-min retry) re-runs EVERY fire so the DB stays fresh
+#     through the night (cursor-based incremental pull is cheap + idempotent, like
+#     slack). Captures late-evening activity a next-morning standup would otherwise miss.
 # Window is picked by clock hour; each window has its own success marker so both
 # can succeed on the same calendar day. Boundary 17:00 is safe (no fires 12–16).
 if (( 10#$(date +%H) >= 17 )); then
   STATE_FILE="$ROOT/state/last_confluence_evening_success.date"
+  EVENING=1
 else
   STATE_FILE="$ROOT/state/last_confluence_success.date"
+  EVENING=0
 fi
 
-# Skip if this window already succeeded today (idempotent — cron retries until success)
-if [[ -f "$STATE_FILE" && "$(cat "$STATE_FILE")" == "$TODAY" ]]; then
+# Morning window only: skip once today's run has succeeded (idempotent retry-to-success).
+# Evening window: fall through on EVERY fire so each 30-min tick pulls the latest delta;
+# the marker is still stamped on success below (cron-status reads it for freshness).
+if [[ "$EVENING" -eq 0 && -f "$STATE_FILE" && "$(cat "$STATE_FILE")" == "$TODAY" ]]; then
   exit 0
 fi
 
