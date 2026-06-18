@@ -43,6 +43,19 @@ def load_roster():
     return out
 
 
+def owner_subteam_ids():
+    """Slack subteam IDs whose ping pulls in the OWNER personally (rows flagged
+    `owner_member: true` in config/team_subteams.yaml — e.g. the team handle and the
+    incident-commander group). Used to widen the owner @-ask scan beyond direct <@uid>
+    mentions, since most escalations page a subteam handle. Fail-soft → []."""
+    import yaml
+    try:
+        cfg = yaml.safe_load(open(os.path.join(ROOT, "work-context/config/team_subteams.yaml")))
+        return [s["id"] for s in cfg.get("subteams", []) if s.get("owner_member") and s.get("id")]
+    except Exception:
+        return []
+
+
 def _opsgenie_cfg():
     """Return (schedule, identifier_type, key) from config/oncall.yaml + secrets.
     Raises on missing config/key so callers can fail-soft uniformly."""
@@ -174,17 +187,25 @@ def gather_leaves(cur, roster, date_str, W1, WL):
     return lines or ["  (none)"]
 
 
+# TEAM open-ask lookback = 2 days (window day + 1 prior): a longer window re-surfaces
+# the same stale teammate asks every run. The OWNER queue uses a LONGER lookback —
+# a manager's pending reply/approval/review can legitimately sit unanswered for days,
+# and dropping it after 2d is exactly the blind spot we're closing.
+OWNER_ASK_LOOKBACK_DAYS = 5
+
+
 def ist_window(date_str):
-    """IST day -> UTC ISO bounds (naive, comparable to stored ts[:19])."""
+    """IST day -> UTC ISO bounds (naive, comparable to stored ts[:19]).
+    Returns (W0, W1, WL, WLo): window start/end, 2-day team lookback, and the
+    longer owner-ask lookback (OWNER_ASK_LOOKBACK_DAYS)."""
     y, m, dd = map(int, date_str.split("-"))
     ist0 = datetime.datetime(y, m, dd, 0, 0)
     u0 = ist0 - datetime.timedelta(hours=5, minutes=30)
     u1 = u0 + datetime.timedelta(days=1)
-    # open-ask / owner-ask lookback = past 2 days only (window day + 1 prior).
-    # A longer window re-surfaces the same stale asks on every daily run.
     uL = u0 - datetime.timedelta(days=1)
+    uLo = u0 - datetime.timedelta(days=OWNER_ASK_LOOKBACK_DAYS)
     f = lambda x: x.strftime("%Y-%m-%dT%H:%M:%S")
-    return f(u0), f(u1), f(uL)
+    return f(u0), f(u1), f(uL), f(uLo)
 
 
 def main():
@@ -192,7 +213,7 @@ def main():
         print("usage: standup_gather.py <YYYY-MM-DD> [scope]"); sys.exit(1)
     date_str = sys.argv[1]
     scope = sys.argv[2] if len(sys.argv) > 2 else "team"
-    W0, W1, WL = ist_window(date_str)  # WL = 2-day-back lookback for asks
+    W0, W1, WL, WLo = ist_window(date_str)  # WL=2d team lookback, WLo=longer owner lookback
     c = sqlite3.connect(DB); cur = c.cursor()
     roster = load_roster()
 
@@ -298,6 +319,12 @@ def main():
     slack_recent = cur.execute(
         "SELECT ts,channel_id,thread_ts,actor,substr(body,1,260),subject FROM events "
         "WHERE source='slack' AND ts>=? AND ts<? AND body LIKE '%<@%'", (WL, W1)).fetchall()
+    # OWNER-scoped slack over the LONGER lookback (WLo), incl. subteam pings (<!subteam^)
+    # not just direct <@uid> — the owner queue must catch group-handle escalations too.
+    slack_owner_recent = cur.execute(
+        "SELECT ts,channel_id,thread_ts,actor,substr(body,1,260),subject FROM events "
+        "WHERE source='slack' AND ts>=? AND ts<? "
+        "AND (body LIKE '%<@%' OR body LIKE '%<!subteam^%')", (WLo, W1)).fetchall()
 
     def hhmm(ts): return ts[11:16] if len(ts) > 15 else ts
 
@@ -454,31 +481,58 @@ def main():
 
     # ---- OWNER FOCUS: what the MANAGER personally needs to action / know ----
     # Emitted for every scope (the owner reads this even on a `team` run). Feeds the
-    # "Needs your attention" + "For your day" sections (§7b/§7c of the skill).
+    # 📅 Day update (§7a — DAY SIGNALS) + ⚠️ Your queue (§7b — reply-pending slack asks
+    # incl. subteam pings over a 5-day lookback, confluence @-mentions, board decisions).
     o = roster.get(owner, {})
     o_sl, o_em, o_jid = o.get("slack_id", ""), o.get("email", ""), o.get("jira_id", "")
     out.append(f"\n================ OWNER FOCUS  (manager={owner} slack={o_sl}) ================")
 
     # (A) @-asks directed at the owner, UNANSWERED by the owner in-thread = reply pending.
-    # "answered" = owner authored any message in that thread over the 2-day lookback.
+    # Matches a DIRECT <@owner> mention OR a ping of a subteam the owner belongs to
+    # (owner_subteam_ids — team handle + incident-commander group). "answered" = owner
+    # authored any message in that thread over the owner lookback window (WLo).
     o_answered = {r[0] for r in cur.execute(
         "SELECT DISTINCT thread_ts FROM events WHERE source='slack' AND actor=? "
-        "AND ts>=? AND ts<? AND thread_ts IS NOT NULL", (o_sl, WL, W1)).fetchall()}
+        "AND ts>=? AND ts<? AND thread_ts IS NOT NULL", (o_sl, WLo, W1)).fetchall()}
     o_mtok = f"<@{o_sl}"
+    o_subtoks = [f"<!subteam^{sid}" for sid in owner_subteam_ids()]
     o_asks = []
-    for ts, ch, thr, actor, body, subj in slack_recent:
+    for ts, ch, thr, actor, body, subj in slack_owner_recent:
         b = body or ""
-        if o_mtok not in b or actor == o_sl:
+        if actor == o_sl:
+            continue
+        direct = o_mtok in b
+        via_subteam = any(t in b for t in o_subtoks)
+        if not (direct or via_subteam):
             continue
         if thr and thr in o_answered:
             continue
         if NOISE_RE.search(b) or not ASK_RE.search(b):
             continue
-        o_asks.append((ts, ch, thr, actor, b, subj))
-    out.append(f"-- OWNER @-asks (your reply pending, 2d->window-end) ({len(o_asks)}) --")
-    for ts, ch, thr, actor, body, subj in o_asks[-12:]:
+        o_asks.append((ts, ch, thr, actor, b, subj, "direct" if direct else "subteam"))
+    out.append(f"-- OWNER @-asks (your reply pending, {OWNER_ASK_LOOKBACK_DAYS}d->window-end; direct + subteam) ({len(o_asks)}) --")
+    for ts, ch, thr, actor, body, subj, how in o_asks[-15:]:
         snip = re.sub(r"\s+", " ", body or "")[:160]
-        out.append(f"  [{ts[:16]}] ch={ch} thr={thr} from={actor} link={slack_link(subj)} :: {snip}")
+        out.append(f"  [{ts[:16]}] via={how} ch={ch} thr={thr} from={actor} link={slack_link(subj)} :: {snip}")
+
+    # (A2) Confluence @-mentions of the owner (modern mentions store ri:account-id=<acct>;
+    # legacy ri:userkey mentions can't be matched without the owner's userkey and are
+    # skipped). A comment by someone else that tags the owner on a doc = reply likely due.
+    o_conf = []
+    if o_jid:
+        for ts, subj, body, actor in cur.execute(
+                "SELECT ts,subject,body,actor FROM events WHERE source='confluence' "
+                "AND event_type='comment' AND ts>=? AND ts<? ORDER BY ts", (WLo, W1)):
+            b = body or ""
+            if o_jid in b and actor != o_jid:
+                title = conf_titles.get(subj, subj)
+                pid = subj.split(":", 1)[1] if ":" in subj else subj
+                snip = re.sub(r"<[^>]+>", " ", b)
+                snip = re.sub(r"\s+", " ", snip)[:140].strip()
+                o_conf.append((ts, pid, title, snip))
+    out.append(f"-- OWNER confluence @-mentions (reply likely due, {OWNER_ASK_LOOKBACK_DAYS}d->window-end) ({len(o_conf)}) --")
+    for ts, pid, title, snip in o_conf[-12:]:
+        out.append(f"  [{ts[:16]}] page={pid} \"{title}\" :: {snip}")
 
     # (B) owner board items needing a decision: open CMRs (approve/execute) + In-Review.
     o_cmr, o_ir = [], []
