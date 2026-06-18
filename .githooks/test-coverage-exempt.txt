@@ -34,7 +34,6 @@ work-context/derive/embed_subjects.py
 work-context/derive/embedding_query.py
 work-context/derive/enrich_clusters.py
 work-context/derive/feature_narrative.py
-work-context/derive/feature_resolve.py
 work-context/derive/feature_stages.py
 work-context/derive/finalize_refresh.py
 work-context/derive/identity_reconcile.py
