@@ -49,7 +49,6 @@ work-context/derive/service_derive/ingest_briefs.py
 work-context/derive/service_derive/play_extractor.py
 work-context/derive/slack_alert_thread_reconcile.py
 work-context/derive/slack_backfill_files.py
-work-context/derive/slack_discover_channels.py
 work-context/derive/slack_expand_mentions.py
 work-context/derive/slack_ingest_runner.py
 work-context/derive/slack_prune_stale_mpims.py
