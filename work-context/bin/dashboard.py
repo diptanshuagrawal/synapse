@@ -326,6 +326,7 @@ def get_snapshot() -> dict:
         "n_owner":  len(_disc_owner),
         "n_team":   len(sd.get("auto_team_involved", []) or []),
         "n_review": len(sd.get("needs_review", []) or []),
+        "n_silent": len(sd.get("team_silent", []) or []),
         "sched":    disc_sched["sched"],
         "next":     disc_sched["next"],
         "has_cache": bool(sd),
@@ -464,6 +465,8 @@ def get_discover() -> dict:
         "auto_team_involved": sd.get("auto_team_involved") or [],
         "needs_review": sorted(sd.get("needs_review") or [],
                                key=lambda c: c.get("team_msgs", 0), reverse=True),
+        "team_silent": sorted(sd.get("team_silent") or [],
+                              key=lambda c: c.get("total_msgs", 0), reverse=True),
     }
 
 
@@ -558,6 +561,7 @@ tr:nth-child(even) td { background:#0e1319; }
            border-left:3px solid #2a313b; background:#0e1319; }
 .finding.warn { border-left-color:#d5b248; }
 .finding.fail { border-left-color:#d54848; }
+.finding.muted { border-left-color:#5a6070; opacity:0.7; }
 .finding b { color:#d5d9e0; }
 .cluster { background:#11161d; border-left:3px solid #4d8eff; padding:10px 12px;
            margin:8px 0; border-radius:3px; }
@@ -804,8 +808,9 @@ async function refresh() {
   const disc = s.discover || {};
   const discReady = (disc.n_full || 0) + (disc.n_team || 0) + (disc.n_owner || 0);
   const discOwnerStr = disc.n_owner ? ` · ${disc.n_owner} owner` : "";
+  const discSilentStr = disc.n_silent ? ` · ${disc.n_silent} team-silent` : "";
   const discRow = disc.sched ? `
-      <span>discover</span><b>${discReady} ready${discOwnerStr} · <span class="muted">${disc.n_review || 0} needs_review</span></b>
+      <span>discover</span><b>${discReady} ready${discOwnerStr} · <span class="muted">${disc.n_review || 0} needs_review${discSilentStr}</span></b>
       <span>disc-sched</span><b>${disc.sched} IST · next ${disc.next}</b>` : "";
   lanes.push(laneFor("SLACK", slackWorst, `
     <div class="kv">
@@ -821,7 +826,7 @@ async function refresh() {
                   <th>checked</th><th>status</th></tr>
         ${slackRows}</table>
     </details>
-    <details><summary>discovered channels (${disc.n_owner ? disc.n_owner + " owner · " : ""}${disc.n_review || 0} needs_review) — click to expand</summary>
+    <details><summary>discovered channels (${disc.n_owner ? disc.n_owner + " owner · " : ""}${disc.n_review || 0} needs_review${disc.n_silent ? " · " + disc.n_silent + " team-silent" : ""}) — click to expand</summary>
       <div id="discoverTable"><span class="muted">loading…</span></div>
     </details>`));
 
@@ -1169,6 +1174,7 @@ async function loadDiscover() {
       ["AUTO-FULL (ready)", d.auto_full, "ok"],
       ["AUTO-TEAM (ready)", d.auto_team_involved, "ok"],
       ["NEEDS REVIEW", d.needs_review, "warn"],
+      ["TEAM-SILENT (active, but no team activity — hand-promote to full if useful)", d.team_silent, "muted"],
     ];
     let html = `<div class="muted" style="margin:4px 0">generated ${_esc(d.generated_at||"?")} · window ${d.days||"?"}d · schedule ${_esc(d.sched)} · next ${_esc(d.next)}</div>`;
     for (const [title, rows, lvl] of groups) {
