@@ -821,10 +821,11 @@ async function refresh() {
       ${discRow}
     </div>
     ${_runtimeFinding(slackRh)}${slackFindings}
-    <details><summary>per-channel detail (top 40 by events) — click to expand</summary>
+    <details><summary>per-channel detail (top 40 of ${slack.length} by events) — click to expand</summary>
       <table><tr><th>name</th><th>events</th><th>last msg</th>
                   <th>checked</th><th>status</th></tr>
         ${slackRows}</table>
+      ${slack.length > 40 ? `<div style="margin-top:6px"><a href="/channels" target="_blank" style="color:#4d8eff;font-size:11px">view all ${slack.length} channels →</a></div>` : ""}
     </details>
     <details><summary>discovered channels (${disc.n_owner ? disc.n_owner + " owner · " : ""}${disc.n_review || 0} needs_review${disc.n_silent ? " · " + disc.n_silent + " team-silent" : ""}) — click to expand</summary>
       <div id="discoverTable"><span class="muted">loading…</span></div>
@@ -1222,6 +1223,108 @@ setInterval(loadClusters, 1_800_000);
 """
 
 
+# Standalone full-list view for every Slack channel (linked from the SLACK
+# lane's per-channel detail "view all" link). Reuses /api/slack-channels, which
+# already returns the complete list — only the lane render caps at 40.
+CHANNELS_HTML = """<!doctype html>
+<html><head><meta charset="utf-8">
+<title>slack channels · all</title>
+<style>
+:root { color-scheme: dark; }
+body { font: 13px ui-monospace,SFMono-Regular,Menlo,monospace; background:#0b0f14;
+       color:#d5d9e0; max-width: 1100px; margin: 16px auto; padding: 0 16px; }
+h1 { font-size:18px; margin:0 0 4px; letter-spacing:1px; }
+.subtitle { color:#6e7681; margin-bottom:14px; font-size:11px; }
+a { color:#4d8eff; text-decoration:none; }
+a:hover { text-decoration:underline; }
+input { background:#11161d; color:#d5d9e0; border:1px solid #2a313b; border-radius:3px;
+        padding:5px 8px; font:inherit; width:260px; margin-bottom:10px; }
+table { border-collapse:collapse; width:100%; font-size:12px; }
+th { color:#6e7681; font-weight:normal; text-align:left; padding:4px 8px;
+     border-bottom:1px solid #2a313b; cursor:pointer; user-select:none; position:sticky; top:0; background:#0b0f14; }
+th:hover { color:#d5d9e0; }
+td { padding:4px 8px; }
+tr:nth-child(even) td { background:#0e1319; }
+.muted { color:#6e7681; }
+.pill { font-size:10px; padding:1px 6px; border-radius:8px; background:#193b25; color:#48d597; }
+.pill.warn { background:#3b2e19; color:#d5b248; }
+.tag { font-size:10px; color:#7a8497; border:1px solid #2a313b; border-radius:8px; padding:0 5px; margin-left:4px; }
+</style></head>
+<body>
+<h1>SLACK channels — all</h1>
+<div class="subtitle"><a href="/">← back to dashboard</a> · <span id="count">loading…</span></div>
+<input id="filter" placeholder="filter by name…" autocomplete="off">
+<table id="tbl"><thead><tr>
+  <th data-k="name">name</th>
+  <th data-k="events">events</th>
+  <th data-k="last_activity">last msg</th>
+  <th data-k="checked_ts">checked</th>
+  <th data-k="status">status</th>
+  <th data-k="kind">kind</th>
+</tr></thead><tbody id="rows"><tr><td colspan="6" class="muted">loading…</td></tr></tbody></table>
+<script>
+const FRESH_MS = 45 * 60 * 1000;
+function _rel(iso) {
+  if (!iso) return "—";
+  try {
+    const dt = new Date(iso);
+    const secs = (Date.now() - dt.getTime()) / 1000;
+    if (secs < 3600) return `${Math.floor(secs/60)}m ago`;
+    if (secs < 86400) return `${Math.floor(secs/3600)}h ago`;
+    return `${Math.floor(secs/86400)}d ago`;
+  } catch (e) { return "?"; }
+}
+function _esc(s){ return String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+function _status(c) {
+  if (!c.has_cursor) return `<span class="pill warn">no cursor</span>`;
+  if (!c.checked_ts) return `<span class="muted">? unpolled</span>`;
+  const lag = Date.now() - new Date(c.checked_ts).getTime();
+  if (lag <= FRESH_MS) return `<span class="pill">✓ up-to-date</span>`;
+  return `<span class="pill warn">⚠ lag ${_rel(c.checked_ts).replace(" ago","")}</span>`;
+}
+function _kind(c){ return c.is_archived ? "archived" : (c.is_private ? "private" : "public"); }
+let DATA = [], sortKey = "events", sortDir = -1;
+function render() {
+  const f = (document.getElementById("filter").value || "").toLowerCase();
+  let rows = DATA.filter(c => !f || (c.name||"").toLowerCase().includes(f));
+  rows.sort((a,b) => {
+    let av, bv;
+    if (sortKey === "status") { av = a.has_cursor?1:0; bv = b.has_cursor?1:0; }
+    else if (sortKey === "kind") { av = _kind(a); bv = _kind(b); }
+    else { av = a[sortKey]; bv = b[sortKey]; }
+    if (av == null) av = ""; if (bv == null) bv = "";
+    return (av < bv ? -1 : av > bv ? 1 : 0) * sortDir;
+  });
+  document.getElementById("count").textContent =
+    `${rows.length}${f ? " of " + DATA.length : ""} channels`;
+  document.getElementById("rows").innerHTML = rows.map(c =>
+    `<tr><td>${_esc(c.name)}</td>
+         <td>${(c.events||0).toLocaleString()}</td>
+         <td class="muted">${_rel(c.last_activity)}</td>
+         <td class="muted">${c.checked_ts ? _rel(c.checked_ts) : "—"}</td>
+         <td>${_status(c)}</td>
+         <td class="muted">${_kind(c)}</td></tr>`).join("")
+    || `<tr><td colspan="6" class="muted">no matches</td></tr>`;
+}
+document.querySelectorAll("th").forEach(th => th.onclick = () => {
+  const k = th.dataset.k;
+  if (sortKey === k) sortDir = -sortDir; else { sortKey = k; sortDir = (k==="name"||k==="kind")?1:-1; }
+  render();
+});
+document.getElementById("filter").oninput = render;
+(async () => {
+  try {
+    DATA = await (await fetch("/api/slack-channels")).json();
+    render();
+  } catch (e) {
+    document.getElementById("rows").innerHTML = `<tr><td colspan="6" class="muted">load error</td></tr>`;
+  }
+})();
+</script>
+</body></html>
+"""
+
+
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
@@ -1252,6 +1355,8 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         if path == "/" or path == "/index.html":
             self._send_html(INDEX_HTML)
+        elif path == "/channels":
+            self._send_html(CHANNELS_HTML)
         elif path == "/api/snapshot":
             self._send_json(get_snapshot())
         elif path == "/api/slack-channels":
