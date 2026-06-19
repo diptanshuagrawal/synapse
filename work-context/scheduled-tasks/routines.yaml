@@ -78,5 +78,5 @@ routines:
   - id: refresh-embeddings-weekly
     cron: "*/30 * * * 3,4"        # fires every 30 min Wed+Thu; SKILL.md STEP-0 gate runs ONLY in Wed 17:00 → Thu 23:00 IST window, idles once stamped (weekly retry-until-success / cycle)
     enabled: true
-    needs: []                     # no Slack post; embeddings use the OpenAI key from ~/.secrets (not a routine token). Overrides the skill's "do not cron" note — owner decision 2026-06-18.
+    needs: [rollup_channel]       # posts a run-summary to #rollup (__ROLLUP_CHANNEL__) on success, like rollup-classify. Embeddings use the OpenAI key from ~/.secrets (not a routine token). Overrides the skill's "do not cron" note — owner decision 2026-06-18.
     permissions: [Bash]
