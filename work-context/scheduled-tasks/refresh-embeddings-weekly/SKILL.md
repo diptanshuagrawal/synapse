@@ -37,7 +37,7 @@ STEP 1 — Pre-flight status (Phase 2):
 ```bash
 .venv/bin/python derive/refresh_embeddings.py status
 ```
-- If `embed_required == 0`: corpus is already in sync. This counts as SUCCESS for the cycle. Stamp the success date (STEP 5) and STOP — print "✓ nothing to embed; cycle complete".
+- If `embed_required == 0`: corpus is already in sync. This counts as SUCCESS for the cycle. Post the "nothing to embed" run-summary (STEP 5), then stamp (STEP 6) and STOP — print "✓ nothing to embed; cycle complete".
 - Else print the one-line delta (n_new / n_drifted) + new_head/drifted_head.
 
 STEP 2 — Noise filter + refresh WITH APPLY (Phase 4):
@@ -69,11 +69,23 @@ STEP 4 — Integrity gate (Phase 7):
 - SUCCESS requires: apply completed AND no null labels / null status left (the label loop closed; integrity shows 0 FAIL). If new+relabel was 0, integrity is trivially clean → success.
 - If null labels/status remain or FAIL > 0: FAILURE — DO NOT stamp. Report what's unresolved and STOP; the next fire retries.
 
-STEP 5 — Stamp success (ONLY on confirmed success):
+STEP 5 — Post a run-summary to Slack channel #rollup (channel ID __ROLLUP_CHANNEL__):
+- Use the slack send-message tool with that channel ID.
+- The send tool renders STANDARD markdown — write `[text](url)` and `**bold**` directly (not Slack mrkdwn).
+- Lead with a one-line header: "Embeddings refresh — <anchor date YYYY-MM-DD>".
+- Body (concise, bullets with `•`):
+  • embedded N (n_new / n_drifted) — from STEP 1; for the "corpus already in sync" early exit, say "nothing to embed — corpus already in sync".
+  • clusters: preserve / relabel / new / dropped_old — from `diff_plan.summary` (STEP 2).
+  • integrity: null_label / null_status / FAIL counts (STEP 4) — should read all-clean.
+  • clusters_unmapped count from the cluster_project_link block (STEP 3), if any.
+- Post this on EVERY success path, including the STEP 1 "nothing to embed" early exit.
+- If the post cannot be delivered (bot not a member of #rollup, channel archived): DO NOT silently fail — report the error clearly in this run's output. The bot must be invited to #rollup (__ROLLUP_CHANNEL__) for the post to land. The post landing is REQUIRED for success — if it fails, do NOT stamp; the next 30-min fire retries.
+
+STEP 6 — Stamp success (ONLY on confirmed success — apply done, integrity clean, AND the run-summary landed in #rollup):
 ```bash
 printf '%s\n' "<ANCHOR-from-STEP-0>" > state/last_routine_refresh_embeddings_success.date
 ```
 - Substitute the anchor date STEP 0 printed. This stops further retries this cycle.
-- Print a final one-line verdict: embedded N, clusters preserved/relabel/new/dropped, integrity clean, stamped <anchor>.
+- Print a final one-line verdict: embedded N, clusters preserved/relabel/new/dropped, integrity clean, posted to #rollup, stamped <anchor>.
 
-Hard rules: `--apply` is the only mutator. NO Anthropic API calls anywhere. OpenAI only for embeddings. On ANY failure, do not stamp — let the 30-min retry handle it until Thu 23:00 IST. No Slack post for this routine (owner did not request reporting); the session completion notification is the report.
+Hard rules: `--apply` is the only mutator. NO Anthropic API calls anywhere. OpenAI only for embeddings. On ANY failure (including the Slack run-summary failing to land), do not stamp — let the 30-min retry handle it until Thu 23:00 IST.
