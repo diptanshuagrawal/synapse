@@ -1168,7 +1168,11 @@ async function loadDiscover() {
   const el = document.getElementById("discoverTable");
   if (!el) return;
   try {
-    const d = await (await fetch("/api/discover")).json();
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 10000);
+    const resp = await fetch("/api/discover", {signal: ctrl.signal});
+    clearTimeout(timer);
+    const d = await resp.json();
     const groups = [
       ["OWNER CHANNELS (announcement/manager rooms — you're a member)", d.owner_channels, "ok"],
       ["AUTO-FULL (ready)", d.auto_full, "ok"],
@@ -1193,21 +1197,20 @@ async function loadDiscover() {
 }
 
 async function refreshAll() {
-  // loadDiscover must NOT be coupled to refresh() completing — the chart draw
-  // (Chart.js from CDN) at the tail of refresh() can throw when the CDN is
-  // blocked/offline, which would otherwise leave the discover panel stuck on
-  // "loading…". The finally fires it once the lanes div exists.
-  try {
-    await refresh();
-  } finally {
-    loadDiscover();  // needs only the discoverTable div (rendered mid-refresh)
-  }
+  await refresh();
 }
 
+// loadDiscover is fully decoupled from refresh(). The #discoverTable div is in
+// the static HTML, so loadDiscover needs nothing from refresh() — and a HANGING
+// refresh() (e.g. a stalled Chart.js CDN fetch that never settles) must never
+// block the discover panel on "loading…". Fire it on its own, with its own
+// interval and its own fetch timeout.
 refreshAll();
+loadDiscover();
 loadLog();
 loadClusters();
 setInterval(refreshAll, 1_800_000);
+setInterval(loadDiscover, 1_800_000);
 setInterval(loadLog, 1_800_000);
 setInterval(loadClusters, 1_800_000);
 </script>
@@ -1235,6 +1238,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(b)))
+        self.send_header("Cache-Control", "no-store")  # never serve a stale dashboard page
         self.end_headers()
         self.wfile.write(b)
 
