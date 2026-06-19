@@ -22,7 +22,6 @@ work-context/derive/cluster_ownership_rollup.py
 work-context/derive/compare_person_versions.py
 work-context/derive/diff_fetcher.py
 work-context/derive/dump_pending_narrative.py
-work-context/derive/embedding_query.py
 work-context/derive/feature_narrative.py
 work-context/derive/jira_backfill_status.py
 work-context/derive/label_clusters.py
