@@ -18,7 +18,6 @@ work-context/derive/_size15_dump.py
 work-context/derive/apply_epic_slugs.py
 work-context/derive/apply_narratives.py
 work-context/derive/apply_ownership_sample.py
-work-context/derive/build_trd_owners.py
 work-context/derive/cluster_ownership_rollup.py
 work-context/derive/compare_person_versions.py
 work-context/derive/diff_fetcher.py
