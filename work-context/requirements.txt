@@ -6,3 +6,4 @@ anthropic>=0.40
 #   .venv/bin/python -m pip install pytest
 # or run bin/run-tests.sh which installs it on first use.
 pytest>=8.0
+pytest-cov>=5.0   # coverage floor (--cov-fail-under) on the full-suite gate
