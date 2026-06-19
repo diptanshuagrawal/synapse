@@ -36,7 +36,6 @@ work-context/derive/slack_alert_thread_reconcile.py
 work-context/derive/slack_backfill_files.py
 work-context/derive/slack_expand_mentions.py
 work-context/derive/slack_ingest_runner.py
-work-context/derive/slack_prune_stale_mpims.py
 work-context/derive/slack_reparse_empty.py
 work-context/derive/sources_config.py
 work-context/derive/trd/build_context_pack.py
