@@ -81,6 +81,10 @@ Section order (locked):
 
 Hard rules for natural-language translation:
 
+The general rule + grep-check practice live in `.claude/shared/plain-language.md`. The rules
+below are the `/ask`-pipeline-specific elaboration — the exact forbidden tokens (cluster IDs,
+`person_v3`, `topic_brief`, `project_footprint`, `window_role`, …) and per-signal translations.
+
 - **NO internal entities or pipeline names ANYWHERE in the output (rule
   zero — applies to every section, audit included).** The reader sees a
   manager's narrative grounded in real, verifiable artefacts — never the
