@@ -37,7 +37,8 @@ def test_render_signals_block(seeded_db):
     sig = nar.build_signals(seeded_db, "alice-gh", SINCE, window_days=60,
                             verdicts={}, people=PEOPLE, alias_map={})
     block = nar._render_signals_block(sig)
-    assert isinstance(block, str) and block.strip()
+    # the block names the authored PR + owned ticket it was built from.
+    assert "org/repo#10" in block and "EX-2301" in block
 
 
 def test_content_hash_stable_and_sensitive(seeded_db):
@@ -45,10 +46,9 @@ def test_content_hash_stable_and_sensitive(seeded_db):
                             verdicts={}, people=PEOPLE, alias_map={})
     h1 = nar._content_hash(sig)
     assert h1 == nar._content_hash(sig)            # stable
-    sig.pr_comments_count += 5
-    # hash keys on signal contents — a real change may or may not move this
-    # field, so just assert determinism + type.
-    assert isinstance(nar._content_hash(sig), str)
+    # mutate a hashed field → hash must move (sensitivity).
+    sig.authored_prs[0].summary += " (edited)"
+    assert nar._content_hash(sig) != h1
 
 
 def test_build_signals_empty_for_unknown_actor(seeded_db):
