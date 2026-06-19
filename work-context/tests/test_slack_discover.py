@@ -36,6 +36,13 @@ def test_mpim_team_count_exact_and_truncated():
     assert sd._mpim_team_count("not-an-mpim", team) == 0
 
 
+def test_discovery_default_thresholds():
+    # Owner-tuned 2026-06-19: min_team=2 (you+1-teammate channels), floor=1
+    # (a single team msg onboards). Locked here so a change is deliberate.
+    assert sd.DEFAULT_MIN_TEAM == 2
+    assert sd.DEFAULT_MIN_TEAM_MSGS == 1
+
+
 def test_is_alert_channel():
     assert sd._is_alert_channel("service-a-alerts", 0.0) is True       # name token
     assert sd._is_alert_channel("random-chat", 0.95) is True           # bot-dominated

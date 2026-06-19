@@ -11,12 +11,17 @@
         <string>__REPO__/work-context/bin/run-slack-discover.sh</string>
     </array>
 
-    <!-- Twice weekly: Wednesday 13:00 + Friday 13:00 local (IST).
+    <!-- Thrice weekly: Monday + Wednesday + Friday 13:00 local (IST).
          launchd Weekday: Sun=0, Mon=1 … Wed=3, Fri=5, Sat=6. -->
     <!-- Owner reviews JSON output via bin/cron-status.sh DISCOVERY block,
          then manually re-runs the same script with apply flag to add. -->
     <key>StartCalendarInterval</key>
     <array>
+        <dict>
+            <key>Weekday</key><integer>1</integer>
+            <key>Hour</key><integer>13</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
         <dict>
             <key>Weekday</key><integer>3</integer>
             <key>Hour</key><integer>13</integer>

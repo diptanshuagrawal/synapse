@@ -282,6 +282,13 @@ def _mpim_team_count(name: str, team_slack_handles: set[str]) -> int:
 # Default mode decision tree — applied when --auto-mode is set.
 MPIM_TEAM_THRESHOLD = 3                 # team handles in MPIM → auto-add as full
 TEAM_RATIO_FULL_THRESHOLD = 0.5         # team_msgs/total_msgs ≥ this → full mode
+
+# Discovery candidacy + activity defaults (owner-tuned 2026-06-19, see
+# feedback memory): min_team 2 catches you+1-teammate channels; floor 1 means
+# a single team-authored msg is enough to onboard. team_silent bucket + the
+# dead-channel skip keep lurk/dead channels out of ingest.
+DEFAULT_MIN_TEAM = 2
+DEFAULT_MIN_TEAM_MSGS = 1
 BOT_NAME_PREFIXES = ("opsgenie-", "alert-", "pagerduty-", "datadog-",
                      "github-", "sentry-", "jenkins-")
 ANNOUNCE_NAME_PATTERNS = {
@@ -534,8 +541,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=90,
                     help="activity window for team-msg count (default 90)")
-    ap.add_argument("--min-team", type=int, default=3,
-                    help="minimum team members in channel to be a candidate (default 3)")
+    ap.add_argument("--min-team", type=int, default=DEFAULT_MIN_TEAM,
+                    help="minimum team members in channel to be a candidate (default 2 — "
+                         "catches you+1-teammate channels; team_silent bucket + activity "
+                         "floor keep lurk channels out of ingest)")
     ap.add_argument("--top", type=int, default=20,
                     help="cap shown candidates (default 20, sorted by team-msg desc)")
     ap.add_argument("--include-mpim", action="store_true",
@@ -544,9 +553,10 @@ def main() -> int:
     ap.add_argument("--auto-mode", action="store_true",
                     help="apply decision-tree: pick ingest_mode + allow_mpim per channel "
                          "(full vs team_involved vs needs_review)")
-    ap.add_argument("--min-team-msgs", type=int, default=5,
+    ap.add_argument("--min-team-msgs", type=int, default=DEFAULT_MIN_TEAM_MSGS,
                     help="activity floor for non-MPIM channels — below this drops to "
-                         "needs_review instead of auto-add (default 5)")
+                         "needs_review instead of auto-add (default 1 — a single "
+                         "team-authored msg is enough to onboard; team_silent catches 0)")
     ap.add_argument("--min-mpim-msgs", type=int, default=1,
                     help="activity floor for MPIMs — Slack auto-creates new MPIMs "
                          "often; this filters out dead ones (default 1)")
