@@ -51,3 +51,46 @@ def test_no_involvement():
 
 def test_none_actor_and_body():
     assert st.is_team_involved(None, None, TEAM, SUBTEAMS) is False
+
+
+# ── load_owner_slack_id ──────────────────────────────────────────────────────
+# Resolves the owner's Slack UID via OWNER_EMAIL → people.yaml. Drives the
+# owner-presence bypass in slack_discover_channels, so a regression here would
+# silently disable owner-room discovery.
+
+def _write_people(tmp_path, people):
+    import yaml
+    p = tmp_path / "people.yaml"
+    p.write_text(yaml.safe_dump({"people": people}))
+    return p
+
+
+def test_owner_slack_id_resolved(tmp_path, monkeypatch):
+    monkeypatch.setattr(st, "OWNER_EMAIL", "owner@example.com")
+    monkeypatch.setattr(st, "PEOPLE_YAML", _write_people(tmp_path, [
+        {"email": "other@example.com", "slack_id": "U0OTHER"},
+        {"email": "owner@example.com", "slack_id": "U0OWNER"},
+    ]))
+    assert st.load_owner_slack_id() == "U0OWNER"
+
+
+def test_owner_slack_id_missing_mapping(tmp_path, monkeypatch):
+    # Owner present but no slack_id → None (cannot resolve).
+    monkeypatch.setattr(st, "OWNER_EMAIL", "owner@example.com")
+    monkeypatch.setattr(st, "PEOPLE_YAML", _write_people(tmp_path, [
+        {"email": "owner@example.com"},
+    ]))
+    assert st.load_owner_slack_id() is None
+
+
+def test_owner_slack_id_not_in_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(st, "OWNER_EMAIL", "owner@example.com")
+    monkeypatch.setattr(st, "PEOPLE_YAML", _write_people(tmp_path, [
+        {"email": "other@example.com", "slack_id": "U0OTHER"},
+    ]))
+    assert st.load_owner_slack_id() is None
+
+
+def test_owner_slack_id_no_people_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(st, "PEOPLE_YAML", tmp_path / "missing.yaml")
+    assert st.load_owner_slack_id() is None

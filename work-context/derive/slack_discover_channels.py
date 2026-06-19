@@ -9,6 +9,14 @@ like @team-oncall), prints a proposal table. Optional `--apply`
 appends new channels to `config/slack_channels.yaml` (MPIMs need explicit
 `--include-mpim`).
 
+Owner-presence bypass: announcement / manager / HR rooms (tech-management,
+hr-tech, hr-tech-managers, …) are channels the OWNER sits in but few/no direct
+reports do, so they never reach min_team and team-involvement scoring is ~0 —
+yet the announcements themselves are the signal. When the owner is a member and
+the name reads as an announcement channel (_is_announcement_like), the channel
+bypasses the team + activity floors and is auto-added as ingest_mode=full. A
+bot-ratio guard keeps a bot firehose the owner merely lurks in from sneaking in.
+
 Usage:
     python -m derive.slack_discover_channels                  # report only
     python -m derive.slack_discover_channels --apply          # report + write yaml
@@ -43,6 +51,7 @@ CHANNELS_YAML = _REPO_ROOT / "config" / "slack_channels.yaml"
 from derive.slack_team import (  # noqa: E402
     load_team_slack_ids as _load_team_slack_ids,
     load_team_subteam_ids as _load_team_subteam_ids,
+    load_owner_slack_id as _load_owner_slack_id,
     is_team_involved as _is_team_involved,
 )
 
@@ -280,6 +289,62 @@ ANNOUNCE_NAME_PATTERNS = {
     "all-hands", "all-engineering", "company-announcements",
 }
 
+# Owner-present announcement / manager / leadership / HR / EM rooms (e.g.
+# tech-management, hr-tech, hr-tech-managers, jayanth-ems, eng-leadership).
+# The owner sits in these but few/no direct reports do, so they never reach
+# min_team and team-involvement scoring is ~0 — yet they ARE owner-context
+# signal. Whole-token match (not raw substring) to avoid mis-fires (e.g. "hr"
+# inside "chrome", "em" inside "team"). Lurk firehoses (vendor / liabilities /
+# merchant) carry none of these tokens, so they stay out — plus the bot-ratio
+# guard in _decide_mode drops any that are bot-dominated.
+#
+# STRONG tokens unambiguously name a PEOPLE room → match on name alone.
+STRONG_OWNER_TOKENS = (
+    "hr", "leadership", "leader", "leaders",
+    "managers", "manager", "mgrs", "mgr",
+    "em", "ems", "townhall", "town", "broadcast",
+)
+STRONG_OWNER_PREFIXES = ("announce",)   # announcement / announcements
+
+# AMBIGUOUS: "management"/"mgmt" mean PEOPLE in "tech-management" but a TOPIC in
+# "vulns-mgmt" / "cost-management" / "incident-management". Count as a people
+# room ONLY when (a) the channel is not a wg-/tmp- working group, AND (b) the
+# token immediately before it is not a domain/topic noun. This keeps
+# tech-management / tech-mgmt while dropping topic-management channels.
+AMBIGUOUS_MGMT_TOKENS = ("management", "mgmt")
+WORKING_GROUP_PREFIXES = ("wg", "tmp")
+MGMT_TOPIC_NOUNS = frozenset({
+    "vuln", "vulns", "vulnerability", "vulnerabilities", "incident", "incidents",
+    "cost", "costs", "risk", "risks", "change", "release", "releases", "config",
+    "configuration", "vendor", "vendors", "capacity", "access", "identity",
+    "fleet", "asset", "assets", "data", "knowledge", "secret", "secrets",
+    "key", "keys", "patch", "patches", "device", "devices", "project",
+    "projects", "inventory", "order", "orders", "fraud", "content", "case",
+})
+
+
+def _is_announcement_like(name: str) -> bool:
+    """True if a channel name reads as an announcement / manager / leadership /
+    HR / EM room.
+
+    Used only for the owner-presence bypass — broader than ANNOUNCE_NAME_PATTERNS
+    (which gates org-wide noisy channels toward team_involved). Ambiguous
+    management/mgmt tokens are disambiguated by the preceding token so that
+    "tech-management" (people) matches but "vulns-mgmt" (topic) does not."""
+    n = name.lower()
+    if n in ANNOUNCE_NAME_PATTERNS or n.startswith(("announce", "all-hands")):
+        return True
+    tokens = n.replace("_", "-").split("-")
+    is_wg = bool(tokens) and tokens[0] in WORKING_GROUP_PREFIXES
+    for i, t in enumerate(tokens):
+        if t in STRONG_OWNER_TOKENS or t.startswith(STRONG_OWNER_PREFIXES):
+            return True
+        if t in AMBIGUOUS_MGMT_TOKENS and not is_wg:
+            prev = tokens[i - 1] if i > 0 else ""
+            if prev not in MGMT_TOPIC_NOUNS:
+                return True
+    return False
+
 # ── Alert-channel detection ──────────────────────────────────────────────────
 # Alert/monitoring channels are bot-authored firehoses — the team is a member
 # and the alerts pertain to team-owned systems, but the team rarely posts or
@@ -334,7 +399,9 @@ def _decide_mode(meta: dict, team_set: set[str], team_msgs: int,
                  total_msgs: int, mpim_team_count: int,
                  min_team_msgs: int = 5,
                  min_mpim_msgs: int = 1,
-                 bot_ratio: float = 0.0) -> tuple[str, dict]:
+                 bot_ratio: float = 0.0,
+                 owner_present: bool = False,
+                 below_team_floor: bool = False) -> tuple[str, dict]:
     """Returns (verdict, extras) where verdict ∈ {auto_full, auto_team_involved,
     needs_review, skip}. extras carries mode+allow_mpim+rationale for the row.
     """
@@ -357,6 +424,25 @@ def _decide_mode(meta: dict, team_set: set[str], team_msgs: int,
             # ingest wall-time. Top-level alerts + edit/delete reconcile stay.
             "no_threads": True,
             "rationale": f"team-domain alert channel ({bot_ratio:.0%} bot · {total_msgs} msgs/90d)",
+        }
+
+    # Owner-present announcement / manager / HR channel — bypass BOTH the team
+    # floor (admitted in the candidate filter) and the activity floor here. The
+    # owner sits in these rooms but few/no direct reports do, so team-involvement
+    # scoring is ~0 — yet the announcements themselves are the signal. Capture in
+    # full. Bot-ratio guard keeps a bot firehose the owner merely lurks in from
+    # masquerading as an announcement channel.
+    #   `below_team_floor` gate is load-bearing: WITHOUT it, big org-wide rooms
+    #   the owner also sits in (general, tech, data-announcements) would flip
+    #   from team_involved → full. Those have ample team presence, so they fall
+    #   through to the normal tree below. Only the would-be-dropped rooms bypass.
+    if (not is_mpim and owner_present and below_team_floor
+            and _is_announcement_like(name) and bot_ratio < ALERT_BOT_RATIO):
+        return "auto_full", {
+            "mode": "full",
+            "owner_bypass": True,
+            "rationale": f"owner-present announcement channel "
+                         f"({total_msgs} msgs/90d · {bot_ratio:.0%} bot)",
         }
 
     # Universal activity floor — applied BEFORE other checks. MPIMs allowed
@@ -455,8 +541,11 @@ def main() -> int:
     team = _load_team_slack_ids()
     team_ids = set(team.keys())
     team_subteam_ids = _load_team_subteam_ids()
+    owner_sid = _load_owner_slack_id()
+    owner_canonical = team.get(owner_sid) if owner_sid else None
     print(f"[team] {len(team)} members with slack_id · "
-          f"{len(team_subteam_ids)} team subteam(s) for mention scoring", flush=True)
+          f"{len(team_subteam_ids)} team subteam(s) for mention scoring · "
+          f"owner={owner_canonical or 'UNRESOLVED'}", flush=True)
 
     # Build team slack-username set for MPIM name-parsing.
     # MPIM names use Slack's `user.name` field (e.g. mpdm-foo.bar--baz.qux-1),
@@ -517,9 +606,14 @@ def main() -> int:
           f"in {time.monotonic() - t0:.1f}s\n", flush=True)
 
     # Filter to candidates: not in yaml, not on owner denylist, ≥min_team
-    # members, not is_im, not archived
+    # members, not is_im, not archived.
+    # Owner-present announcement/manager/HR rooms bypass the team floor — the
+    # owner sits in them but reports don't, yet the announcements are the signal.
+    # Final full/skip is bot-ratio-guarded in _decide_mode; the name gate here
+    # keeps the bypassed candidate set small (not every channel the owner lurks).
     candidates: list[tuple[str, dict, set[str]]] = []
     n_excluded = 0
+    n_owner_bypass = 0
     for cid, team_set in chan_team.items():
         if cid in already:
             continue
@@ -532,11 +626,16 @@ def main() -> int:
         if meta["is_archived"]:
             continue
         if len(team_set) < args.min_team:
-            continue
+            owner_here = owner_canonical is not None and owner_canonical in team_set
+            if owner_here and not meta["is_mpim"] and _is_announcement_like(meta["name"]):
+                n_owner_bypass += 1
+            else:
+                continue
         candidates.append((cid, meta, team_set))
     print(f"[filter] {len(candidates)} candidates pass min_team={args.min_team} "
           f"+ not-in-yaml + not-excluded + not-archived "
-          f"({n_excluded} dropped by denylist)", flush=True)
+          f"({n_excluded} dropped by denylist, "
+          f"{n_owner_bypass} owner-announcement bypass)", flush=True)
 
     # Score by team-author messages in last `--days`
     oldest_dt = datetime.now(tz=timezone.utc) - timedelta(days=args.days)
@@ -582,6 +681,9 @@ def main() -> int:
                 min_team_msgs=args.min_team_msgs,
                 min_mpim_msgs=args.min_mpim_msgs,
                 bot_ratio=bot_ratio,
+                owner_present=(owner_canonical is not None
+                               and owner_canonical in team_set),
+                below_team_floor=(len(team_set) < args.min_team),
             )
         else:
             # Legacy behaviour: needs_review unless include-mpim
@@ -601,6 +703,7 @@ def main() -> int:
             "mode": extras.get("mode"),
             "allow_mpim": extras.get("allow_mpim", False),
             "no_threads": extras.get("no_threads", False),
+            "owner_bypass": extras.get("owner_bypass", False),
             "rationale": extras.get("rationale", extras.get("reason", "")),
         })
 

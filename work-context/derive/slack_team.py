@@ -83,6 +83,19 @@ def load_team_slack_ids() -> dict[str, str]:
     return out
 
 
+def load_owner_slack_id() -> Optional[str]:
+    """Returns the owner's Slack user-id (resolved via OWNER_EMAIL → people.yaml),
+    or None if people.yaml is missing or the owner has no slack_id mapping."""
+    if not PEOPLE_YAML.exists():
+        return None
+    with PEOPLE_YAML.open() as f:
+        cfg = yaml.safe_load(f)
+    for p in cfg.get("people", []):
+        if p.get("email") == OWNER_EMAIL and p.get("slack_id"):
+            return p["slack_id"]
+    return None
+
+
 def load_team_subteam_ids() -> set[str]:
     """Returns the set of Slack subteam (user-group) IDs that represent THIS team.
 

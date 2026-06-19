@@ -319,8 +319,11 @@ def get_snapshot() -> dict:
     # Slack discover summary + schedule.
     sd = _read_json(STATE / "last_slack_discover.json")
     disc_sched = read_plist_weekly(f"{_LP}.slack-discover")
+    _disc_full = sd.get("auto_full", []) or []
+    _disc_owner = [c for c in _disc_full if c.get("owner_bypass")]
     snap["discover"] = {
-        "n_full":   len(sd.get("auto_full", []) or []),
+        "n_full":   len(_disc_full) - len(_disc_owner),
+        "n_owner":  len(_disc_owner),
         "n_team":   len(sd.get("auto_team_involved", []) or []),
         "n_review": len(sd.get("needs_review", []) or []),
         "sched":    disc_sched["sched"],
@@ -439,15 +442,25 @@ def get_identity_timeseries(days: int = 7) -> dict:
 
 
 def get_discover() -> dict:
-    """Full discovered-channel proposals from last_slack_discover.json."""
+    """Full discovered-channel proposals from last_slack_discover.json.
+
+    Owner-presence bypass channels (announcement / manager / HR rooms the owner
+    sits in but the team doesn't — see slack_discover_channels._decide_mode) are
+    split out of auto_full into their own `owner_channels` group so the dashboard
+    can show them in a separate section.
+    """
     sd = _read_json(STATE / "last_slack_discover.json")
     disc_sched = read_plist_weekly(f"{_LP}.slack-discover")
+    auto_full = sd.get("auto_full") or []
+    owner_channels = [c for c in auto_full if c.get("owner_bypass")]
+    auto_full = [c for c in auto_full if not c.get("owner_bypass")]
     return {
         "generated_at": sd.get("generated_at"),
         "days": sd.get("days"),
         "sched": disc_sched["sched"],
         "next": disc_sched["next"],
-        "auto_full": sd.get("auto_full") or [],
+        "owner_channels": owner_channels,
+        "auto_full": auto_full,
         "auto_team_involved": sd.get("auto_team_involved") or [],
         "needs_review": sorted(sd.get("needs_review") or [],
                                key=lambda c: c.get("team_msgs", 0), reverse=True),
@@ -789,9 +802,10 @@ async function refresh() {
   const slackLastRun = s.last_run_ts?.slack;
   const slackLastIso = slackLastRun ? slackLastRun.replace(" ", "T") + "+05:30" : null;
   const disc = s.discover || {};
-  const discReady = (disc.n_full || 0) + (disc.n_team || 0);
+  const discReady = (disc.n_full || 0) + (disc.n_team || 0) + (disc.n_owner || 0);
+  const discOwnerStr = disc.n_owner ? ` · ${disc.n_owner} owner` : "";
   const discRow = disc.sched ? `
-      <span>discover</span><b>${discReady} ready · <span class="muted">${disc.n_review || 0} needs_review</span></b>
+      <span>discover</span><b>${discReady} ready${discOwnerStr} · <span class="muted">${disc.n_review || 0} needs_review</span></b>
       <span>disc-sched</span><b>${disc.sched} IST · next ${disc.next}</b>` : "";
   lanes.push(laneFor("SLACK", slackWorst, `
     <div class="kv">
@@ -807,7 +821,7 @@ async function refresh() {
                   <th>checked</th><th>status</th></tr>
         ${slackRows}</table>
     </details>
-    <details><summary>discovered channels (${disc.n_review || 0} needs_review) — click to expand</summary>
+    <details><summary>discovered channels (${disc.n_owner ? disc.n_owner + " owner · " : ""}${disc.n_review || 0} needs_review) — click to expand</summary>
       <div id="discoverTable"><span class="muted">loading…</span></div>
     </details>`));
 
@@ -1151,6 +1165,7 @@ async function loadDiscover() {
   try {
     const d = await (await fetch("/api/discover")).json();
     const groups = [
+      ["OWNER CHANNELS (announcement/manager rooms — you're a member)", d.owner_channels, "ok"],
       ["AUTO-FULL (ready)", d.auto_full, "ok"],
       ["AUTO-TEAM (ready)", d.auto_team_involved, "ok"],
       ["NEEDS REVIEW", d.needs_review, "warn"],
