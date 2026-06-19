@@ -945,6 +945,11 @@ async function refresh() {
 
   document.getElementById("lanes").innerHTML = lanes.join("");
 
+  // #discoverTable lives inside the lanes HTML just injected above, so populate
+  // it now — BEFORE the time-series/chart fetches below, which can stall on a
+  // blocked Chart.js CDN and would otherwise leave the panel on "loading…".
+  loadDiscover();
+
   // Time-series chart
   const tsResp = await fetch("/api/identity-timeseries");
   const ts = await tsResp.json();
@@ -1165,6 +1170,8 @@ async function loadClusters() {
 }
 
 async function loadDiscover() {
+  // #discoverTable is created by refresh() (it lives inside the lanes HTML), so
+  // loadDiscover is invoked from there once the div exists. Guard defensively.
   const el = document.getElementById("discoverTable");
   if (!el) return;
   try {
@@ -1200,17 +1207,14 @@ async function refreshAll() {
   await refresh();
 }
 
-// loadDiscover is fully decoupled from refresh(). The #discoverTable div is in
-// the static HTML, so loadDiscover needs nothing from refresh() — and a HANGING
-// refresh() (e.g. a stalled Chart.js CDN fetch that never settles) must never
-// block the discover panel on "loading…". Fire it on its own, with its own
-// interval and its own fetch timeout.
+// loadDiscover is driven from inside refresh() (right after it injects the
+// lanes HTML that contains #discoverTable, and before the chart fetches that
+// can stall). So it is NOT called standalone here — that would run before the
+// div exists. refresh's own interval re-runs it.
 refreshAll();
-loadDiscover();
 loadLog();
 loadClusters();
 setInterval(refreshAll, 1_800_000);
-setInterval(loadDiscover, 1_800_000);
 setInterval(loadLog, 1_800_000);
 setInterval(loadClusters, 1_800_000);
 </script>
