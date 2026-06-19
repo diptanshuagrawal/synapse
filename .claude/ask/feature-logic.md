@@ -85,10 +85,9 @@ conflict, resolve by *what kind of claim* it is:
   behaviour from a doc alone — confirm it in code. If the doc says one thing and the
   code does another, **the code is the true state**; say so plainly and note the doc
   is out of date (or describes an unshipped/changed design).
-  - **Freshness scope:** the code graph is built from dedicated mirror clones pinned
-    to each repo's REMOTE default branch (`main` for service-a, `master` for service-c),
-    refreshed daily. So "code wins" means *merged* code wins — the graph does NOT see
-    un-pushed or uncommitted local work or unmerged feature branches. If an answer
+  - **Freshness scope:** the graph is the daily-refreshed REMOTE-default-branch mirror
+    (`.claude/shared/code-graph-access.md`). So "code wins" means *merged* code wins — the
+    graph does NOT see un-pushed/uncommitted local work or unmerged branches. If an answer
     seems to contradict in-progress local work, say it reflects merged `main`/`master`,
     not local WIP.
 - **"Why / what was intended / what's the tradeoff" → TRD/PRD + jira/slack WIN.**
