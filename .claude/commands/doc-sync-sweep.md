@@ -100,7 +100,8 @@ Read `.claude/commands/doc-sync.md` Phases 2–4:
      plain line), anchor (exact rendered page text to attach to), suggested_edit}`.
 
 Notes:
-- `repo: casa-orch` or any unregistered repo → skip the doc, log "not checkable here".
+- `repo: casa-orch` or any unregistered repo → skip the doc, log "not checkable here"
+  (unregistered-repo handling: `.claude/shared/code-graph-access.md`).
 - An empty/placeholder page → skip, log it.
 - **Diagrams (sequence drift):** the page-API body/ADF only carries inline Mermaid
   (```mermaid fences / `codeBlock` lang=mermaid). ZenUML "Diagram as Code Lite" macros and

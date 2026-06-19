@@ -98,7 +98,9 @@ git checkout main && git pull --ff-only origin main && \
 `<slug>` = kebab-case of the TRD title.
 
 **3. Locate the sibling to mirror (code-graph)**
-Use the graph to find the existing analog the TRD points at (e.g. the
+Read the graph per `.claude/shared/code-graph-access.md` (mirror = REMOTE default branch,
+not `~/git`). NB: that's the READ source; the WRITE target stays `$HOME/git/<svc>` per HARD
+RULE 1. Use the graph to find the existing analog the TRD points at (e.g. the
 `Execute*Transaction` family) and READ its real implementation so the new code
 matches conventions:
 - `semantic_search_nodes` / `query_graph callees_of` on the sibling rpc.
