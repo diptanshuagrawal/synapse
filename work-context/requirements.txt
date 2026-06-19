@@ -1,6 +1,7 @@
 pyyaml>=6.0
 requests>=2.31
 anthropic>=0.40
+numpy>=1.26   # embedding/cluster math (ask_engine, cluster_subjects, validate_embeddings)
 
 # Dev / test only (not needed by ingest or cron):
 #   .venv/bin/python -m pip install pytest
