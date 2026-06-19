@@ -422,7 +422,7 @@ Up next:
 - **Reviewing**
     - reviewing <Dev>'s <ticket> ([link]) — someone else's work
 - **Blockers**
-    - <what's stuck> — <the one-line ask> ([thread])
+    - <what's stuck: the ACTUAL issue in plain words> — <why it's blocked / who's being chased + their last response> ([thread]) — must read standalone; never a bare "chasing X ([thread])" that forces a click
 - **Up next**
     - <top 3-5 pick-up candidates they own / are asked for; ranked> ([link])
 ```
@@ -479,6 +479,19 @@ Then at the END of Message 3, `## Team summary`:
   `link=https://example.slack.com/archives/...` field on EVERY slack row (authored +
   @-asks), valid for root posts and replies alike (built from the message's own ts, not
   thread_ts). Copy that `link=` value verbatim — never hand-construct or drop it.
+- **Every thread reference must be SELF-SUMMARIZING — the link is proof, not the content.**
+  A reader must understand the item WITHOUT clicking. So any line that points at a slack
+  thread (blockers especially, but also asks, decisions, ops/prod-watch, up-next
+  commitments) must state, in plain words: (a) WHAT the issue/ask actually is, and (b) WHY
+  it matters here — what's blocked, who's being chased + their latest response, or what
+  decision is owed. The gather's one-line `::` preview is rarely enough; OPEN the thread
+  (`slack_read_thread` on the row's ch + ts) and distil one clause of real context.
+  ✘ "Recurring reporting-impacting issue — chasing the infra owner, no response yet ([thread])"
+  ✔ "Recurring data lag in the `account_balance` table (a TB-diff mismatch) is skewing
+  reporting; escalated to the infra owner, who ack'd ('delayed by a resource issue') with no
+  fix ETA ([thread])". The link still goes last; it's evidence, never a substitute for the
+  summary. (Validated 2026-06-19: a blocker rendered as a bare "chasing X" forced the owner
+  to open the thread to learn it was an account-balance data-lag.)
 - **Pre-save check (mandatory):** before posting/replying, scan every rendered line that
   mentions a slack thread/ask/message ("flagged in", "asked", "thread", "in #channel",
   a teammate quote). Each MUST carry a `[thread](…)` link from the gather's `link=` field.
@@ -486,6 +499,9 @@ Then at the END of Message 3, `## Team summary`:
   explicit — a bare slack reference with no link is a bug, not an option.
   ALSO scan every link — `[#N]`, `[EX-NNNN]`, Confluence, build — and confirm each has an
   inline descriptor next to it (not just the number). A bare `[#N]` with no label is a bug.
+  ALSO confirm every `([thread])` line is SELF-SUMMARIZING (what + why, per §8) — if you
+  can't tell what the issue/ask is without clicking, it's not done: open the thread and
+  add the context clause. A "chasing X ([thread])" with no stated issue is a bug.
 
 ## 9. Daily-signal honesty
 
