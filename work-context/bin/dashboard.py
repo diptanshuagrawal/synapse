@@ -393,7 +393,12 @@ def get_slack_channels() -> list:
             pass
     checked = _read_json(STATE / "slack_channel_checked.json")
     cfg_by_id = {c.get("id"): c for c in cfg_channels if c.get("id")}
-    all_ids = sorted(set(cursors) | set(cfg_by_id) | set(counts),
+    # Active-ingest list = channels in slack_channels.yaml (what ingest actually
+    # reads). Do NOT union in cursors/event-counts: those drag in ORPHANS —
+    # channels with leftover events from past ingestion/backfill that are no
+    # longer configured (and would render as "?" with no name). They're not
+    # being ingested, so they don't belong in this list.
+    all_ids = sorted(cfg_by_id,
                      key=lambda i: counts.get(i, (0, ""))[0], reverse=True)
     out = []
     for cid in all_ids:
