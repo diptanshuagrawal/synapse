@@ -76,8 +76,8 @@ the bottom line.
 
 ## Phase 3 — Render (concise — ~1 page, this is NOT the full profile)
 
-Plain English only. Same anti-jargon rule as `/ask`: NEVER expose engine/script names
-(`pulse.py`, `person_v3`, "cluster", field paths). Cite only real artefacts a human can
+Plain English only — per `.claude/shared/plain-language.md`. Pulse's own forbidden tokens:
+`pulse.py`, `person_v3`, "cluster", field paths. Cite only real artefacts a human can
 open — PRs (`owner/repo#N`), tickets (PROJ-NNNN), Slack links. Sections, in order:
 
 ```markdown
@@ -137,7 +137,7 @@ never-overwrite, `Saved to:` footer, Write-tool/mkdir: per
 - **Leave before decline.** Never headline a productivity drop without first ruling out
   fewer working days / leave. The helper hands you the leave + active-days; use them.
 - **Use `trend`, not raw arrows.** The helper already inverts lower-is-better metrics.
-- **Cite real artefacts only.** No engine/script/field names anywhere in the output.
+- **Cite real artefacts only.** No engine/script/field names anywhere (`.claude/shared/plain-language.md`).
 - **Pulse, not verdict.** N-week windows are below the reliability threshold; never emit
   a tier/velocity verdict here — that's `/ask`'s job over a month+.
 - If `recent` and `prior` are both near-empty (person inactive both windows, e.g. long
