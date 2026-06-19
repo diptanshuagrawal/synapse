@@ -42,7 +42,11 @@ After `/slug-epics` finishes, re-run Phase 1 (`derive/manual-rollup.sh dump`) an
 
 ## Phase 2 — Classify
 
-Read the classification rules — do this before reading subjects:
+Follows the shared dump→classify→apply harness
+(`.claude/shared/classify-apply-harness.md`): maker-checker, rules-first, schema-strictness,
+confidence gate 0.7, verdict-file format. Rollup adds the team-ownership fields below.
+
+Read the classification rules FIRST, before subjects:
 `$HOME/context/work-context/state/pending_classification.json.rules.md`
 
 Read all pending subjects:

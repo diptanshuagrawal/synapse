@@ -10,9 +10,8 @@ If invoked with `help` / `-h` / `--help`: print this Usage block and STOP.
   - `team` → the 7 reports, person by person, + a team summary at the end. EXCLUDES
     the manager (the owner) — they're the audience.
   - `me` / `<person>` → just that person's section (this is how the owner sees their own).
-- `window` — DEFAULT = yesterday (today-1d 00:00 IST → today 00:00 IST). Accepts a
-  day (`2026-06-05`), `last N days`, `this week`. If "yesterday" is a weekend/holiday
-  with ~no activity, say so and offer the last working day.
+- `window` — DEFAULT = yesterday. Accepts a day (`2026-06-05`), `last N days`,
+  `this week`. Parsing + the weekend/holiday guard: `.claude/shared/date-range-grammar.md`.
 
 Examples: `/standup` · `/standup team 2026-06-05` · `/standup <person> last 3 days` · `/standup me`
 
@@ -24,18 +23,14 @@ its own daily cadence, sources, and ownership rules). It composes the same raw d
 
 ## 1. Roster — `scope: team` is the source of truth
 
-The roster = `config/people.yaml` entries with **`scope: team`** (8: the owner + the 7
-reports). NOT `team.md` prose, NOT the `role` field (the org has many people with a
-role). Build the identity set from those entries — `github` + `github_aliases`/`git_names`,
-`jira_id` + email, `slack_id` + `slack_handle`, `canonical`. **Keep an event only if
-its `actor` OR `assignee` matches a roster identity.** Non-roster actors (anyone not in
-the `scope: team` set) are dropped — a non-roster name in the output is a bug.
+**Read `.claude/shared/roster-identity.md`** — it owns the roster definition
+(`config/people.yaml` `scope: team`), the per-member identity set, the actor-OR-assignee
+event filter, and the manager-exclusion rule. Standup specifics on top of that baseline:
 
-**EXCLUDE THE MANAGER (the owner) from `team` digests.** They're the audience, not a
-reportee — `team` renders only the **7 reports** (the `scope: team` members minus the
-owner). The owner is still reachable via `me` / `/standup <owner>` for their own
-section, but never appears in the `team` digest or team summary. (Owner identity = the
-single `scope: team` entry flagged as manager/owner in `config/people.yaml`.)
+- The roster here is the owner + the 7 reports; `team` digests render only the **7 reports**
+  (`scope: team` minus the owner), since the owner is the audience. The owner is still
+  reachable via `me` / `/standup <owner>` for their own section.
+- A non-roster name in the output is a bug.
 
 ## 2. Data — raw `events.db`, NOT the cluster pipeline
 
@@ -439,18 +434,12 @@ Then at the END of Message 3, `## Team summary`:
 
 ## 8. Describe every item — never a bare ID, enrich from body + slack
 
-- Lead each item with a plain-English phrase of WHAT it is (reworded from the ticket's
-  real summary — pull from its `issue_created` title, NOT a `status_change` transition
-  string), then the ID as a trailing clickable link.
-- **EVERY link carries a plain-English description of WHAT IT DOES — applies to PRs too,
-  not just tickets.** A bare `[#850]` is a regression; so is a terse title-slug like
-  `[#850 order-type check]` or `[#845 Alice's core-svc PR]` — those are still unreadable in
-  the Slack render (validated twice: the owner could not tell the PRs apart from either a
-  bare number OR a 2-word slug). Describe the PR the way you'd describe a ticket: a short
-  clause saying what it changes, reworded from the PR **title + body**, not a slug.
-  Examples — `[#865](url) adds CIB & RIB internet-banking channel types to the product
-  enum`, `[#867](url) CI gate that pushes images to ECR on non-prod builds`,
-  `[#845](url) the lien/unlien/modify gRPC flow (ApplyLien/Unlien/Modify + reconciler)`.
+**Shared render rules apply — Read `.claude/shared/render-rules.md` first** (URL
+conventions, never-a-bare-ID, self-summarizing thread refs, pre-save link check). The
+bullets below are the STANDUP-SPECIFIC additions on top of that shared baseline: how
+the gather feeds descriptors (`# PR INDEX`), the deterministic PR-author rule, the
+body/slack enrichment clause, and standup's own pre-save check.
+
 - **The descriptor is DETERMINISTIC — read it from the gather's `# PR INDEX` block, do
   NOT re-derive it.** `standup_gather.py` emits, for every PR referenced in the window,
   a line `#N (repo) author=<canonical> title="..." :: <first body line>` built straight
@@ -464,44 +453,28 @@ Then at the END of Message 3, `## Team summary`:
   person IS the PR INDEX author — render `[#N] <author>'s <what-it-does>` straight from
   the index. (Validated bug: #845 was rendered as "Alice's PR" under a reviewer, but
   PR INDEX `author=bob-example` — it was Bob's own lien feature.)
-- **Enrich** the rendered items with one substantive clause from beyond the title — the
-  ticket body/comments, the slack thread that discusses it (search slack `body` for the
-  ID or the key domain term), and the parent epic. One line, not a paragraph. Example:
+- **Enrich** the rendered items with one substantive clause from beyond the title —
+  grounded in the source, not the title (`.claude/shared/evidence-grounding.md`): the ticket
+  body/comments, the slack thread that discusses it (search slack `body` for the ID or the
+  key domain term), and the parent epic. One line, not a paragraph. Example:
   not "investigate customer-group aggregate drift ([EX-NNNN])" but "customers whose
   cash withdrawals are missing from the withholding year-total table — recon found txn group-ids
   absent from the aggregate, risking under-deducted withholding ([EX-NNNN], withholding epic; flagged
   in #recon)".
-- Links: `EX-NNNN` → `https://your-org.atlassian.net/browse/EX-NNNN`; Confluence →
-  real `_links.webui` URL (`…/wiki/spaces/<KEY>/pages/<id>/<slug>`, never `/wiki/pages/<id>`),
-  section anchor = heading text with spaces→hyphens (`#4.-Hook-Fire-Order`); slack →
-  `https://example.slack.com/archives/{CH}/p{ts_no_dot}`.
+- Links: per the shared URL conventions (`.claude/shared/render-rules.md` §1).
 - **Slack links come pre-built — use them.** `standup_gather.py` emits a ready
   `link=https://example.slack.com/archives/...` field on EVERY slack row (authored +
   @-asks), valid for root posts and replies alike (built from the message's own ts, not
   thread_ts). Copy that `link=` value verbatim — never hand-construct or drop it.
-- **Every thread reference must be SELF-SUMMARIZING — the link is proof, not the content.**
-  A reader must understand the item WITHOUT clicking. So any line that points at a slack
-  thread (blockers especially, but also asks, decisions, ops/prod-watch, up-next
-  commitments) must state, in plain words: (a) WHAT the issue/ask actually is, and (b) WHY
-  it matters here — what's blocked, who's being chased + their latest response, or what
-  decision is owed. The gather's one-line `::` preview is rarely enough; OPEN the thread
-  (`slack_read_thread` on the row's ch + ts) and distil one clause of real context.
-  ✘ "Recurring reporting-impacting issue — chasing the infra owner, no response yet ([thread])"
-  ✔ "Recurring data lag in the `account_balance` table (a TB-diff mismatch) is skewing
-  reporting; escalated to the infra owner, who ack'd ('delayed by a resource issue') with no
-  fix ETA ([thread])". The link still goes last; it's evidence, never a substitute for the
-  summary. (Validated 2026-06-19: a blocker rendered as a bare "chasing X" forced the owner
-  to open the thread to learn it was an account-balance data-lag.)
-- **Pre-save check (mandatory):** before posting/replying, scan every rendered line that
-  mentions a slack thread/ask/message ("flagged in", "asked", "thread", "in #channel",
-  a teammate quote). Each MUST carry a `[thread](…)` link from the gather's `link=` field.
-  If a referenced row truly has no `link=` (rare), append `(no linkable ts)` so the gap is
-  explicit — a bare slack reference with no link is a bug, not an option.
-  ALSO scan every link — `[#N]`, `[EX-NNNN]`, Confluence, build — and confirm each has an
-  inline descriptor next to it (not just the number). A bare `[#N]` with no label is a bug.
-  ALSO confirm every `([thread])` line is SELF-SUMMARIZING (what + why, per §8) — if you
-  can't tell what the issue/ask is without clicking, it's not done: open the thread and
-  add the context clause. A "chasing X ([thread])" with no stated issue is a bug.
+- **Thread refs must be self-summarizing** — per shared §3. Standup specifics: the
+  gather's one-line `::` preview is rarely enough; OPEN the thread (`slack_read_thread`
+  on the row's ch + ts) and distil one clause of real context. (Validated 2026-06-19: a
+  blocker rendered as a bare "chasing X" forced the owner to open the thread to learn it
+  was an account-balance data-lag.)
+- **Pre-save check (mandatory):** run the shared pre-save link check
+  (`.claude/shared/render-rules.md` §4) over all three messages. Standup specifics: the `[thread](…)` link
+  comes from the gather's `link=` field; if a referenced row truly has no `link=` (rare),
+  append `(no linkable ts)`.
 
 ## 9. Daily-signal honesty
 

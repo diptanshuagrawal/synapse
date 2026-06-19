@@ -33,7 +33,11 @@ re-rendered the markdown.
 
 ## Phase 2 — Classify
 
-First, read the rules — do this before reading the pending file:
+Follows the shared dump→classify→apply harness
+(`.claude/shared/classify-apply-harness.md`): maker-checker, rules-first, schema-strictness,
+confidence gate 0.7, verdict-file format. Leaves' specific schema + date rules below.
+
+First, read the rules — FIRST, before the pending file:
 `$HOME/context/work-context/state/pending_leaves.rules.md`
 
 Then read all pending events:

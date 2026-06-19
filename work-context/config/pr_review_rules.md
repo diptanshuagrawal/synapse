@@ -40,7 +40,7 @@ matterai/claude — that's applied by the scorer, not you). Pick the category, n
    it in the verdict.
 5. **Pure CI/automation chatter** (coverage bot tables, build logs) is already
    filtered out at dump time; you should not see it. If you do, tag `nit`.
-6. **Low confidence:** if the body is too terse to judge, emit confidence < 0.6
+6. **Low confidence:** if the body is too terse to judge, emit confidence < 0.7
    and it stays pending (not written).
 
 ## Verdict schema

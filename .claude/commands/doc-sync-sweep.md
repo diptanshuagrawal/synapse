@@ -91,8 +91,9 @@ For each `monitor` doc, run the **exact `/doc-sync` mechanics** — do not reinv
 Read `.claude/commands/doc-sync.md` Phases 2–4:
 1. Fetch the page (`getConfluencePage`, markdown) → status, last-updated, repo.
 2. Gather code truth for `repo` (code graph + migrations + source) and recent jira/slack.
-3. Run the five drift checks + the **DIRECTION GATE**. Keep only **BACKWARD-drift**
-   findings (code built, doc diverged). Suppress forward/planned — they are NOT drift.
+3. Run the five drift checks + the **DIRECTION GATE** (`.claude/shared/drift-direction-gate.md`).
+   For the sweep, keep only **BACKWARD-drift** findings (code built, doc diverged); suppress
+   forward/planned (not drift) and clean passes.
 4. For each backward finding, produce a candidate:
    `{page_id, page_title, page_url, owner_account, severity (major|medium|minor),
      check_type (schema|behavior|decision|dependency|lld|sequence), finding_title (one

@@ -49,7 +49,11 @@ or `nothing to classify`. If nothing, **stop** — backlog is clear.
 
 ## Phase 2 — Classify
 
-First read the rules (canonical taxonomy), then the pending file:
+Follows the shared dump→classify→apply harness
+(`.claude/shared/classify-apply-harness.md`): maker-checker, rules-first, schema-strictness,
+confidence gate 0.7, verdict-file format. The root-cause taxonomy below is pr-quality's own.
+
+First read the rules (canonical taxonomy) FIRST, then the pending file:
 - `$HOME/context/work-context/state/pending_pr_comments.rules.md`
 - `$HOME/context/work-context/state/pending_pr_comments.json`
 
@@ -77,8 +81,8 @@ root-cause category. Schema (copy verbatim, no extra keys):
   naming.
 - **Classify matterai comments with the same taxonomy** as human ones — the
   human-vs-matterai delta is the whole point of the coverage-gap analysis.
-- **confidence < 0.6** → comment stays pending (apply drops it). Don't
-  fabricate certainty on a terse body.
+- **confidence < 0.7** → comment stays pending (apply drops it; canonical gate,
+  shared §"Confidence gate"). Don't fabricate certainty on a terse body.
 
 Write the array to:
 `$HOME/context/work-context/state/verdicts.pr_comments.json`

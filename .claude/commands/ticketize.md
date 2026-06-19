@@ -28,9 +28,11 @@ open PRs from this skill.
 
 - **Two-phase maker-checker.** DETECT never writes to Jira. APPLY is the only writer,
   and only for candidates the owner explicitly marked `approve`. No auto-create.
-- **Roster = `scope: team` reports** (same as `/standup`): the `scope: team` entries in
-  `work-context/config/people.yaml`, EXCLUDING the owner/manager (`standup_gather.py`
-  drops `owner_handle()`). A non-roster assignee in a candidate is a bug.
+- **Roster = `scope: team` reports** — per `.claude/shared/roster-identity.md` (roster
+  definition, identity set, manager exclusion). Ticketize specifics: the owner/manager is
+  excluded (`standup_gather.py` drops `owner_handle()`); a non-roster assignee in a
+  candidate is a bug; resolve the assignee accountId from the matched `canonical`'s
+  `jira_id` at APPLY time (shared §6).
 - **Attach to the latest active sprint.** Every created ticket goes into the current
   active sprint (resolve dynamically — never hardcode a sprint id). Devs reprioritise at
   planning. (The Tech-Misc fallback **epic** itself carries NO sprint.)

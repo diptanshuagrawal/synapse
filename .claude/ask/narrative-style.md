@@ -37,6 +37,9 @@ often more impactful than the person who created the placeholder ticket.
 
 ## Mandatory deep-read step
 
+Grounds claims in the source, not the title — see `.claude/shared/evidence-grounding.md`.
+The deep-read mechanics specific to narrative intents:
+
 Before writing the answer, for the top 5-8 clusters / subjects by relevance:
 1. Pull the underlying member content from `events.db` — issue bodies,
    thread bodies, PR descriptions, MatterAI summaries, page bodies. Do

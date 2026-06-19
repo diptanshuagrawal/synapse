@@ -12,6 +12,10 @@ Prereq: run `/rollup` (or `manual-rollup.sh dump`) first to generate pending sub
 
 ## Steps
 
+**Follows the shared dump→classify→apply harness — `.claude/shared/classify-apply-harness.md`**
+(maker-checker, rules-first, schema-strictness, confidence gate 0.7, verdict-file format).
+Below is classify's specific schema + triage; the invariants live in the shared chunk.
+
 **1. Check pending file exists**
 
 ```bash
@@ -20,13 +24,12 @@ ls $HOME/context/work-context/state/pending_classification.json 2>/dev/null || e
 
 If NOT_FOUND: tell the user to run `manual-rollup.sh` first to generate pending subjects. Stop.
 
-**2. Read classification rules — do this before reading subjects**
+**2. Read classification rules — FIRST, before subjects** (shared "Rules first")
 
 Read the full rules file:
 `$HOME/context/work-context/state/pending_classification.json.rules.md`
 
-These rules are the authoritative source for slug enum, SYSTEM_PROMPT, schema, and confidence threshold.
-Apply them exactly — do not use judgment that overrides them.
+Authoritative source for slug enum, SYSTEM_PROMPT, schema, and confidence threshold.
 
 **3. Read all pending subjects**
 
