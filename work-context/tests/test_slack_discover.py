@@ -85,17 +85,32 @@ def test_decide_dead_channel_skipped():
 
 
 def test_decide_quiet_mpim_still_reviewed():
-    # MPIM with some traffic but below the team floor stays needs_review (not skip).
+    # MPIM with SOME team signal but below the team-handle threshold → needs_review.
     v, _ = sd._decide_mode({"name": "mpdm-a--b--c-1", "is_mpim": True}, set(),
-                           team_msgs=0, total_msgs=4, mpim_team_count=3)
+                           team_msgs=2, total_msgs=4, mpim_team_count=2)
     assert v == "needs_review"
 
 
 def test_decide_quiet_channel_still_reviewed():
-    # Regular channel with a little traffic but below the team floor → needs_review.
+    # Regular channel with SOME team signal but below the team floor → needs_review.
     v, _ = sd._decide_mode({"name": "upi-new-accounting"}, set(),
-                           team_msgs=0, total_msgs=4, mpim_team_count=0)
+                           team_msgs=2, total_msgs=20, mpim_team_count=0)
     assert v == "needs_review"
+
+
+def test_decide_team_silent_channel():
+    # Active channel (200 msgs) but ZERO team involvement → team_silent, not
+    # needs_review (team_involved ingest would be empty; nothing to decide).
+    v, extras = sd._decide_mode({"name": "memes-emoji-gif"}, set(),
+                                team_msgs=0, total_msgs=200, mpim_team_count=0)
+    assert v == "team_silent" and extras["mode"] == "team_involved"
+
+
+def test_decide_team_silent_requires_activity():
+    # 0 team AND 0 total is dead (skip), not team_silent.
+    v, _ = sd._decide_mode({"name": "memes-emoji-gif"}, set(),
+                           team_msgs=0, total_msgs=0, mpim_team_count=0)
+    assert v == "skip"
 
 
 def test_decide_bot_name_pattern():
@@ -160,12 +175,13 @@ def test_decide_owner_announcement_bot_firehose_guarded():
 
 
 def test_decide_owner_announcement_requires_owner():
-    # Same announcement channel without the owner present stays on the floor path.
+    # Same announcement channel without the owner present does NOT auto_full.
+    # 30 msgs but 0 team involvement → team_silent (active, no team activity).
     meta = {"name": "hr-tech"}
     v, _ = sd._decide_mode(meta, set(), team_msgs=0, total_msgs=30,
                            mpim_team_count=0, bot_ratio=0.1,
                            owner_present=False, below_team_floor=True)
-    assert v == "needs_review"
+    assert v == "team_silent"
 
 
 def test_decide_owner_announcement_skips_org_wide_channel():

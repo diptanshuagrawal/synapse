@@ -455,6 +455,22 @@ def _decide_mode(meta: dict, team_set: set[str], team_msgs: int,
     if total_msgs == 0:
         return "skip", {"reason": f"dead {'MPIM' if is_mpim else 'channel'} (0 msgs/90d)"}
 
+    # Team-silent — active channel (total_msgs>0, already past the dead check)
+    # but ZERO team involvement in the window. Adding it in team_involved mode
+    # would ingest nothing; full would be pure noise — so it is not actionable.
+    # Bucketed separately from needs_review (which keeps channels with SOME team
+    # signal) so the review list stays about channels worth deciding on. The
+    # owner can still hand-promote one to full from the dashboard's team-silent
+    # section. Self-healing — team posts → team_msgs>0 → leaves this bucket.
+    # Reached only after the alert + owner-announcement bypasses, so team-domain
+    # alerts and owner rooms are already captured on name alone.
+    if team_msgs == 0:
+        return "team_silent", {
+            "mode": "team_involved",
+            "allow_mpim": is_mpim,
+            "rationale": f"active but 0 team msgs/90d ({total_msgs} total)",
+        }
+
     # Universal activity floor — applied BEFORE other checks. MPIMs allowed
     # a lower threshold since they're inherently bounded (≤9 members).
     floor = min_mpim_msgs if is_mpim else min_team_msgs
@@ -720,6 +736,7 @@ def main() -> int:
     auto_full = [p for p in proposals if p["verdict"] == "auto_full"]
     auto_ti = [p for p in proposals if p["verdict"] == "auto_team_involved"]
     needs_review = [p for p in proposals if p["verdict"] == "needs_review"]
+    team_silent = [p for p in proposals if p["verdict"] == "team_silent"]
     skipped = [p for p in proposals if p["verdict"] == "skip"]
 
     # ── Report ──
@@ -737,7 +754,8 @@ def main() -> int:
               f"{p['kind']:<8}  {p['verdict']:<22}  {mode_str}")
 
     print(f"\n[buckets] auto_full={len(auto_full)}  auto_team_involved={len(auto_ti)}  "
-          f"needs_review={len(needs_review)}  skipped={len(skipped)}")
+          f"needs_review={len(needs_review)}  team_silent={len(team_silent)}  "
+          f"skipped={len(skipped)}")
 
     # ── Prune scan (archived + stale auto-discovered already in yaml) ──
     removable: list[dict] = []
@@ -770,6 +788,7 @@ def main() -> int:
                 "auto_full": auto_full,
                 "auto_team_involved": auto_ti,
                 "needs_review": needs_review,
+                "team_silent": team_silent,
                 "skipped": skipped,
                 "removed": removable,
                 "ingest_gaps": ingest_gaps,
