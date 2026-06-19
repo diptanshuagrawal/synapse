@@ -69,6 +69,21 @@ def test_decide_mpim_with_enough_team_handles():
     assert v == "auto_full" and extras["allow_mpim"] is True
 
 
+def test_decide_dead_mpim_skipped():
+    # MPIM with 0 messages of any author → skip (not needs_review) so defunct
+    # group DMs stop bloating the review list.
+    v, _ = sd._decide_mode({"name": "mpdm-a--b--c-1", "is_mpim": True}, set(),
+                           team_msgs=0, total_msgs=0, mpim_team_count=3)
+    assert v == "skip"
+
+
+def test_decide_quiet_mpim_still_reviewed():
+    # MPIM with some traffic but below the team floor stays needs_review (not skip).
+    v, _ = sd._decide_mode({"name": "mpdm-a--b--c-1", "is_mpim": True}, set(),
+                           team_msgs=0, total_msgs=4, mpim_team_count=3)
+    assert v == "needs_review"
+
+
 def test_decide_bot_name_pattern():
     v, _ = sd._decide_mode({"name": "opsgenie-prod"}, set(), team_msgs=50,
                            total_msgs=100, mpim_team_count=0)
