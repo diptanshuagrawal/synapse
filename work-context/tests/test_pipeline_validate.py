@@ -51,11 +51,14 @@ def _mini_db(events, refs=None, fts_count=None):
     """
     conn = sqlite3.connect(":memory:")
     conn.execute(
-        "CREATE TABLE events (id TEXT, source TEXT, event_type TEXT, ts TEXT, raw_path TEXT)")
+        "CREATE TABLE events (id TEXT, source TEXT, event_type TEXT, ts TEXT, "
+        "raw_path TEXT, actor TEXT, subject TEXT, channel_id TEXT)")
     conn.executemany(
-        "INSERT INTO events (id, source, event_type, ts, raw_path) VALUES (?,?,?,?,?)",
+        "INSERT INTO events (id, source, event_type, ts, raw_path, actor, subject, "
+        "channel_id) VALUES (?,?,?,?,?,?,?,?)",
         [(e.get("id"), e.get("source"), e.get("event_type"), e.get("ts"),
-          e.get("raw_path")) for e in events],
+          e.get("raw_path"), e.get("actor"), e.get("subject"),
+          e.get("channel_id")) for e in events],
     )
     conn.execute("CREATE TABLE event_refs (event_id TEXT, ref_type TEXT, ref_value TEXT)")
     if refs:
@@ -70,8 +73,11 @@ def _mini_db(events, refs=None, fts_count=None):
 
 
 def _evt(**kw):
+    # Defaults are a well-formed jira event (shaped subject, actor present) so
+    # the new ingest-shape checks PASS unless a test injects a specific defect.
     base = dict(id="e1", source="jira", event_type="issue_created",
-                ts="2026-06-15T10:00:00Z", raw_path="raw/jira/2026/06/15.jsonl#1")
+                ts="2026-06-15T10:00:00Z", raw_path="raw/jira/2026/06/15.jsonl#1",
+                actor="alice", subject="EX-1", channel_id=None)
     base.update(kw)
     return base
 
@@ -80,22 +86,32 @@ def _evt(**kw):
 
 def test_integration_clean_db_all_pass(db_conn, tmp_paths):
     # Store a handful of valid events through the real ingest path, all recent.
+    # Subjects use each source's real id grammar + slack carries a channel_id,
+    # so the ingest-shape checks (subject_shape / slack_channel_id) stay green.
     recent = (NOW - timedelta(hours=1)).isoformat(timespec="seconds").replace("+00:00", "Z")
-    for i, src in enumerate(["jira", "github", "confluence", "slack"]):
+    spec = {
+        "jira":       ("issue_created", "EX-1", None),
+        "github":     ("pr_opened", "org/repo#1", None),
+        "confluence": ("page_created", "page:123", None),
+        "slack":      ("thread_started", "slack:C0A:1700000000.000100", "C0A"),
+    }
+    for i, (src, (etype, subject, chan)) in enumerate(spec.items()):
         ev = common.Event(
-            id=f"i{i}", source=src,
-            event_type={"jira": "issue_created", "github": "pr_opened",
-                        "confluence": "page_created", "slack": "thread_started"}[src],
-            ts=recent, actor="alice", subject=f"s{i}", title="t", body="b",
+            id=f"i{i}", source=src, event_type=etype,
+            ts=recent, actor="alice", subject=subject, title="t", body="b",
             url="u", raw_path=f"raw/{src}/x#{i}")
         common.insert_event(db_conn, ev)
+    # The real slack path back-fills channel_id in a later step (insert_event
+    # omits it); mirror that so the slack_channel_id check sees a populated value.
+    db_conn.execute("UPDATE events SET channel_id='C0A' WHERE source='slack'")
+    db_conn.commit()
     report = pv.compute(db_conn)
     sevs = {sev for sev, _c, _m in report["findings"]}
     assert "FAIL" not in sevs, [f for f in report["findings"] if f[0] == "FAIL"]
-    assert _sev(report, "schema_nulls") == "PASS"
-    assert _sev(report, "orphan_refs") == "PASS"
-    assert _sev(report, "fts_sync") == "PASS"
-    assert _sev(report, "raw_path_dupes") == "PASS"
+    assert "WARN" not in sevs, [f for f in report["findings"] if f[0] == "WARN"]
+    for chk in ("schema_nulls", "orphan_refs", "fts_sync", "raw_path_dupes",
+                "slack_channel_id", "null_actor_subject", "subject_shape", "ref_vocab"):
+        assert _sev(report, chk) == "PASS", chk
 
 
 # ── empty db ─────────────────────────────────────────────────────────────────
@@ -238,3 +254,104 @@ def test_service_source_skipped_from_freshness():
                           event_type="service_brief", ts=old)])
     report = pv.compute(conn)
     assert "freshness:service" not in _checks(report)
+
+
+# ── slack_channel_id (attribution integrity) ─────────────────────────────────
+
+def test_slack_missing_channel_id_fails():
+    conn = _mini_db([
+        _evt(id="s1", source="slack", event_type="thread_started",
+             subject="slack:C0A:1700000000.000100", channel_id="C0A"),
+        _evt(id="s2", source="slack", event_type="thread_reply",
+             subject="slack:C0A:1700000000.000200", channel_id=None),  # missing
+    ])
+    report = pv.compute(conn)
+    assert _sev(report, "slack_channel_id") == "FAIL"
+
+
+def test_slack_with_channel_id_passes():
+    conn = _mini_db([_evt(id="s1", source="slack", event_type="thread_started",
+                          subject="slack:C0A:1700000000.000100", channel_id="C0A")])
+    report = pv.compute(conn)
+    assert _sev(report, "slack_channel_id") == "PASS"
+
+
+def test_no_slack_no_channel_finding():
+    # check only runs when slack events exist.
+    conn = _mini_db([_evt()])  # jira only
+    report = pv.compute(conn)
+    assert "slack_channel_id" not in _checks(report)
+
+
+# ── null_actor_subject (parse-regression guard) ──────────────────────────────
+
+def test_missing_actor_on_non_service_fails():
+    conn = _mini_db([_evt(), _evt(id="e2", actor=None)])
+    report = pv.compute(conn)
+    assert _sev(report, "null_actor_subject") == "FAIL"
+
+
+def test_missing_subject_fails():
+    conn = _mini_db([_evt(), _evt(id="e2", subject=None)])
+    report = pv.compute(conn)
+    assert _sev(report, "null_actor_subject") == "FAIL"
+
+
+def test_service_null_actor_is_exempt():
+    # 'service' briefs are author-less by design → null actor must NOT fail,
+    # but they still need a subject.
+    conn = _mini_db([_evt(id="s1", source="service", event_type="service_brief",
+                          subject="service:acct#x", actor=None)])
+    report = pv.compute(conn)
+    assert _sev(report, "null_actor_subject") == "PASS"
+
+
+# ── subject_shape (per-source id grammar) ────────────────────────────────────
+
+def test_offshape_subject_warns():
+    # a jira subject that isn't PROJ-N shaped.
+    conn = _mini_db([_evt(), _evt(id="e2", subject="not-a-key")])
+    report = pv.compute(conn)
+    assert _sev(report, "subject_shape") == "WARN"
+    assert report["stats"]["subject_shape_bad"].get("jira") == 1
+
+
+@pytest.mark.parametrize("src,subject", [
+    ("jira", "EX-2301"),
+    ("github", "org/repo#10"),
+    ("github", "org/svc@1a2b3c4d"),
+    ("confluence", "page:123456789"),
+    ("slack", "slack:C0A:1700000000.000100"),
+    ("service", "service:acct#endpoints"),
+])
+def test_wellshaped_subjects_pass(src, subject):
+    et = {"jira": "issue_created", "github": "pr_opened",
+          "confluence": "page_created", "slack": "thread_started",
+          "service": "service_brief"}[src]
+    chan = "C0A" if src == "slack" else None
+    conn = _mini_db([_evt(id="e1", source=src, event_type=et,
+                          subject=subject, channel_id=chan)])
+    report = pv.compute(conn)
+    assert _sev(report, "subject_shape") == "PASS"
+
+
+# ── ref_vocab (event_refs ref_type + ref_value) ──────────────────────────────
+
+def test_unknown_ref_type_warns():
+    conn = _mini_db([_evt(id="e1")],
+                    refs=[("e1", "person", "alice"), ("e1", "gadget", "x")])
+    report = pv.compute(conn)
+    assert _sev(report, "ref_vocab") == "WARN"
+
+
+def test_empty_ref_value_warns():
+    conn = _mini_db([_evt(id="e1")], refs=[("e1", "person", "")])
+    report = pv.compute(conn)
+    assert _sev(report, "ref_vocab") == "WARN"
+
+
+def test_clean_refs_vocab_passes():
+    conn = _mini_db([_evt(id="e1")],
+                    refs=[("e1", "person", "alice"), ("e1", "ticket", "EX-1")])
+    report = pv.compute(conn)
+    assert _sev(report, "ref_vocab") == "PASS"
