@@ -247,6 +247,12 @@ def build_seed(conn):
        ts="2026-06-03T07:05:00Z", actor="U0BOB", subject="slack:C0A:1700000000.000100",
        title="", body="fixed it, merged the rollback")
 
+    # insert_event writes only the core Event columns, not the slack-migration
+    # channel_id; set it so slack-channel queries (slack_validate, event_metrics)
+    # see the seed's thread in C0A.
+    conn.execute("UPDATE events SET channel_id='C0A' WHERE subject LIKE 'slack:C0A:%'")
+    conn.commit()
+
     # ── subject_summary (domain classification cache) ────────────────────
     _seed_subject_summary_schema(conn)
     now = "2026-06-05T00:00:00Z"

@@ -41,8 +41,9 @@ def test_event_metrics_and_vs_any(seed):
 
 def test_event_metrics_source_filter(seed):
     out = ae.event_metrics(["payout"], SINCE, UNTIL, source="github")
-    assert all(c for c in out["sample_citations"])  # all citations from github subjects
-    assert out["source_filter"] == "github"
+    assert out["source_filter"] == "github" and out["total"] >= 1
+    # every citation is a github subject (owner/repo#N), not jira/slack.
+    assert all("#" in c["subject"] for c in out["sample_citations"])
 
 
 # ── root_causes_in_window ────────────────────────────────────────────────────

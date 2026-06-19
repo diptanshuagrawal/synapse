@@ -65,12 +65,13 @@ def test_compute_contribution(seeded_db):
 
 def test_compute_behavioral(seeded_db):
     out = pp.compute_behavioral(seeded_db, ALICE, SINCE, UNTIL)
-    assert isinstance(out, dict)
+    # alice's slack reply (07:05 UTC) is the one response sample.
+    assert "after_hours_share_pct" in out and "samples" in out
 
 
 def test_compute_quality(seeded_db):
     out = pp.compute_quality(seeded_db, ALICE, SINCE, UNTIL)
-    assert isinstance(out, dict)
+    assert out["pr_count_in_window"] == 1   # alice opened org/repo#10 in window
 
 
 def test_compute_pr_fate(seeded_db):
@@ -82,25 +83,30 @@ def test_compute_pr_fate(seeded_db):
 
 def test_compute_narrative_signals(seeded_db):
     out = pp.compute_narrative_signals(seeded_db, "alice", ALICE, SINCE, UNTIL)
-    assert isinstance(out, dict)
+    # alice authored the payments PR → domain_ownership has a payments entry.
+    assert any(d.get("domain") == "payments" for d in out["domain_ownership"])
 
 
 def test_compute_lookahead_ownership(seeded_db):
     out = pp.compute_lookahead_ownership(seeded_db, ALICE, SINCE, UNTIL, lookahead_days=30)
-    assert isinstance(out, list)
+    # alice authored+merged the only payments PR → OWNED.
+    assert any(o["domain"] == "payments" and o["label"] == "OWNED" for o in out)
 
 
 # ── classes-param aggregators ────────────────────────────────────────────────
 
 def test_compute_velocity(seeded_db):
     out = pp.compute_velocity(seeded_db, ALICE, ALIAS_LOWER, SINCE, UNTIL, CLASSES)
-    assert isinstance(out, dict)
+    # alice's EX-2301 (3 SP, Done) → one per-ticket velocity row.
+    pt = out["per_ticket"]
+    assert len(pt) == 1 and pt[0]["subject"] == "EX-2301" and pt[0]["story_points"] == 3.0
 
 
 def test_compute_ticket_fate(seeded_db):
     out = pp.compute_ticket_fate(seeded_db, ["EX-2301"], SINCE, UNTIL,
                                  lookahead_days=30, classes=CLASSES)
-    assert isinstance(out, dict)
+    # EX-2301 already shipped (Done) before UNTIL → nothing in-flight to resolve.
+    assert out["in_flight_at_until_total"] == 0 and out["resolved_in_lookahead"] == []
 
 
 # ── tier_cfg aggregators ─────────────────────────────────────────────────────
@@ -108,10 +114,12 @@ def test_compute_ticket_fate(seeded_db):
 def test_compute_throughput(seeded_db):
     out = pp.compute_throughput(seeded_db, ALICE, ALIAS_LOWER, "alice", "SDE2",
                                 SINCE, UNTIL, TIER_CFG)
-    assert isinstance(out, dict)
+    # alice shipped EX-2301 (3 SP, Done) → feature_track reflects it.
+    ft = out["feature_track"]
+    assert ft["story_points_shipped"] == 3.0 and ft["tickets_shipped"] == 1
 
 
 def test_compute_lookahead_throughput(seeded_db):
     out = pp.compute_lookahead_throughput(seeded_db, ALICE, ALIAS_LOWER, "alice", "SDE2",
                                           SINCE, UNTIL, TIER_CFG, lookahead_days=30)
-    assert isinstance(out, dict)
+    assert out["feature_track"]["story_points_shipped"] >= 3.0
