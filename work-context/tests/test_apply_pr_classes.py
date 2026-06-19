@@ -49,6 +49,17 @@ def test_low_confidence():
     assert cleaned is None and "confidence" in err
 
 
+def test_confidence_gate_is_canonical_0_7():
+    # Gate aligned to the canonical 0.7 (matches apply_verdicts / apply_leaves).
+    assert ap.CONFIDENCE_MIN == 0.7
+    # Just below the gate → rejected, stays pending.
+    cleaned, err = ap._validate(_v(confidence=0.65), PENDING)
+    assert cleaned is None and "confidence" in err
+    # Exactly at the gate → accepted.
+    cleaned, err = ap._validate(_v(confidence=0.7), PENDING)
+    assert err is None and cleaned is not None
+
+
 def test_happy_path_carries_source_from_pending():
     cleaned, err = ap._validate(_v(), PENDING)
     assert err is None

@@ -127,18 +127,9 @@ Keep it tight. One screen. If everything is healthy, say so and don't pad.
 
 ## Phase 4 — Save (mandatory)
 
-Write the rendered output with the Write tool to:
-
-```
-management/pulse/<canonical>-<asof>.md
-```
-
-Create `management/pulse/` if missing. Never overwrite — if the path exists, append
-`-2`, `-3`, … before `.md`. End the chat reply with:
-
-```
-**Saved to:** `<absolute path>`
-```
+Write the rendered output to `management/pulse/<canonical>-<asof>.md`. Header,
+never-overwrite, `Saved to:` footer, Write-tool/mkdir: per
+`.claude/shared/output-save-conventions.md`.
 
 ## Hard rules
 

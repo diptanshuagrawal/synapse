@@ -34,7 +34,7 @@ PENDING_JSON = STATE_DIR / "pending_pr_comments.json"
 VERDICTS_JSON = STATE_DIR / "verdicts.pr_comments.json"
 
 VALID_CATEGORIES = set(CATEGORY_WEIGHTS)  # single source of truth
-CONFIDENCE_MIN = 0.6
+CONFIDENCE_MIN = 0.7  # canonical classify gate (matches apply_verdicts / apply_leaves)
 
 
 def _validate(v: dict, pending_map: dict[str, dict]) -> tuple[dict | None, str | None]:

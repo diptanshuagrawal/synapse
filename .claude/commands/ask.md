@@ -92,19 +92,13 @@ for impact-radius / affected-flows — never automatically.
 
 ### Date range parsing
 
-Today is provided by the cron-status SessionStart hook output as `currentDate`. Use IST relative dates:
-
-- "yesterday"   → since = today-1d 00:00 IST, until = today 00:00 IST
-- "last N days" → since = today-N 00:00 IST, until = now
-- "march"       → since = current-year-03-01, until = current-year-04-01
-- "april"       → since = current-year-04-01, until = current-year-05-01
-- "past month"  → since = today-30d, until = today
-
-Emit as ISO8601 (`YYYY-MM-DDTHH:MM:SSZ`). The engine compares against `events.ts` (already ISO).
+Per `.claude/shared/date-range-grammar.md` (IST relative dates → ISO8601 bounds,
+working-hours window, weekend guard). Today = the cron-status `currentDate`.
 
 ### Person resolution
 
-Match substring case-insensitive against `canonical` field in `config/people.yaml`. If multiple matches surface, list them and ask which.
+Per `.claude/shared/roster-identity.md` §5 — case-insensitive substring against `canonical`
+in `config/people.yaml`; if multiple matches, list them and ask which.
 
 ## Phase 3 — Dispatch (Read the chunk file(s), then follow them)
 
@@ -165,8 +159,9 @@ ticket_gaps / feature_logic / event_metrics) carry their own render template.
 ## Phase 5 — Save output to markdown file (MANDATORY)
 
 **Every `/ask` run writes its rendered output to a markdown file under
-`management/`.** Chat-inline output is fine but the file is the
-durable artefact — owner reads + re-reads + grep-searches it later.
+`management/`.** Format + safety rules (header, never-overwrite, `Saved to:` footer,
+Write-tool/mkdir) are shared — `.claude/shared/output-save-conventions.md`. The per-intent
+PATHS below are `/ask`-specific.
 
 Filename convention by intent (use lowercase kebab-case for variable
 parts; pick a 4-6-word `<topic-slug>` for free-text intents):
@@ -184,66 +179,24 @@ parts; pick a 4-6-word `<topic-slug>` for free-text intents):
 | dev_style       | (handled by `/dev-style` skill)                                                             |
 | highs_lows      | (handled by `/retro` skill — writes to `management/retros/<since>-to-<until>.md`)           |
 
-**File header (mandatory, first 4 lines):**
+**File header, never-overwrite, `Saved to:` footer, Write-tool/mkdir:** per
+`.claude/shared/output-save-conventions.md`. For `/ask`, the header's `**Intent:**` line
+names the intent and `**Question:**` carries the verbatim user question. Body = the full
+rendered output exactly as in chat; inline citations + project-level voice rules apply.
 
-```markdown
-# <Concise title>
-
-**Intent:** <person_range | summarize | …>
-**Generated:** <YYYY-MM-DD HH:MM IST>
-**Window:** <since> → <until>  (only when intent has a window)
-**Question:** "<verbatim user question>"
-
----
-
-<rendered content — TL;DR + Signals + … per the intent's chunk spec>
-```
-
-**Body:** the full rendered output exactly as it would appear in chat.
-The same content lives in both surfaces — chat reply is the live preview,
-the file is the persistent copy. Inline citations + project-level voice
-rules apply equally.
-
-**Never overwrite.** If the target path exists, append `-2`, `-3`, …
-suffix before `.md`. Older runs are evidence trail; don't lose them.
-
-**Path conventions:**
-
-- All paths are relative to repo root (`$HOME/context`).
-- Create parent dirs (`mkdir -p`) before write.
-- Use the Write tool — never `cat > file` via Bash (per file-writing policy).
-- Date format `YYYY-MM-DD` (ISO short). Timestamps in IST.
-
-**After writing, the chat reply MUST end with:**
-
-```
-**Saved to:** `<absolute path>`
-```
-
-So owner can open the file directly.
-
-**Why mandatory:** ad-hoc /ask queries previously produced chat-only output
-that disappeared once the session ended. The file preserves the analysis
-+ citations for future reference (1:1 prep, retro source material, audit
-trail). Cost is trivial (~one extra file write per run).
+**Why mandatory:** ad-hoc /ask queries previously produced chat-only output that
+disappeared once the session ended. The file preserves the analysis + citations for future
+reference (1:1 prep, retro source, audit trail). Cost is trivial.
 
 **Verify gate:** person_range additionally runs the deterministic verify gate
 AFTER saving — spec + loop rules in `person-range.md`. Other intents skip it.
 
 ### URL conventions (use as inline markdown links)
 
-- `slack:CH:ts`     → `[label](https://example.slack.com/archives/{CH}/p{ts_no_dot})`
-- `EX-NNNN`       → `[EX-NNNN](https://your-org.atlassian.net/browse/{EX-NNNN})`
-- `page:NNNN`       → use the REAL link, NOT `/wiki/pages/{NNNN}` (that 404s). Take
-  `_links.base + _links.webui` from a Confluence search/get
-  (`…/wiki/spaces/<KEY>/pages/{NNNN}/<slug>`) or the short `_links.base + _links.tinyui`
-  (`…/wiki/x/<tiny>`). Fetch the page's webui link before emitting a Confluence link —
-  the space KEY varies per page (e.g. PROD, …); don't assume one.
-  - Deep-link a SECTION by appending a heading anchor: take the heading's visible
-    text, replace every space with a hyphen, keep numbers/periods/case. E.g.
-    "4. Hook Fire Order" → `#4.-Hook-Fire-Order`, "3.1 charge_attempts" →
-    `#3.1-charge_attempts`. The API doesn't expose heading ids — build from the text.
-- `owner/repo#N`    → `[#N description](https://github.com/{owner/repo}/pull/{N})`
+Per the shared render rules — **Read `.claude/shared/render-rules.md` §1** for the
+slack / Jira / Confluence / GitHub-PR link formats + section-anchor deep-linking.
+The shared file also carries the never-a-bare-ID rule (§2), self-summarizing thread
+refs (§3), and the pre-save link check (§4) — they apply to `/ask` output too.
 
 ## Hard constraints
 

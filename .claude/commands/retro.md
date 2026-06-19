@@ -381,15 +381,12 @@ framing + MoM dates/impact. Then:
    ship event before promoting. Otherwise drop them with reason in the
    reconciliation. Symmetrically, a PR `pr_opened` in-window but not yet merged
    is in-flight, not a delivery.
-3a. **Impact must be READ from the source, not summarised from the title.**
-   For every High AND Low, open the source event body (the rollout/MoM thread,
-   the incident thread, the ticket) and pull the MEASURED numbers it contains —
-   RPS, p99/p95 latency, account counts, % rollout, ₹ revenue, downtime
-   minutes, branch counts, success-rate. A generic impact line ("improves
-   reliability") is INSUFFICIENT when the thread carries numbers. Example: the
-   instant-pay 100% go-live thread states "instant-pay RPS dropped to ~0" + "N lakh
-   accounts, NN RPS peak, p99 NN ms" — all of that belongs in the impact line.
-   If the source has no numbers, say so; do not invent.
+3a. **Impact must be READ from the source, not summarised from the title** —
+   per `.claude/shared/evidence-grounding.md`. For every High AND Low, open the source body
+   (rollout/MoM thread, incident thread, ticket) and pull its MEASURED numbers; a generic
+   impact line ("improves reliability") is INSUFFICIENT when the thread carries numbers.
+   Example: the instant-pay 100% go-live thread states "RPS dropped to ~0" + "N lakh accounts,
+   NN RPS peak, p99 NN ms" — all of that belongs in the impact line.
 4. **Reconciliation appendix (REQUIRED)** — after Highs/Lows, append a
    `## Coverage & reconciliation (audit — not for stakeholder copy)` section:
    - census coverage line (subjects / represented / noise / unclassified=0 / coverage_ok)
