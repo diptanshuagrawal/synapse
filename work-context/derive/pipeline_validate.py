@@ -26,6 +26,18 @@ data) broke:
                   placeholder-auth freeze that froze jira+confluence for 2 days
                   behind green markers would have tripped here.
 
+  ── ingest-shape invariants (what breaks when a parser drifts) ──
+  slack_channel_id  slack events with a NULL channel_id — breaks channel
+                  attribution + the team-involved filter (a real seed-era bug).
+  null_actor_subject  non-'service' events missing actor or subject — an
+                  upstream parse regression; 'service' briefs legitimately have
+                  a null actor and are exempt.
+  subject_shape   per-source subject matches its expected id grammar (jira
+                  PROJ-N, github org/repo#N|@sha, confluence page:ID, slack
+                  slack:C…:ts, service service:…); off-shape = parse bug.
+  ref_vocab       event_refs.ref_type ∈ known set + ref_value non-empty — an
+                  unknown ref_type is a new (unregistered) ref path.
+
 Report-only: every problem becomes a PASS/WARN/FAIL finding in the same JSON
 contract the other validators use. It NEVER blocks ingest (main() returns 0
 unless the DB is missing / unreadable), exactly like its siblings — the run-*.sh
@@ -41,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
 from datetime import datetime, timezone, timedelta
@@ -85,6 +98,26 @@ FRESHNESS_BUDGET_H = {
 }
 
 FUTURE_SKEW_H = 48  # ts more than this far ahead of now → implausible
+
+# event_refs.ref_type vocabulary — an unknown value is a new ref path that
+# hasn't been registered (WARN, not fatal). Keep in sync with the ref_type
+# literals emitted by common.enrich_refs + ingest/*.py.
+KNOWN_REF_TYPES = {"page", "person", "project", "pull_request", "slack_thread", "ticket"}
+
+# Per-source subject id grammar. A subject that doesn't match its source's
+# shape is an upstream parse bug (or a new subject family to register). Anchored,
+# compiled lazily in compute(). 'service' derived briefs are intentionally loose.
+SUBJECT_SHAPE = {
+    "jira":       r"^[A-Z][A-Z0-9]+-\d+$",
+    "github":     r"^[\w.-]+/[\w.-]+(#\d+|@[0-9a-f]+)$",
+    "confluence": r"^page:\d+$",
+    "slack":      r"^slack:[A-Z0-9]+:\d+\.\d+$",
+    "service":    r"^service:",
+}
+
+# Sources whose events must carry an actor. 'service' briefs are author-less by
+# design, so they're exempt from the null-actor check (but not null-subject).
+ACTOR_EXEMPT_SOURCES = {"service"}
 
 
 def _now() -> datetime:
@@ -227,6 +260,82 @@ def compute(conn: sqlite3.Connection) -> dict:
                          f"(append_raw line-number race); e.g. {sample}"])
     else:
         findings.append(["PASS", "raw_path_dupes", "raw_path back-references are unique"])
+
+    # ── slack_channel_id (attribution integrity) ─────────────────────────────
+    if "slack" in stats["by_source"]:
+        n_no_chan = conn.execute(
+            "SELECT COUNT(*) FROM events "
+            "WHERE source='slack' AND (channel_id IS NULL OR channel_id='')"
+        ).fetchone()[0]
+        if n_no_chan:
+            findings.append(["FAIL", "slack_channel_id",
+                             f"{n_no_chan} slack event(s) have no channel_id — "
+                             "breaks channel attribution + the team-involved filter"])
+        else:
+            findings.append(["PASS", "slack_channel_id", "every slack event has a channel_id"])
+
+    # ── null_actor_subject (parse-regression guard) ──────────────────────────
+    exempt = ",".join(f"'{s}'" for s in sorted(ACTOR_EXEMPT_SOURCES)) or "''"
+    n_no_actor = conn.execute(
+        f"SELECT COUNT(*) FROM events "
+        f"WHERE (actor IS NULL OR actor='') AND source NOT IN ({exempt})"
+    ).fetchone()[0]
+    n_no_subj = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE subject IS NULL OR subject=''"
+    ).fetchone()[0]
+    if n_no_actor or n_no_subj:
+        bits = []
+        if n_no_actor:
+            bits.append(f"{n_no_actor} non-service event(s) with no actor")
+        if n_no_subj:
+            bits.append(f"{n_no_subj} event(s) with no subject")
+        findings.append(["FAIL", "null_actor_subject",
+                         "; ".join(bits) + " — upstream parse regression"])
+    else:
+        findings.append(["PASS", "null_actor_subject",
+                         "actor + subject populated (service actor-exempt)"])
+
+    # ── subject_shape (per-source id grammar) ────────────────────────────────
+    shape_bad: dict[str, int] = {}
+    for src, pat in SUBJECT_SHAPE.items():
+        if src not in stats["by_source"]:
+            continue
+        rx = re.compile(pat)
+        n_bad = sum(
+            1 for (subj,) in conn.execute(
+                "SELECT subject FROM events WHERE source=? AND subject IS NOT NULL", (src,))
+            if not rx.match(subj)
+        )
+        if n_bad:
+            shape_bad[src] = n_bad
+    stats["subject_shape_bad"] = shape_bad
+    if shape_bad:
+        by = ", ".join(f"{s}({n})" for s, n in shape_bad.items())
+        findings.append(["WARN", "subject_shape",
+                         f"off-shape subject id(s): {by} — upstream parse bug or "
+                         "a new subject family to register"])
+    else:
+        findings.append(["PASS", "subject_shape", "subjects match their source grammar"])
+
+    # ── ref_vocab (event_refs ref_type + ref_value sanity) ───────────────────
+    if _table_exists(conn, "event_refs"):
+        rt_rows = conn.execute(
+            "SELECT ref_type, COUNT(*) FROM event_refs GROUP BY ref_type").fetchall()
+        unknown_rt = [(t, n) for t, n in rt_rows if t not in KNOWN_REF_TYPES]
+        n_empty_rv = conn.execute(
+            "SELECT COUNT(*) FROM event_refs WHERE ref_value IS NULL OR ref_value=''"
+        ).fetchone()[0]
+        if unknown_rt or n_empty_rv:
+            bits = []
+            if unknown_rt:
+                bits.append("unregistered ref_type(s): "
+                            + ", ".join(f"{t}({n})" for t, n in unknown_rt))
+            if n_empty_rv:
+                bits.append(f"{n_empty_rv} ref(s) with empty ref_value")
+            findings.append(["WARN", "ref_vocab", "; ".join(bits)])
+        else:
+            findings.append(["PASS", "ref_vocab",
+                             f"{len(rt_rows)} known ref_type(s), all ref_values populated"])
 
     # ── freshness (silent-stale guard) ───────────────────────────────────────
     now = _now()
