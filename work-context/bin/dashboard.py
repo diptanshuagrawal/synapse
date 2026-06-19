@@ -122,6 +122,46 @@ def read_plist_weekly(label: str) -> dict:
     return {"sched": sched, "next": nxt}
 
 
+def parse_housekeeping_log() -> dict:
+    """Last-run info from logs/housekeeping.log (mode, date, files, bytes, actions).
+
+    Mirrors parse_housekeeping() in bin/cron-status.sh so the web dashboard and the
+    terminal status agree on what the weekly launchd prune actually did.
+    """
+    log = LOGS / "housekeeping.log"
+    if not log.exists():
+        return {}
+    info: dict = {}
+    try:
+        text = log.read_text()
+        run_starts = list(re.finditer(
+            r"=== Housekeeping \((\w[\w-]*)\) ===\nToday: (\d{4}-\d{2}-\d{2})",
+            text,
+        ))
+        if run_starts:
+            last = run_starts[-1]
+            body = text[last.start():]
+            actions: dict[str, int] = {}
+            for m in re.finditer(r"\[(?:DELETED|TRUNCD|DRY-RUN)\s*\]\s+(\S+)", body):
+                actions[m.group(1)] = actions.get(m.group(1), 0) + 1
+            info = {"mode": last.group(1), "date": last.group(2), "actions": actions}
+            summary = re.search(
+                r"=== Summary ===\s*\nFiles affected: (\d+)\s*\nBytes affected: (\S+)",
+                body,
+            )
+            if summary:
+                info["files"] = int(summary.group(1))
+                info["bytes"] = summary.group(2)
+        info.setdefault(
+            "mtime",
+            datetime.fromtimestamp(log.stat().st_mtime, tz=IST)
+                    .isoformat(timespec="seconds"),
+        )
+    except Exception:
+        pass
+    return info
+
+
 _SRC_MARKERS = {
     "github":     ("github ingest", "fetching prs", "/repos/"),
     "jira":       ("jira ingest", "jira project="),
@@ -270,6 +310,9 @@ def get_snapshot() -> dict:
     snap["last_run_ts"] = get_last_run_ts()
     snap["run_health"] = get_run_health()
     snap["codegraph"] = cg.read_status(STATE, PLIST_DIR)
+    # Weekly housekeeping prune (launchd LaunchAgent, not a /schedule routine).
+    hk_sched = read_plist_weekly(f"{_LP}.housekeeping")
+    snap["housekeeping"] = {**hk_sched, **parse_housekeeping_log()}
     snap["routines"] = rt.load_routines()
     snap["slack_cursors"] = _read_json(STATE / "slack_cursors.json")
     snap["slack_channel_meta"] = _read_json(STATE / "slack_channel_meta.json").get("channels", {})
@@ -822,6 +865,36 @@ async function refresh() {
         <span>last run</span><b>${lastRunCell}</b>
         <span>success.date</span><b>${sd || "—"}</b>
         <span>repos</span><b>${repos || "—"}</b>
+      </div>`));
+  }
+
+  // HOUSEKEEPING lane (weekly launchd prune — distinct from /schedule routines)
+  if (s.housekeeping && (s.housekeeping.date || s.housekeeping.sched)) {
+    const h = s.housekeeping;
+    let hState = "fail", hAge = "never ran";
+    if (h.date) {
+      const ageDays = Math.floor(
+        (new Date(s.today + "T00:00:00+05:30") - new Date(h.date + "T00:00:00+05:30"))
+        / 86400000);
+      hAge = ageDays <= 0 ? "ran today" : `ran ${ageDays}d ago`;
+      hState = ageDays <= 8 ? "ok" : "warn";
+    } else if (h.mtime) {
+      hState = "warn"; hAge = `log ${_rel(h.mtime)}`;
+    }
+    const acts = h.actions || {};
+    const order = ["bak>60d","verdict>15d","handoff>15d","dverdict>15d","log>60d",".DS_Store"];
+    const actStr = order.filter(c => acts[c]).map(c => `${c}:${acts[c]}`).join("  ")
+                 || Object.entries(acts).map(([c,n]) => `${c}:${n}`).join("  ") || "—";
+    const lastCell = h.date
+      ? `<b>${h.date}</b> <span class="muted">(${h.mode || "?"})</span> · `
+        + `${h.files ?? "?"} files · ${h.bytes || "?"} <span class="muted">(${hAge})</span>`
+      : `<span class="muted">${hAge}</span>`;
+    lanes.push(laneFor("HOUSEKEEPING", hState, `
+      <div class="kv">
+        <span>schedule</span><b>${h.sched || "—"} IST${h.next ? ` · next ${h.next}` : ""}</b>
+        <span>last run</span><b>${lastCell}</b>
+        <span>policy</span><b class="muted">weekly · prune old bak/verdicts/handoffs/logs + .DS_Store</b>
+        <span>pruned</span><b class="muted">${actStr}</b>
       </div>`));
   }
 
