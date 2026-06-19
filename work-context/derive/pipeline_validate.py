@@ -37,6 +37,10 @@ data) broke:
                   slack:C…:ts, service service:…); off-shape = parse bug.
   ref_vocab       event_refs.ref_type ∈ known set + ref_value non-empty — an
                   unknown ref_type is a new (unregistered) ref path.
+  dangling_derived  derived tables (topic_brief_member / embedding /
+                  subject_summary / thread_enriched) whose subject has no source
+                  event — a subject deleted from events whose derived row wasn't
+                  cleaned (same shape as the orphan-ref leak, one layer up).
 
 Report-only: every problem becomes a PASS/WARN/FAIL finding in the same JSON
 contract the other validators use. It NEVER blocks ingest (main() returns 0
@@ -118,6 +122,14 @@ SUBJECT_SHAPE = {
 # Sources whose events must carry an actor. 'service' briefs are author-less by
 # design, so they're exempt from the null-actor check (but not null-subject).
 ACTOR_EXEMPT_SOURCES = {"service"}
+
+# Derived tables keyed by a `subject` that must resolve to a source `events`
+# row. A dangling subject = the source event was deleted but its derived row
+# survived (stale cluster member / embedding / summary). Checked only if the
+# table exists AND carries a `subject` column (schema varies across installs).
+DERIVED_SUBJECT_TABLES = (
+    "topic_brief_member", "embedding", "subject_summary", "thread_enriched",
+)
 
 
 def _now() -> datetime:
@@ -336,6 +348,35 @@ def compute(conn: sqlite3.Connection) -> dict:
         else:
             findings.append(["PASS", "ref_vocab",
                              f"{len(rt_rows)} known ref_type(s), all ref_values populated"])
+
+    # ── dangling_derived (derived rows outliving their source event) ─────────
+    # Same shape as orphan_refs, one layer up: a subject deleted from events
+    # whose topic_brief_member / embedding / subject_summary / thread_enriched
+    # row was never cleaned. WARN — derived state can briefly lag a refresh, and
+    # this is report-only; a sustained count means a delete missed its cascade.
+    dangling: dict[str, int] = {}
+    for tbl in DERIVED_SUBJECT_TABLES:
+        if not _table_exists(conn, tbl):
+            continue
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})")]
+        if "subject" not in cols:
+            continue
+        n = conn.execute(
+            f"SELECT COUNT(*) FROM {tbl} d "
+            "LEFT JOIN events e ON d.subject = e.subject WHERE e.subject IS NULL"
+        ).fetchone()[0]
+        if n:
+            dangling[tbl] = n
+    stats["dangling_derived"] = dangling
+    if dangling:
+        by = ", ".join(f"{t}({n})" for t, n in dangling.items())
+        findings.append(["WARN", "dangling_derived",
+                         f"derived rows with no source event: {by} — a subject was "
+                         "deleted from events but its derived row survived (stale "
+                         "cluster member / embedding / summary)"])
+    else:
+        findings.append(["PASS", "dangling_derived",
+                         "every derived subject resolves to a source event"])
 
     # ── freshness (silent-stale guard) ───────────────────────────────────────
     now = _now()

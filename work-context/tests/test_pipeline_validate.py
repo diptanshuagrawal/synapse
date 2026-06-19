@@ -355,3 +355,46 @@ def test_clean_refs_vocab_passes():
                     refs=[("e1", "person", "alice"), ("e1", "ticket", "EX-1")])
     report = pv.compute(conn)
     assert _sev(report, "ref_vocab") == "PASS"
+
+
+# ── dangling_derived (derived rows outliving their source event) ─────────────
+
+def _add_derived(conn, table, subjects):
+    """Create a derived table with a `subject` column and seed it."""
+    conn.execute(f"CREATE TABLE {table} (subject TEXT)")
+    conn.executemany(f"INSERT INTO {table} (subject) VALUES (?)",
+                     [(s,) for s in subjects])
+    conn.commit()
+
+
+def test_dangling_derived_warns():
+    # EX-1 exists as an event; GHOST-9 does not → one dangling member.
+    conn = _mini_db([_evt(id="e1", subject="EX-1")])
+    _add_derived(conn, "topic_brief_member", ["EX-1", "GHOST-9"])
+    report = pv.compute(conn)
+    assert _sev(report, "dangling_derived") == "WARN"
+    assert report["stats"]["dangling_derived"].get("topic_brief_member") == 1
+
+
+def test_dangling_derived_all_resolved_passes():
+    conn = _mini_db([_evt(id="e1", subject="EX-1")])
+    _add_derived(conn, "embedding", ["EX-1"])
+    report = pv.compute(conn)
+    assert _sev(report, "dangling_derived") == "PASS"
+
+
+def test_dangling_derived_no_derived_tables_passes():
+    # none of the derived tables exist → check runs without crashing, PASS.
+    conn = _mini_db([_evt(id="e1", subject="EX-1")])
+    report = pv.compute(conn)
+    assert _sev(report, "dangling_derived") == "PASS"
+
+
+def test_dangling_derived_table_without_subject_col_skipped():
+    # a derived table that lacks a `subject` column must be skipped, not crash.
+    conn = _mini_db([_evt(id="e1", subject="EX-1")])
+    conn.execute("CREATE TABLE thread_enriched (channel_id TEXT)")
+    conn.execute("INSERT INTO thread_enriched (channel_id) VALUES ('C0A')")
+    conn.commit()
+    report = pv.compute(conn)
+    assert _sev(report, "dangling_derived") == "PASS"
