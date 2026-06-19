@@ -11,7 +11,7 @@
 # A "full run" = no positional test path given (flags like -v are fine).
 set -euo pipefail
 
-COV_FAIL_UNDER="${COV_FAIL_UNDER:-33}"
+COV_FAIL_UNDER="${COV_FAIL_UNDER:-40}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
