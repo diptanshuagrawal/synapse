@@ -65,13 +65,18 @@ Start with ONE (roster-identity) as the proof of pattern, review, then proceed.
   Extracted the generic rule; each skill keeps its own pipeline's forbidden-token list.
   Wired: standup, pulse (×2), narrative-style (top pointer), doc-sync (meta-labels).
   feature-logic left alone (engineer-facing, different application).
+- [x] **code-graph-access.md** — DONE 2026-06-19 (worktree `refactor/code-graph-access`).
+  Mirror location + registry resolution + REMOTE-default-branch freshness contract (not
+  `~/git` WIP) + unregistered-repo handling, restated across service-brief, pr-from-trd,
+  feature-logic, doc-sync, doc-sync-sweep. Wired those 5. trd-build delegates to
+  service-brief (left alone). pr-from-trd: chunk = READ source; WRITE target stays ~/git.
 
 ## Outcome
-7 shared chunks extracted + wired (render-rules, roster-identity, date-range-grammar,
+8 shared chunks extracted + wired (render-rules, roster-identity, date-range-grammar,
 classify-apply-harness, drift-direction-gate, evidence-grounding, output-save-conventions,
-plain-language). 4 candidates correctly SKIPPED as premature abstraction (freshness-gate,
-leave-aware, python-invocation chunk, slack-pipeline). 2 real bugs fixed along the way
-(pr-quality 0.6→0.7 gate; broken `cd $HOME/work-context` path).
+plain-language, code-graph-access). 4 candidates correctly SKIPPED as premature abstraction
+(freshness-gate, leave-aware, python-invocation chunk, slack-pipeline). 2 real bugs fixed
+along the way (pr-quality 0.6→0.7 gate; broken `cd $HOME/work-context` path).
 
 ## Explicitly NOT extracting
 - help-text one-liner (trivial; each Usage block is skill-specific).

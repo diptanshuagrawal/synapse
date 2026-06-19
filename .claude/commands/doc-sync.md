@@ -75,16 +75,11 @@ Extract from the page:
 
 ## Phase 2 — Identify the feature + target repo
 
-Name the feature/domain the doc covers. Map to a registered code graph:
-- `service-a` → `$HOME/.code-review-graph/repos/service-a`
-- `service-c` (service-c) → `$HOME/.code-review-graph/repos/service-c`
-
-Note (per the code-graph mirror memory): the graph reflects REMOTE default branch
-(merged code), refreshed daily — not local WIP. So a "missing in code" finding means
-"not merged," which is exactly what the direction gate needs.
-
-If the doc's feature spans an unregistered repo (`deposits-orch`), say so — flag those
-sections as "not checkable here," don't guess.
+Name the feature/domain the doc covers. Map to a registered code graph mirror — registry
+resolution, the REMOTE-default-branch freshness contract, and unregistered-repo handling
+all live in `.claude/shared/code-graph-access.md`. For doc-sync specifically: a "missing in
+code" finding means "not merged," which is exactly what the direction gate needs; an
+unregistered repo (`deposits-orch`) → flag those sections "not checkable here," don't guess.
 
 ## Phase 3 — Gather current truth (all four sources, in parallel)
 
