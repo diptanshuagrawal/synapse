@@ -445,13 +445,15 @@ def _decide_mode(meta: dict, team_set: set[str], team_msgs: int,
                          f"({total_msgs} msgs/90d · {bot_ratio:.0%} bot)",
         }
 
-    # Dead group DM — an MPIM with zero messages of ANY author in the window is
-    # a defunct group DM. Skip (not needs_review) so it stops bloating the
-    # review list: ~44% of needs_review was 0-msg MPIMs that pile up as new
-    # group DMs get created. Self-healing — if it goes active later, the next
-    # run scores total_msgs>0 and it re-surfaces.
-    if is_mpim and total_msgs == 0:
-        return "skip", {"reason": "dead MPIM (0 msgs/90d)"}
+    # Dead channel — zero messages of ANY author in the window means a defunct
+    # group DM or channel. Skip (not needs_review) so it stops bloating the
+    # review list: 0-msg MPIMs were ~44% of needs_review and pile up as new
+    # group DMs / channels get created. Self-healing — if it goes active later,
+    # the next run scores total_msgs>0 and it re-surfaces. Placed AFTER the
+    # alert + owner-announcement bypasses so those still capture quiet channels
+    # on name alone.
+    if total_msgs == 0:
+        return "skip", {"reason": f"dead {'MPIM' if is_mpim else 'channel'} (0 msgs/90d)"}
 
     # Universal activity floor — applied BEFORE other checks. MPIMs allowed
     # a lower threshold since they're inherently bounded (≤9 members).
