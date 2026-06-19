@@ -81,6 +81,75 @@ def test_decide_announcement_name():
     assert v == "auto_team_involved"
 
 
+# ── owner-presence announcement bypass ───────────────────────────────────────
+
+@pytest.mark.parametrize("name", [
+    "tech-management", "hr-tech-managers", "hr-tech", "announcements",
+    "all-hands", "leadership-updates", "town-hall",
+    # manager / leadership / EM vocabulary (owner-room class)
+    "jayanth-ems", "eng-leadership", "backend-mgrs", "tech-mgmt",
+    "engineering-managers", "leaders-sync", "platform-em",
+    # ambiguous management/mgmt preceded by an ORG word → people room
+    "senior-management", "product-management",
+])
+def test_is_announcement_like_true(name):
+    assert sd._is_announcement_like(name) is True
+
+
+@pytest.mark.parametrize("name", [
+    "payments-transactions", "vendor-payouts", "platform-engg",
+    "checkout-ops", "browser-extension", "wg-failover-drill",
+    # whole-token guard: "em" must not match inside these
+    "team-standup", "system-alerts", "problem-statements",
+    # ambiguous management/mgmt that is actually a TOPIC, not a people room
+    "wg-vulns-mgmt", "cost-management", "incident-management",
+    "vuln-management", "release-management", "access-mgmt",
+])
+def test_is_announcement_like_false(name):
+    # Channels the owner merely lurks in must NOT read as owner rooms.
+    assert sd._is_announcement_like(name) is False
+
+
+def test_decide_owner_announcement_bypasses_floor():
+    # Owner present + below team floor + announcement name + low bot ratio →
+    # auto_full even with zero team-involved msgs (announcement is the signal).
+    meta = {"name": "hr-tech"}
+    v, extras = sd._decide_mode(meta, set(), team_msgs=0, total_msgs=30,
+                                mpim_team_count=0, bot_ratio=0.1,
+                                owner_present=True, below_team_floor=True)
+    assert v == "auto_full" and extras["mode"] == "full"
+
+
+def test_decide_owner_announcement_bot_firehose_guarded():
+    # Owner in an announcement-named channel that is actually a bot firehose →
+    # NOT auto-added as announcements (falls through to the activity floor).
+    meta = {"name": "hr-tech"}
+    v, _ = sd._decide_mode(meta, set(), team_msgs=0, total_msgs=200,
+                           mpim_team_count=0, bot_ratio=0.95,
+                           owner_present=True, below_team_floor=True)
+    assert v != "auto_full"
+
+
+def test_decide_owner_announcement_requires_owner():
+    # Same announcement channel without the owner present stays on the floor path.
+    meta = {"name": "hr-tech"}
+    v, _ = sd._decide_mode(meta, set(), team_msgs=0, total_msgs=30,
+                           mpim_team_count=0, bot_ratio=0.1,
+                           owner_present=False, below_team_floor=True)
+    assert v == "needs_review"
+
+
+def test_decide_owner_announcement_skips_org_wide_channel():
+    # Org-wide announcement room the owner is in but WITH ample team presence
+    # (not below floor) must NOT flip to full — it follows the normal tree
+    # (announcement name → team_involved). Guards #general / #tech from full.
+    meta = {"name": "general"}
+    v, extras = sd._decide_mode(meta, set(), team_msgs=50, total_msgs=100,
+                                mpim_team_count=0, bot_ratio=0.1,
+                                owner_present=True, below_team_floor=False)
+    assert v == "auto_team_involved" and extras["mode"] == "team_involved"
+
+
 def test_decide_high_team_ratio_full():
     # team_msgs/total ≥ 0.5 → full.
     v, extras = sd._decide_mode({"name": "eng-payments"}, set(), team_msgs=60,

@@ -31,7 +31,7 @@ If `$ARGUMENTS` is empty: print the top-10 leaderboard by `threads_touched` and 
 ## Phase 1 — Setup + report freshness
 
 ```bash
-cd $HOME/work-context
+cd $HOME/context/work-context
 ```
 
 Check `state/actor_behavior_report.json` exists. If missing OR older than the most recent `topic_brief.computed_at`, rebuild:

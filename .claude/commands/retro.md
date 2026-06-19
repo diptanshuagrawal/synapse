@@ -97,7 +97,7 @@ broadcast-channel author). The census enumerates EVERY window subject and
 partitions it exhaustively, so discovery is complete + auditable.
 
 ```bash
-cd $HOME/work-context
+cd $HOME/context/work-context
 .venv/bin/python derive/retro_census.py \
     --since "<START_TS>" --until "<END_TS>" > /tmp/retro_census.json
 .venv/bin/python derive/retro_census.py \
@@ -269,7 +269,7 @@ From 1c: identify top 5-8 contributors by total activity in window. For each, re
 The `topic_brief` table provides cluster-grained workstream framing on top of raw events. Query it for both highs (ACTIVE clusters with new decisions in window) and lows (clusters whose `root_cause` is non-null + recent activity).
 
 ```bash
-cd $HOME/work-context
+cd $HOME/context/work-context
 .venv/bin/python derive/ask_engine.py window \
     --since "<START_TS>" --until "<END_TS>" > /tmp/retro_active_clusters.json
 .venv/bin/python derive/ask_engine.py rootcauses \

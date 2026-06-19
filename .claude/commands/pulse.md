@@ -26,7 +26,7 @@ really just fewer days at the desk.
 ## Phase 1 — Run the engine
 
 ```bash
-cd work-context
+cd $HOME/context/work-context
 .venv/bin/python derive/pulse.py --name "<person>" [--weeks N] [--asof YYYY-MM-DD]
 ```
 

@@ -50,8 +50,20 @@ Start with ONE (roster-identity) as the proof of pattern, review, then proceed.
   caveats are scope/sample-size, no leave rule). Single consumer = premature abstraction.
 
 ### Tier 3 — marginal (decide later)
-- [ ] **python-invocation.md** — standardize `cd work-context` vs `PYTHONPATH` variant. 22 files.
-- [ ] **slack-pipeline.md** — upsert/dedup/event-schema/concurrency. slack-* family.
+- [~] **python-invocation.md** — chunk SKIPPED 2026-06-19 (no dedup benefit — the command
+  must be inline anyway; a no-consumer chunk is clutter). BUT the investigation found a real
+  BUG: `cd $HOME/work-context` (absent dir) in retro (×2) + dev-style, and fragile relative
+  `cd work-context` in pulse. FIXED all 4 → canonical `cd $HOME/context/work-context`.
+- [~] **slack-pipeline.md** — SKIPPED 2026-06-19. Scanner over-counted. Verified: candidates
+  are single-consumer (run-to-completion, permalink) or thin/code-coupled (channel-config via
+  Python). No genuine prose dup; also an active slack code workstream is in flight — don't churn.
+
+## Outcome
+6 shared chunks extracted + wired (render-rules, roster-identity, date-range-grammar,
+classify-apply-harness, drift-direction-gate, evidence-grounding, output-save-conventions).
+4 candidates correctly SKIPPED as premature abstraction (freshness-gate, leave-aware,
+python-invocation chunk, slack-pipeline). 2 real bugs fixed along the way (pr-quality 0.6→0.7
+gate; broken `cd $HOME/work-context` path).
 
 ## Explicitly NOT extracting
 - help-text one-liner (trivial; each Usage block is skill-specific).
@@ -61,3 +73,8 @@ Start with ONE (roster-identity) as the proof of pattern, review, then proceed.
 
 ## Progress log
 - 2026-06-19: plan written. render-rules.md already live (links/IDs/threads/pre-save).
+- 2026-06-19: Tier 1 + 2 done (6 chunks wired across 12 skills). pr-quality 0.7 aligned
+  (code + rules source + artifact + boundary test). Reviewed by agent (1 BLOCKER caught:
+  generated rules-file was stale at 0.6 — fixed at source). Committed 891b0bd + published to
+  main (suite 816 pass, leak scan clean). Slack/dashboard workstream left unstaged (not mine).
+- Starting Tier 3.
