@@ -77,10 +77,24 @@ def test_decide_dead_mpim_skipped():
     assert v == "skip"
 
 
+def test_decide_dead_channel_skipped():
+    # Regular channel with 0 messages of any author → skip, same as a dead MPIM.
+    v, extras = sd._decide_mode({"name": "upi-new-accounting"}, set(),
+                                team_msgs=0, total_msgs=0, mpim_team_count=0)
+    assert v == "skip" and "channel" in extras["reason"]
+
+
 def test_decide_quiet_mpim_still_reviewed():
     # MPIM with some traffic but below the team floor stays needs_review (not skip).
     v, _ = sd._decide_mode({"name": "mpdm-a--b--c-1", "is_mpim": True}, set(),
                            team_msgs=0, total_msgs=4, mpim_team_count=3)
+    assert v == "needs_review"
+
+
+def test_decide_quiet_channel_still_reviewed():
+    # Regular channel with a little traffic but below the team floor → needs_review.
+    v, _ = sd._decide_mode({"name": "upi-new-accounting"}, set(),
+                           team_msgs=0, total_msgs=4, mpim_team_count=0)
     assert v == "needs_review"
 
 
