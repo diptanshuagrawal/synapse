@@ -72,7 +72,7 @@ Start with ONE (roster-identity) as the proof of pattern, review, then proceed.
   service-brief (left alone). pr-from-trd: chunk = READ source; WRITE target stays ~/git.
 
 ## Outcome
-8 shared chunks extracted + wired (render-rules, roster-identity, date-range-grammar,
+9 shared chunks extracted + wired (render-rules, roster-identity, date-range-grammar,
 classify-apply-harness, drift-direction-gate, evidence-grounding, output-save-conventions,
 plain-language, code-graph-access). 4 candidates correctly SKIPPED as premature abstraction
 (freshness-gate, leave-aware, python-invocation chunk, slack-pipeline). 2 real bugs fixed
