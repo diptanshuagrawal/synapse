@@ -81,6 +81,9 @@ def test_compute_pr_fate(seeded_db):
     assert any(r.get("subject") == "org/repo#10" for r in out)
 
 
+@pytest.mark.skipif(
+    not (Path(__file__).resolve().parent.parent / "config" / "people.yaml").exists(),
+    reason="compute_narrative_signals reads gitignored config/people.yaml (absent in CI)")
 def test_compute_narrative_signals(seeded_db):
     out = pp.compute_narrative_signals(seeded_db, "alice", ALICE, SINCE, UNTIL)
     # alice authored the payments PR → domain_ownership has a payments entry.
