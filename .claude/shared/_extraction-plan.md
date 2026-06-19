@@ -58,12 +58,20 @@ Start with ONE (roster-identity) as the proof of pattern, review, then proceed.
   are single-consumer (run-to-completion, permalink) or thin/code-coupled (channel-config via
   Python). No genuine prose dup; also an active slack code workstream is in flight — don't churn.
 
+### Follow-up (post-tier, deferred candidate)
+- [x] **plain-language.md** — DONE 2026-06-19 (in worktree `refactor/plain-language-translation`,
+  off origin/main). The no-internal-jargon / translate-to-plain-English rule + pre-save
+  grep-check was restated across narrative-style (canonical), standup §9, pulse, doc-sync.
+  Extracted the generic rule; each skill keeps its own pipeline's forbidden-token list.
+  Wired: standup, pulse (×2), narrative-style (top pointer), doc-sync (meta-labels).
+  feature-logic left alone (engineer-facing, different application).
+
 ## Outcome
-6 shared chunks extracted + wired (render-rules, roster-identity, date-range-grammar,
-classify-apply-harness, drift-direction-gate, evidence-grounding, output-save-conventions).
-4 candidates correctly SKIPPED as premature abstraction (freshness-gate, leave-aware,
-python-invocation chunk, slack-pipeline). 2 real bugs fixed along the way (pr-quality 0.6→0.7
-gate; broken `cd $HOME/work-context` path).
+7 shared chunks extracted + wired (render-rules, roster-identity, date-range-grammar,
+classify-apply-harness, drift-direction-gate, evidence-grounding, output-save-conventions,
+plain-language). 4 candidates correctly SKIPPED as premature abstraction (freshness-gate,
+leave-aware, python-invocation chunk, slack-pipeline). 2 real bugs fixed along the way
+(pr-quality 0.6→0.7 gate; broken `cd $HOME/work-context` path).
 
 ## Explicitly NOT extracting
 - help-text one-liner (trivial; each Usage block is skill-specific).

@@ -484,7 +484,8 @@ body/slack enrichment clause, and standup's own pre-save check.
   owned work) is the honest proxy. The ONE exception: a dated first-person Slack
   commitment ("I'll pick up X tomorrow", §4b) is a real plan signal and may be rendered
   as planned, with the thread link. Never invent a plan beyond that.
-- Plain language — no cluster IDs, no SP math, no tool jargon.
+- Plain language — per `.claude/shared/plain-language.md` (no cluster IDs, engine names, or
+  tool jargon; cite openable artefacts). Standup-specific: also no SP math at day granularity.
 
 ## 10. Output — NO md files (changed 2026-06-12, owner decision)
 
