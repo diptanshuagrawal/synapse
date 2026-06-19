@@ -12,7 +12,8 @@ If invoked with `help`, `-h`, or `--help`: print this Usage block verbatim and S
 
 ## Steps
 
-**1. Resolve the mirror path**
+**1. Resolve the mirror path** (per `.claude/shared/code-graph-access.md` — registry
+resolution, mirror-not-`~/git`, freshness contract, unregistered-repo handling)
 
 ```bash
 python3 - "$ARGUMENTS" <<'PY'
