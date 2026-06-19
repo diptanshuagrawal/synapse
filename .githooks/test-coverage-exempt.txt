@@ -42,7 +42,6 @@ work-context/derive/slack_reparse_empty.py
 work-context/derive/sources_config.py
 work-context/derive/trd/build_context_pack.py
 work-context/derive/trd/extract_trd_artifacts.py
-work-context/derive/validate_embeddings.py
 work-context/ingest/backfill-confluence-creators.py
 work-context/ingest/backfill-jira-assignees.py
 work-context/ingest/backfill-jira-issue-type.py
