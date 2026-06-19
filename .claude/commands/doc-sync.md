@@ -221,10 +221,9 @@ WHAT is wrong; only to verify it.
     the page URL: `<page-url>#4.-Hook-Fire-Order`. (The API does NOT expose heading
     ids, so this scheme is the only way — build it from the heading text.) If a
     heading has unusual punctuation and you're unsure, fall back to the page URL.
-- **Never write meta-labels like "(plain English)", "(analyzed)", "(gist)" in the
-  output.** Lead with plain language because that's the default voice — don't announce
-  it. Section headings are plain nouns ("The gist", "What to fix"), no parenthetical
-  tags. (Same rule as `/ask`'s forbidden-suffix grep-check.)
+- **No meta-labels** — per `.claude/shared/plain-language.md` ("No meta-labels"): never
+  write "(plain English)", "(analyzed)", "(gist)". Plain language is the default voice —
+  don't announce it. Section headings are plain nouns ("The gist", "What to fix").
 
 **Then a "Doc ahead of code (planned)" section** — forward findings, one line each,
 with the tracking ticket if known. No edits.
