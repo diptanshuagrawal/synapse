@@ -33,7 +33,7 @@ def md_path(date):
     return os.path.join(ROOT, f"management/standup/{date}/ticket-candidates.md")
 
 
-HEAD = re.compile(r"^##\s+([CG]\d+)\s+·\s+(.*?)\s*(?:—.*)?$")
+HEAD = re.compile(r"^##\s+([A-Z]\d+)\s+·\s+(.*?)\s*(?:—.*)?$")
 FIELD = re.compile(r"^-\s+([a-z_]+):\s*(.*?)\s*(?:#.*)?$")
 
 
@@ -62,6 +62,20 @@ def accountid_for(canonical):
     for p in (ppl if isinstance(ppl, list) else ppl.values()):
         if isinstance(p, dict) and p.get("canonical") == canonical:
             return p.get("jira_id")
+    return None
+
+
+def resolve_assignee(override, cand):
+    """Approver override (canonical | accountId | blank, from the Slack modal) wins,
+    else the candidate's assignee. Returns a Jira accountId or None (unassigned)."""
+    for s in ((override or "").strip(), (cand or "").strip()):
+        if not s:
+            continue
+        acct = accountid_for(s)
+        if acct:
+            return acct
+        if ":" in s or len(s) >= 16:   # already looks like a raw accountId
+            return s
     return None
 
 
@@ -177,12 +191,18 @@ def main():
     cand_epic = (c.get("epic") or "").split()[0]
     epic = ei.strip() if is_key(ei) else (cand_epic if is_key(cand_epic) else j["fallback_epic"])
     needs_search = bool(ei) and not is_key(ei)
-    assignee = accountid_for(c.get("assignee", ""))
+    ai = (arg("--assignee-input") or "").strip()
+    assignee = resolve_assignee(ai, c.get("assignee", ""))
     itype = c.get("type", "Task")
+    # placement → sprint vs backlog. Requests (future-ask / owner-ask) land in the backlog.
+    placement = (c.get("placement") or "").strip().lower()
+    source = (c.get("source") or "").strip().lower()
+    to_backlog = placement == "backlog" or source in ("future-ask", "owner-ask")
 
     if dry:
         print("DRY-RUN:", json.dumps({"epic": epic, "epic_search_query": ei if needs_search else None,
-              "type": itype, "assignee_canonical": c.get("assignee"), "summary": c.get("summary"),
+              "type": itype, "assignee_input": ai or None, "assignee_canonical": c.get("assignee"),
+              "placement": "backlog" if to_backlog else "active-sprint", "summary": c.get("summary"),
               "links_cmr": c.get("links_cmr")}, indent=2))
         return
 
@@ -208,9 +228,11 @@ def main():
         fields["assignee"] = {"accountId": assignee}
     if itype == "Bug":
         fields[j["fields"]["environment"]] = [{"value": j["environment_default"]}]
-    sid = active_sprint_id(base, auth, j["project"], j["fields"]["sprint"])
-    if sid:
-        fields[j["fields"]["sprint"]] = sid
+    sid = None
+    if not to_backlog:
+        sid = active_sprint_id(base, auth, j["project"], j["fields"]["sprint"])
+        if sid:
+            fields[j["fields"]["sprint"]] = sid
     created = jira("POST", base, "/rest/api/3/issue", auth, {"fields": fields})
     key = created["key"]
     # link CMR(s)
@@ -220,7 +242,7 @@ def main():
               "inwardIssue": {"key": key}, "outwardIssue": {"key": cmr}})
     commit_state(date, fp, "approve", key)
     write_back(date, fp, "created", key)
-    print(f"created {key} ({c['label']}) sprint={sid or 'none'} epic={epic}")
+    print(f"created {key} ({c['label']}) sprint={sid or ('backlog' if to_backlog else 'none')} epic={epic}")
 
 
 if __name__ == "__main__":

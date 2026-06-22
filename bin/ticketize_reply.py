@@ -16,7 +16,7 @@ Grammar (case-insensitive, left-to-right; a verb sets the action for labels that
   approve verbs : approve apply create accept ship go do yes ok okay 👍 ✅
   reject  verbs : reject skip drop cancel ignore no except 👎 ❌
   scope word    : all / everything  (with current action -> approve_all/reject_all)
-  labels        : C<n> / G<n>  (the candidate ids from the proposal file)
+  labels        : C<n> / G<n> / E<n>  (the candidate ids from the proposal file)
   "except"/"but not"/"not" flips subsequent labels to reject (the common "approve all
   except C1" case). A label appearing before ANY verb is AMBIGUOUS -> fail closed.
 """
@@ -25,8 +25,8 @@ import sys, json, re
 APPROVE = {"approve", "apply", "create", "accept", "ship", "go", "do", "yes", "ok", "okay", "👍", "✅"}
 REJECT = {"reject", "skip", "drop", "cancel", "ignore", "no", "except", "👎", "❌"}
 SCOPE = {"all", "everything", "rest"}
-LABEL_RE = re.compile(r"\b([cg]\d{1,3})\b", re.I)
-WORD_RE = re.compile(r"[a-z👍✅👎❌]+|\b[cg]\d{1,3}\b", re.I)
+LABEL_RE = re.compile(r"\b([cge]\d{1,3})\b", re.I)
+WORD_RE = re.compile(r"[a-z👍✅👎❌]+|\b[cge]\d{1,3}\b", re.I)
 
 
 def parse(reply, labels):
@@ -50,7 +50,7 @@ def parse(reply, labels):
             elif action == "reject":
                 reject_all = True
             continue
-        m = re.fullmatch(r"[cg]\d{1,3}", low)
+        m = re.fullmatch(r"[cge]\d{1,3}", low)
         if m:
             lab = tok.upper()
             if lab not in valid:

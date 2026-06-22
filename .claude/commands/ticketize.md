@@ -30,12 +30,15 @@ open PRs from this skill.
   and only for candidates the owner explicitly marked `approve`. No auto-create.
 - **Roster = `scope: team` reports** — per `.claude/shared/roster-identity.md` (roster
   definition, identity set, manager exclusion). Ticketize specifics: the owner/manager is
-  excluded (`standup_gather.py` drops `owner_handle()`); a non-roster assignee in a
-  candidate is a bug; resolve the assignee accountId from the matched `canonical`'s
-  `jira_id` at APPLY time (shared §6).
-- **Attach to the latest active sprint.** Every created ticket goes into the current
-  active sprint (resolve dynamically — never hardcode a sprint id). Devs reprioritise at
-  planning. (The Tech-Misc fallback **epic** itself carries NO sprint.)
+  excluded from work-attribution (`standup_gather.py` drops `owner_handle()`); a non-roster
+  assignee in a candidate is a bug; resolve the assignee accountId from the matched
+  `canonical`'s `jira_id` at APPLY time (shared §6). **Exception — class-E owner-asks:** the
+  ONE place the owner IS a valid assignee (work asked of the manager); default assignee =
+  owner, with an editable `suggested_assignee` dev.
+- **Placement by signal.** Done / in-flight work (`adhoc-work`, `cmr-no-ticket`,
+  `release-no-cmr`) → the current active sprint (resolve dynamically — never hardcode a
+  sprint id). Requests (`future-ask`, `owner-ask`) → the **backlog** (no sprint). Devs
+  reprioritise at planning. (The Tech-Misc fallback **epic** itself carries NO sprint.)
 - **Fallback epic = Tech-Misc catch-all** (`EX-2882` "Tech Misc — Engineering BAU &
   untracked work"). When a candidate has no real/confident epic, parent it here; devs
   reattach to the correct epic + add story points at planning. Never block a create for a
@@ -93,6 +96,7 @@ Scan the gather output for work that has **no Jira ticket**. Four signal classes
   with no ticket.
 - A pure status ask ("any update?", "is this resolved?") is NOT a candidate — that's a
   `/standup` Up-next item, not net-new tracked work.
+- These are REQUESTS (not yet-done work) → `placement: backlog` (§1e).
 
 **C. CMR with no tracking board ticket.**
 Pull the window/open CMRs (`issuetype = CMR`) from the gather board state (and a Jira
@@ -124,6 +128,23 @@ change/PR, status `Change Approved` / `Implementation Reviewed` / `Released`). I
   releaser/on-call. The candidate is at most a `Task: "Raise CMR for <release>"`
   assigned to the releaser (or current on-call), or a pure flag if you'd rather not
   create a Task. The human raises the actual CMR.
+
+**E. Owner-directed ask (net-new work asked of YOU, the manager).**
+The owner is dropped from the roster everywhere else; ask-scanning is the ONE exception —
+stakeholders pile net-new work onto the manager too. Scan the gather's
+`OWNER FOCUS → OWNER @-asks` block (direct `<@owner>` + owner-subteam pings, already
+emitted — no gather change). **STRICT** bar: propose ONLY a clear net-new build / fix /
+investigation asked of the owner. DROP approvals (CMR sign-off), review requests,
+POC-assignment, status pings, and FYIs — those are `/standup` items, not tracked work.
+- `reporter` = the stakeholder who asked (the `from=` actor; resolve to their canonical if
+  roster, else keep the raw handle).
+- `assignee` = the **owner** by DEFAULT (your own commitment becomes tracked).
+- `suggested_assignee` = a roster dev to delegate to, INFERRED `(guess)`: classify the
+  ask's domain (`projects.yaml` keywords) and pick the dev currently carrying that
+  epic/domain on the gather board. Editable at approve (like `epic`). Blank if none fits.
+- `source: owner-ask`. These are REQUESTS → `placement: backlog` (§1e).
+- On-call suppression does NOT apply (the owner isn't the on-call). Cross-run dedupe +
+  existing-ticket search (§1c) still do.
 
 ### 1c. Suppress what's already tracked (before proposing)
 For each surviving gap, rule it out if ANY holds:
@@ -168,16 +189,23 @@ For each kept gap, pre-fill all fields so approval is one edit:
     known; if the owner is **another team or unknown, leave assignee BLANK** and add
     `route_to:` with the suspected owning team + a one-line routing note. NEVER assign a
     reported bug to its reporter just because they raised it.
+  - class-E owner-ask → assignee = the **owner** (default); see `suggested_assignee`.
   Resolve the Jira accountId from `jira_id` in `people.yaml` at APPLY time.
+- **suggested_assignee** (class-E only) — a roster dev to delegate the owner-ask to,
+  inferred `(guess)` from the ask's domain vs the gather board. Rendered as an editable
+  field at approve; the default assignee stays the owner unless you pick the dev.
 - **epic** — best-guess parent epic key from the member's current board (the epic their
   related in-progress tickets sit under), tagged `(guess)`. If none is confident, use the
   Tech-Misc fallback epic `EX-2882`.
-- **placement** — `active-sprint` (the apply step resolves the current active sprint).
+- **placement** — depends on the signal. **Done / in-flight work** (`adhoc-work`,
+  `cmr-no-ticket`, `release-no-cmr`) → `active-sprint` (apply resolves the current active
+  sprint). **Requests** (`future-ask`, `owner-ask`) → `backlog` (apply skips the sprint so
+  it lands in the backlog; promote at planning).
 - **code_tier** — `🟢 mechanical` | `🟡 feature` | `🔴 never-auto` (money/ledger/
   cross-service). Informational only in Layer 1 — it does NOT trigger any code action
   here; it's the hand-off hint for a future code layer. Default 🔴 when unsure.
 - **source** — `adhoc-work` (A) | `future-ask` (B) | `cmr-no-ticket` (C) |
-  `release-no-cmr` (D). Drives rendering (§1f) and the APPLY action.
+  `release-no-cmr` (D) | `owner-ask` (E). Drives rendering (§1f), placement, and the APPLY action.
 - **links_cmr** — for class C: the CMR key to link (`relates to`) on create. For D:
   the release evidence (PR/ticket) the missing CMR should cover.
 - **evidence** — the PR URL and/or Slack thread permalink the gap came from.
@@ -243,9 +271,26 @@ defaults to the Tech-Misc fallback `EX-2882` if none. Nothing is created until y
 - why: PR #742 merged + EX-2846 → Released on <date>, but no CMR references this change.
   Traceability gap. Raising the CMR itself is manual.
 ---
+
+## Owner asks  (net-new work asked of YOU — default assignee = you, editable to a dev)
+## E1 · Diptanshu Example
+- decision: pending
+- summary: Build the X reconciliation report for the data team
+- type: Task
+- reporter: erin-example
+- assignee: diptanshu-example         # default = owner; editable at approve
+- suggested_assignee: frank-example (guess)   # inferred delegate from domain vs board
+- epic: EX-2882 (fallback)
+- placement: backlog
+- code_tier: 🟡 feature
+- source: owner-ask
+- fingerprint: ...
+- evidence: https://example.slack.com/archives/C0../p17..
+- why: Erin asked you to build a recon report for the data team; net-new, untracked.
+---
 ```
 End the file with a one-line tally:
-`N work candidates · M CMR-gaps (K needs-ticket, L missing-CMR) · pending P · (already-tracked Q dropped)`.
+`N work candidates · M CMR-gaps (K needs-ticket, L missing-CMR) · O owner-asks · pending P · (already-tracked Q dropped)`.
 
 ### 1g. Chat reply (DETECT)
 Bottom-line first, owner's preferred style. List each candidate in one line
@@ -264,7 +309,10 @@ Owner-invoked: `/ticketize apply <date>`.
 3. Re-run the dedupe guard (annotate) to be safe: skip any whose `prior_status`
    is already `created` (idempotent — never double-create).
 4. For each approved candidate, resolve the assignee accountId from `people.yaml`
-   (`jira_id` of the matching `canonical`; if missing, create unassigned + flag).
+   (`jira_id` of the matching `canonical`; if missing, create unassigned + flag). If the
+   approver supplied an assignee override (the editable field on the Slack modal, e.g. an
+   owner-ask re-pointed from the owner to a dev), that override wins over the candidate's
+   `assignee`.
 5. **Discover required fields first** (don't hardcode IDs — projects differ and this
    file is org-generic). Call `getJiraIssueTypeMetaWithFields` for the project + the
    candidate's issue type and honor every `required: true` field. Common gotchas seen
@@ -274,7 +322,10 @@ Owner-invoked: `/ticketize apply <date>`.
      block, never invent a feature epic).
    - **required custom fields** (e.g. an `Environment` select) → default `Environment` to
      `PROD` unless the candidate says otherwise. Pass via `additional_fields`.
-6. **Resolve the latest active sprint** (don't hardcode an id):
+6. **Resolve placement → sprint.** Only `placement: active-sprint` candidates (done /
+   in-flight work: `adhoc-work`, `cmr-no-ticket`, `release-no-cmr`) get the active sprint;
+   `placement: backlog` candidates (requests: `future-ask`, `owner-ask`) are created in the
+   **backlog** — skip the sprint field entirely. To resolve the sprint (don't hardcode an id):
    ```
    searchJiraIssuesUsingJql  jql="project = EX AND sprint in openSprints()"  fields=["customfield_10010"]  maxResults=1
    ```
@@ -286,7 +337,8 @@ Owner-invoked: `/ticketize apply <date>`.
    - project = `EX`, issuetype = the candidate `type`, summary = candidate summary,
      assignee = resolved accountId, parent = candidate epic (or `EX-2882` fallback),
      + required fields from §5 (`Environment: PROD` default).
-   - **Sprint**: set `customfield_10010` = the active sprint id from §6 (via `additional_fields`).
+   - **Sprint**: for `placement: active-sprint`, set `customfield_10010` = the active sprint
+     id from §6 (via `additional_fields`). For `placement: backlog`, OMIT the sprint field.
    - description = the `why` clause + an **Evidence** line with the PR/Slack link +
      `Auto-proposed by /ticketize on <date>` provenance footer.
    - Do NOT set story points — devs add at planning.
@@ -368,12 +420,16 @@ reply — acceptable because your reply is the gate, but enable it deliberately,
 
 ## Hard constraints (recap)
 - DETECT read-only; APPLY writes Jira only for `approve` rows. No auto-create.
-- Roster = `scope: team` reports only; assignee must be a roster member.
-- Attach every created ticket to the latest active sprint (resolved dynamically). Parent
-  to its epic, or the Tech-Misc fallback `EX-2882` if none. `Environment: PROD` default.
-  No story points (devs add). Never create CMRs; only create an Epic on explicit request.
+- Roster = `scope: team` reports only; assignee must be a roster member — EXCEPT class-E
+  owner-asks, where the owner is the default assignee (editable to a dev).
+- Placement by signal: done / in-flight work → latest active sprint (resolved dynamically);
+  requests (`future-ask`, `owner-ask`) → backlog (no sprint). Parent to its epic, or the
+  Tech-Misc fallback `EX-2882` if none. `Environment: PROD` default. No story points (devs
+  add). Never create CMRs; only create an Epic on explicit request.
 - CMR coherence (C/D): propose a Bug/Task for a CMR that lacks a tracking ticket; FLAG a
   release that lacks a CMR — but never auto-raise the CMR (human-owned ops process).
+- Owner-asks (E): STRICT — only net-new build/fix/investigation asked of the owner; drop
+  approvals / reviews / status / FYIs. Default assignee = owner, editable to a suggested dev.
 - On-call is exempt: drop every candidate assigned to the current on-call — their work
   is pre-tracked by the standing 5-SP oncall placeholder ticket.
 - Reporter ≠ assignee. The member who surfaced a reported defect is the reporter; never
