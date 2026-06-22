@@ -65,6 +65,54 @@ def _finding_key(page_id, check_type, anchor):
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
+_DEDUP_STOP = set(
+    "the a an of for to in on is are be by with and or not but this that it its as at from has "
+    "have was were will would can could should into per via vs no than then so we you they them "
+    "our your their doc page api table tables involved code new value still now".split()
+)
+_DEDUP_DOMAIN = {"bsbda", "tds", "gst", "cgst", "sgst", "igst", "utgst", "upi", "atm", "casa",
+                 "rrn", "dcms", "ift", "neft", "rtgs", "imps", "ledger", "occ"}
+
+
+def _dedup_tokens(title, anchor):
+    """(all_tokens, strong_tokens). strong = snake_case identifiers + domain acronyms."""
+    s = re.sub(r"[^a-z0-9_ ]", " ", f"{title or ''} {anchor or ''}".lower())
+    allt = {w for w in s.split() if len(w) >= 3 and w not in _DEDUP_STOP}
+    strong = {t for t in allt if "_" in t or t in _DEDUP_DOMAIN}
+    snake = {t for t in strong if "_" in t}
+    return allt, strong, snake
+
+
+def _fuzzy_dup(cand, rows):
+    """Compare a candidate against existing same-page rows. Returns
+    (kind, row) where kind ∈ {"hard","soft",None}:
+      hard → shares a snake_case identifier AND Jaccard≥0.25 → treat as already-raised (skip).
+      soft → shares a domain acronym OR Jaccard≥0.30 → KEEP but flag possible_dup_of (human decides).
+    Conservative on purpose: a hard skip silently drops a finding, so it needs a specific
+    shared identifier; everything fuzzier is surfaced, never dropped."""
+    ca, cs, csnake = _dedup_tokens(cand.get("finding_title"), cand.get("anchor"))
+    if not ca:
+        return None, None
+    best = (0.0, None, None)
+    for r in rows:
+        if str(r["page_id"]) != str(cand.get("page_id")):
+            continue
+        ra, rs, rsnake = _dedup_tokens(r["finding_title"], r["anchor"])
+        if not ra:
+            continue
+        j = len(ca & ra) / len(ca | ra)
+        shared_snake = csnake & rsnake
+        shared_strong = cs & rs
+        if shared_snake and j >= 0.25:
+            return "hard", r
+        score = j + (0.15 if shared_strong else 0)
+        if (shared_strong or j >= 0.30) and score > best[0]:
+            best = (score, r, j)
+    if best[1] is not None and (best[2] >= 0.30 or (cs & _dedup_tokens(best[1]["finding_title"], best[1]["anchor"])[1])):
+        return "soft", best[1]
+    return None, None
+
+
 def _ensure_schema(c):
     c.executescript(SCHEMA)
     # migrate: add finding_key to a pre-existing db, then backfill
@@ -250,6 +298,13 @@ def cmd_render_digest(args):
                 f"• {it['page_title']}: {it['finding_title']} — [comment]({it['comment_url']})"
             )
         out.append("")
+    out.append(
+        "_To resolve: open the [comment] link, reply if needed, then click the "
+        "⋯ (more actions) on the comment and choose *Resolve* — or hover the "
+        "highlighted text and hit the ✓ Resolve button. Resolved threads drop "
+        "off the next digest automatically._"
+    )
+    out.append("")
     out.append(f"cc {_mention(args.cc, pmap) if args.cc else ''}".rstrip())
     print("\n".join(out))
 
@@ -268,7 +323,8 @@ def cmd_filter_new(args):
         cands = cands.get("candidates", cands.get("findings", []))
     with _conn() as c:
         rows = c.execute(
-            "SELECT finding_key, resolution_status FROM doc_sync_comments"
+            "SELECT comment_id, finding_key, page_id, check_type, finding_title, anchor, "
+            "resolution_status FROM doc_sync_comments"
         ).fetchall()
     suppress = {}
     for r in rows:
@@ -280,13 +336,26 @@ def cmd_filter_new(args):
         )
         cand["finding_key"] = fk
         statuses = suppress.get(fk)
-        if statuses is None:
-            new.append(cand)
-        elif args.allow_resolved_reflag and statuses <= {"resolved"}:
-            new.append(cand)  # only resolved priors, and re-flag allowed
-        else:
+        # 1) exact-key match → already raised (unchanged behaviour)
+        if statuses is not None and not (args.allow_resolved_reflag and statuses <= {"resolved"}):
             skipped.append({"finding_key": fk, "page_id": cand.get("page_id"),
-                            "anchor": cand.get("anchor"), "prior_status": sorted(statuses)})
+                            "anchor": cand.get("anchor"), "prior_status": sorted(statuses),
+                            "dup_kind": "exact"})
+            continue
+        # 2) fuzzy match against same-page rows (reworded re-finds the exact key misses)
+        kind, match = _fuzzy_dup(cand, rows)
+        if kind == "hard":
+            skipped.append({"finding_key": fk, "page_id": cand.get("page_id"),
+                            "anchor": cand.get("anchor"),
+                            "prior_status": [match["resolution_status"]],
+                            "dup_kind": "fuzzy_identifier",
+                            "matches_comment_id": match["comment_id"],
+                            "matches_title": match["finding_title"]})
+            continue
+        if kind == "soft":
+            cand["possible_dup_of"] = {"comment_id": match["comment_id"],
+                                       "title": match["finding_title"]}
+        new.append(cand)
     out = {"new": new, "skipped": skipped,
            "summary": {"candidates": len(cands), "new": len(new), "skipped": len(skipped)}}
     if args.out:

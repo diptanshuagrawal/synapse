@@ -8,11 +8,15 @@ Consumers: /ticketize and /doc-sync-sweep. Roles:
                            per newly-discovered doc to the doc-sweep channel (config doc_sync.yaml).
                            Approve → promote needs_confirm→monitor; Reject → move to excluded
                            (both via derive/doc_sync_state.py move). Owner-gated, RELAY_APPLY_MODE-gated.
+  --post-findings <run-id>: read state/doc_sync_findings_<run-id>.json and post one Approve/Reject
+                           card per drift finding (already-open dupes excluded). Approve → post the
+                           inline Confluence comment via bin/doc_sync_apply.py (footer fallback) +
+                           record; Reject → record rejected. Owner-gated, RELAY_APPLY_MODE-gated.
   --post-usergroups <run-id>: read state/last_slack_discover_usergroups.json and post one card
                            per pending discovered user-group to the channel in that JSON
                            (slack.usergroup_discover_channel). Buttons: Manager → owner_member,
                            Team → ingest filter, Reject → skiplist. Owner-gated, RELAY_APPLY_MODE-gated.
-  (no args)              : run the Socket Mode listener — handle tkz:, dsc: and ugd: button
+  (no args)              : run the Socket Mode listener — handle tkz:, dsc:, dsf: and ugd: button
                            clicks (owner-only), apply the decision, and update the message.
 
 Config: work-context/config/ticketize.yaml (channel_id, owner_slack_id, fallback_epic, …).
@@ -268,6 +272,10 @@ DOCSYNC_CFG = os.path.join(ROOT, "work-context/config/doc_sync.yaml")
 DOCSYNC_INVENTORY = os.path.join(ROOT, "work-context/config/doc_sync_inventory.yaml")
 DOCSYNC_DISCOVERED = os.path.join(ROOT, "work-context/state/doc_sync_discovered.json")
 DOCSYNC_STATE = os.path.join(ROOT, "work-context/derive/doc_sync_state.py")
+DOCSYNC_APPLY = os.path.join(ROOT, "bin/doc_sync_apply.py")
+def _docsync_findings_path(run_id):
+    return os.path.join(ROOT, f"work-context/state/doc_sync_findings_{run_id}.json")
+SEV_DOT = {"major": "🔴", "schema_drift": "🔴", "medium": "🟡", "minor": "🔵"}
 
 
 def load_docsync_cfg():
@@ -323,6 +331,66 @@ def do_post_docsync(run_id):
     r = client.chat_postMessage(channel=ch, text=f"{len(docs)} newly-discovered docs — {run_id}",
                                 blocks=build_docsync_blocks(run_id, docs))
     print(f"posted {len(docs)} discovery cards to {ch} ts={r['ts']}")
+
+
+# ---------- doc-sync drift-finding cards ----------
+def _docsync_findings(run_id):
+    p = _docsync_findings_path(run_id)
+    if not os.path.exists(p):
+        return None
+    d = json.load(open(p))
+    return d.get("findings", d) if isinstance(d, dict) else d
+
+
+def build_findings_blocks(run_id, findings):
+    sev = lambda f: SEV_DOT.get(f.get("severity"), "•")
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": f"📝 Doc-sync drift findings — {run_id}"}},
+        {"type": "context", "elements": [{"type": "mrkdwn",
+            "text": "Approve → I post the inline comment on the doc. Reject → I drop it. (only you can act)"}]},
+        {"type": "divider"},
+    ]
+    for f in findings:
+        edit = (f.get("suggested_edit") or "").strip()
+        edit = (edit[:280].rstrip() + "…") if len(edit) > 280 else edit
+        lines = [f"{sev(f)} *{f.get('page_title','?')}*  ·  _{f.get('severity','')}/{f.get('check_type','')}_",
+                 f.get("finding_title", ""), f"📄 <{f.get('page_url','')}|open doc>"]
+        if edit:
+            lines.insert(2, f"_fix:_ {edit}")
+        dup = f.get("possible_dup_of")
+        if dup:
+            lines.insert(1, f"⚠️ _possible repeat of an open comment: “{(dup.get('title') or '')[:70]}” — Reject if so_")
+        k = f["finding_key"]
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}})
+        blocks.append({"type": "actions", "block_id": f"dsfact_{k[:20]}", "elements": [
+            {"type": "button", "style": "primary", "text": {"type": "plain_text", "text": "✓ Approve → comment"},
+             "action_id": f"dsf:{run_id}:{k}:approve", "value": k},
+            {"type": "button", "style": "danger", "text": {"type": "plain_text", "text": "✕ Reject"},
+             "action_id": f"dsf:{run_id}:{k}:reject", "value": k},
+        ]})
+        blocks.append({"type": "divider"})
+    blocks.append({"type": "context", "elements": [
+        {"type": "mrkdwn", "text": f"{len(findings)} findings · Approve posts a live Confluence inline comment"}]})
+    return blocks
+
+
+def do_post_findings(run_id):
+    from slack_sdk import WebClient
+    cfg = load_docsync_cfg()
+    ch = cfg["slack"]["channel_id"]
+    if not ch:
+        print("no doc_sync channel_id configured — skipping", file=sys.stderr); sys.exit(1)
+    findings = _docsync_findings(run_id)
+    if findings is None:
+        print(f"no findings file for {run_id}", file=sys.stderr); sys.exit(1)
+    actionable = [f for f in findings if not f.get("already_open")]
+    client = WebClient(token=secret("relay_slack_bot_token"))
+    if not actionable:
+        client.chat_postMessage(channel=ch, text=f"Doc-sync {run_id}: no new drift findings to action. ✅")
+        print("posted: none-actionable"); return
+    r = client.chat_postMessage(channel=ch, text=f"Doc-sync drift findings — {run_id} ({len(actionable)})",
+                                blocks=build_findings_blocks(run_id, actionable))
+    print(f"posted {len(actionable)} finding cards to {ch} ts={r['ts']}")
 
 
 # ---------- user-group (subteam) discovery cards ----------
@@ -558,6 +626,37 @@ def run_listener():
         client.chat_postMessage(channel=body["channel"]["id"], thread_ts=body["message"]["ts"],
                                 text=f"{'🗑️' if ok else '⚠️'} `{pid}` moved to *excluded* — {note}")
 
+    # ---- doc-sync drift findings: Approve → post Confluence inline comment, Reject → drop ----
+    def findings_apply(run_id, key, decision):
+        if mode != "live":
+            verb = "post the inline comment for" if decision == "approve" else "drop"
+            return True, f"🧪 dry — would {verb} {key[:10]}…; set RELAY_APPLY_MODE=live to action"
+        cmd = [sys.executable, DOCSYNC_APPLY, "--finding-file", _docsync_findings_path(run_id),
+               "--key", key, "--decision", decision, "--run-id", run_id]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        out = (res.stdout.strip() or res.stderr.strip() or "")
+        return res.returncode == 0, (out.splitlines()[-1] if out else "")
+
+    @app.action(re.compile(r"^dsf:.*:approve$"))
+    def on_finding_approve(ack, body, client, action):
+        ack()
+        if not is_owner(body, client):
+            return
+        _, run_id, key, verb = action["action_id"].split(":", 3)
+        ok, note = findings_apply(run_id, key, "approve")
+        client.chat_postMessage(channel=body["channel"]["id"], thread_ts=body["message"]["ts"],
+                                text=f"{'✅ commented' if ok else '⚠️'} — {note}")
+
+    @app.action(re.compile(r"^dsf:.*:reject$"))
+    def on_finding_reject(ack, body, client, action):
+        ack()
+        if not is_owner(body, client):
+            return
+        _, run_id, key, verb = action["action_id"].split(":", 3)
+        ok, note = findings_apply(run_id, key, "reject")
+        client.chat_postMessage(channel=body["channel"]["id"], thread_ts=body["message"]["ts"],
+                                text=f"{'🗑️ dropped' if ok else '⚠️'} — {note}")
+
     # ---- user-group discovery: Manager → owner_member, Team → ingest filter, Reject → skiplist ----
     UGD_FLAG = {"manager": "--apply-manager", "team": "--apply-team", "reject": "--skip"}
 
@@ -604,6 +703,8 @@ def main():
         do_post(sys.argv[2])
     elif len(sys.argv) >= 3 and sys.argv[1] == "--post-docsync":
         do_post_docsync(sys.argv[2])
+    elif len(sys.argv) >= 3 and sys.argv[1] == "--post-findings":
+        do_post_findings(sys.argv[2])
     elif len(sys.argv) >= 3 and sys.argv[1] == "--post-usergroups":
         do_post_usergroups(sys.argv[2])
     elif len(sys.argv) == 1 or sys.argv[1] == "--listen":
