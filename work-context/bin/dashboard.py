@@ -44,6 +44,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from derive.sources_config import launchd_prefix  # noqa: E402
+from derive import holidays as _holidays  # noqa: E402
 _LP = launchd_prefix()
 DB_PATH = ROOT / "index/events.db"
 STATE = ROOT / "state"
@@ -576,6 +577,11 @@ def get_leaves() -> dict:
         "ambiguous": [],
         "total": 0,
     }
+    # Company holidays — calendar-driven, display-only (not in team_leaves).
+    # Window-scoped for the gantt; next_holiday for the lane headline.
+    out["holidays"] = _holidays.in_window(out["window_start"], out["window_end"])
+    out["next_holiday"] = _holidays.next_holiday(out["today"])
+    out["next_fixed_holiday"] = _holidays.next_holiday(out["today"], fixed_only=True)
     if not DB_PATH.exists():
         return out
     try:
@@ -1039,12 +1045,26 @@ async function refresh() {
     const peopleStr = peopleOut.length
       ? peopleOut.slice(0, 6).join(", ") + (peopleOut.length > 6 ? ` +${peopleOut.length - 6}` : "")
       : "nobody";
+    const nh = leaves.next_holiday;
+    const nf = leaves.next_fixed_holiday;
+    // Headline the soonest holiday; if it's optional, also note the next fixed
+    // one (the day everyone's actually off).
+    let holRow = "";
+    if (nh) {
+      const optTag = nh.type === "holiday" ? "" : ` <span class="muted">(optional)</span>`;
+      const daysOut = Math.max(0, Math.round((new Date(nh.date) - new Date(today)) / 86400000));
+      let line = `${nh.date} · ${_esc(nh.occasion)}${optTag} <span class="muted">(in ${daysOut}d)</span>`;
+      if (nf && nf.date !== nh.date)
+        line += `<br><span class="muted">next fixed: ${nf.date} · ${_esc(nf.occasion)}</span>`;
+      holRow = `<span>next holiday</span><b>${line}</b>`;
+    }
     lanes.push(laneFor("LEAVES", lvState, `
       <div class="kv">
         <span>out today</span><b>${active.length} ${active.length === 1 ? "person" : "people"} <span class="muted">${peopleStr}</span></b>
         <span>upcoming</span><b>${upcoming.length} <span class="muted">(next ${60}d)</span></b>
         <span>date TBD</span><b>${ambig.length} <span class="muted">ambiguous mention(s)</span></b>
         <span>tracked</span><b>${(leaves.total || 0).toLocaleString()} total rows</b>
+        ${holRow}
       </div>
       ${leaves.error ? `<div class="finding fail"><b>FAIL</b> · ${_esc(leaves.error)}</div>` : ""}
       <div style="margin-top:8px"><a href="/leaves" target="_blank" style="color:#4d8eff;font-size:12px">📅 view leaves gantt →</a></div>`));
@@ -1812,6 +1832,23 @@ a { color:#4d8eff; text-decoration:none; } a:hover { text-decoration:underline; 
 .todaytag { position:absolute; top:0; transform:translateX(-50%); background:var(--accent);
             color:#0b0f14; font-size:9px; padding:1px 5px; border-radius:0 0 4px 4px;
             font-weight:bold; z-index:6; }
+/* company holidays — calendar-driven column shading (purple). fixed = solid,
+   optional/restricted = fainter. */
+.holcol { background:#9b8eff24; }
+/* optional/restricted: faint diagonal hatch instead of a flat fill, so it
+   reads as "not a full company holiday" at a glance. */
+.holcol.opt { background:repeating-linear-gradient(45deg,#9b8eff14 0,#9b8eff14 3px,
+              transparent 3px,transparent 7px); }
+.holline { width:2px; background:#9b8eff; opacity:.6; z-index:1; }
+.holline.opt { width:0; border-left:2px dashed #9b8eff; background:none; opacity:.7; }
+.holtag { position:absolute; top:0; transform:translateX(-50%); background:#9b8eff;
+          color:#0b0f14; font-size:9px; padding:1px 5px; border-radius:0 0 4px 4px;
+          font-weight:bold; z-index:6; white-space:nowrap; cursor:help; max-width:130px;
+          overflow:hidden; text-overflow:ellipsis; }
+/* optional: hollow/outlined tag (transparent fill, purple text+border). */
+.holtag.opt { background:#0b0f14; color:#bcb1ff; border:1px dashed #9b8eff;
+              border-top:0; font-weight:normal; }
+.holtag .opt-mark { opacity:.75; font-weight:normal; }
 .row { display:flex; align-items:center; height:46px; border-top:1px solid #0e141b;
        position:relative; }
 .row:hover { background:#0e1319; }
@@ -1866,6 +1903,8 @@ td { padding:5px 9px; } tr:nth-child(even) td { background:#0e1319; }
   <span><i style="background:#9b8eff"></i>holiday</span>
   <span><i style="background:#d5b248"></i>ooo</span>
   <span><i style="background:#7a8497"></i>other</span>
+  <span style="margin-left:8px"><i style="background:#9b8eff"></i>holiday · fixed</span>
+  <span><i style="background:transparent;box-shadow:inset 0 0 0 1.5px #9b8eff"></i>holiday · optional</span>
 </div>
 <div class="card gantt"><div id="inner" class="inner"><div class="empty">loading…</div></div></div>
 <h2>Ambiguous — date TBD</h2>
@@ -1936,15 +1975,30 @@ async function load(){
     if(mo!==curMo){ flush(); curMo=mo; span=0; lbl=`${MONTHS[mo]} ${dt.getUTCFullYear()}`; } span++; }
   flush();
 
+  // Company holidays keyed by ISO date (fixed vs optional drives shade).
+  const holByDate = {};
+  for(const h of (data.holidays||[])) holByDate[h.date] = h;
+
   // day-number axis + background layers (faint daily gridlines + weekend shade)
   const tOff=_diff(wStart,today);
-  let dayNums="", bg=`<div class="bg" style="left:0;width:${trackW}px;`
+  let dayNums="", holTags="", bg=`<div class="bg" style="left:0;width:${trackW}px;`
     + `background-image:repeating-linear-gradient(to right,#ffffff08 0,#ffffff08 1px,`
     + `transparent 1px,transparent ${DAY_W}px)"></div>`;
   for(let i=0;i<nDays;i++){
     const dt=new Date(_d(wStart)+i*86400000), wd=dt.getUTCDay(), x=i*DAY_W;
     const we=(wd===0||wd===6);
     if(we) bg+=`<div class="bg weekend" style="left:${x}px;width:${DAY_W}px"></div>`;
+    // ISO date for this column (UTC-safe).
+    const iso=dt.toISOString().slice(0,10);
+    const hol=holByDate[iso];
+    if(hol){
+      const opt=hol.type!=="holiday";
+      bg+=`<div class="bg holcol${opt?" opt":""}" style="left:${x}px;width:${DAY_W}px"></div>`;
+      bg+=`<div class="bg holline${opt?" opt":""}" style="left:${x+DAY_W/2}px"></div>`;
+      const tip=`${hol.occasion} · ${opt?"optional / restricted holiday":"fixed company holiday"} · ${iso}`;
+      const optMark=opt?` <span class="opt-mark">⚬ opt</span>`:"";
+      holTags+=`<div class="holtag${opt?" opt":""}" style="left:${x+DAY_W/2}px" title="${_esc(tip)}">${_esc(hol.occasion)}${optMark}</div>`;
+    }
     const cls=`dn${we?" we":""}${i===tOff?" td":""}${wd===1?" mon":""}`;
     dayNums+=`<div class="${cls}" style="width:${DAY_W}px"><span class="wd">${WD3[wd]}</span>${dt.getUTCDate()}</div>`;
   }
@@ -2002,7 +2056,8 @@ async function load(){
       + `<div class="hdr-day"><div class="corner" style="width:${PERSON_W}px"></div>${dayNums}</div></div>`
       + `<div class="rowwrap">`
       + `<div style="position:absolute;left:${PERSON_W}px;top:0;bottom:0;width:${trackW}px">${bg}`
-      + `${tOff>=0&&tOff<nDays?`<div class="todaytag" style="left:${tOff*DAY_W+DAY_W/2}px">TODAY</div>`:""}</div>`
+      + `${tOff>=0&&tOff<nDays?`<div class="todaytag" style="left:${tOff*DAY_W+DAY_W/2}px">TODAY</div>`:""}`
+      + holTags + `</div>`
       + rows + `</div>`;
     // wire bar interactions
     inner.querySelectorAll(".bar").forEach(b=>{
@@ -2073,6 +2128,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html(LEAVES_HTML)
         elif path == "/api/leaves":
             self._send_json(get_leaves())
+        elif path == "/api/holidays":
+            year = int(q.get("year", [str(datetime.now(IST).year)])[0])
+            self._send_json(_holidays.load(year))
         elif path == "/api/snapshot":
             self._send_json(get_snapshot())
         elif path == "/api/slack-channels":

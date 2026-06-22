@@ -22,10 +22,12 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
 from ingest.common import get_db  # noqa: E402
+from derive import holidays  # noqa: E402
 
 OUT = _REPO_ROOT / "derived" / "team-leaves.md"
 UPCOMING_HORIZON_DAYS = 30
 RECENT_LOOKBACK_DAYS = 14
+HOLIDAY_HORIZON_DAYS = 90
 
 
 def _fmt_range(ds: str | None, de: str | None) -> str:
@@ -194,6 +196,24 @@ def main() -> int:
     render_section(f"Upcoming (next {UPCOMING_HORIZON_DAYS}d)", upcoming, show_dates=True)
     render_section(f"Recent past (last {RECENT_LOOKBACK_DAYS}d)", recent, show_dates=True)
     render_section("Ambiguous (date TBD)", ambig, show_dates=False)
+
+    # Company holidays — calendar-driven (config/holidays-<year>.yaml), not
+    # per-person leaves, so rendered as its own section.
+    hols = holidays.upcoming(today, HOLIDAY_HORIZON_DAYS)
+    lines.append(f"## Company holidays (next {HOLIDAY_HORIZON_DAYS}d)")
+    lines.append("")
+    if not hols:
+        lines.append("_none configured — add config/holidays-<year>.yaml_")
+        lines.append("")
+    else:
+        lines.append("| Date | Day | Type | Occasion |")
+        lines.append("|---|---|---|---|")
+        for h in hols:
+            kind = "🟣 fixed" if h.get("type") == "holiday" else "⚪ optional"
+            lines.append(
+                f"| {h['date']} | {h.get('day', '-')} | {kind} | {h.get('occasion', '-')} |"
+            )
+        lines.append("")
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text("\n".join(lines) + "\n")
