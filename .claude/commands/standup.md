@@ -381,15 +381,27 @@ surfaced in the per-member scan. Triage and rank; do not dump the raw list. Most
 first:
 
 - **Your reply is pending** — `OWNER @-asks` where the owner is mentioned and hasn't
-  replied in-thread. The gather casts a wide net (5-day lookback; `via=direct` <@owner>
-  AND `via=subteam` pings of his handles; plus `OWNER confluence @-mentions`) — so YOU must
-  triage hard: keep the real asks of *him* (decision, opinion, join a call, confirm/approve),
-  drop pure-cc / FYI mentions, asks aimed at someone else in the same ping, and anything he
-  has clearly already actioned elsewhere (e.g. a "kindly approve" whose CMR is now Approved
-  on the board). A `via=subteam` ping counts only if it genuinely needs the owner (his team
-  is being asked to triage / an incident pulls in the IC) — not every team-handle broadcast.
-  Lead with what's asked + who's waiting + how long it's sat. Because the lookback is 5
-  days, weight staleness: a 4-day-old unanswered ask is more urgent to flag, not less.
+  replied in-thread. The gather casts a wide net (5-day lookback; plus `OWNER confluence
+  @-mentions`) and tags each row by tier:
+    - `via=direct` — a direct `<@owner>` mention.
+    - `via=subteam-mgr` — a ping of a **managerial** user-group the owner belongs to
+      (tech-managers, cbs-ems, cbs-tech-leads, incident-commanders…). These are the owner's
+      own asks — keep them here.
+    - `via=subteam-dev` — a ping of the **dev-level team handle** (cbs-transaction-accounting-devs).
+      These are usually NOT the owner's personal reply — they go in the separate **To route /
+      delegate** bucket below, not here.
+  So for THIS bucket keep only `direct` + `subteam-mgr` that are real asks of *him* (decision,
+  opinion, join a call, confirm/approve); drop pure-cc / FYI mentions, asks aimed at someone
+  else in the same ping, and anything he has clearly already actioned (e.g. a "kindly approve"
+  whose CMR is now Approved on the board). Lead with what's asked + who's waiting + how long
+  it's sat. Because the lookback is 5 days, weight staleness: a 4-day-old unanswered ask is
+  more urgent to flag, not less.
+- **🔀 To route / delegate** — `via=subteam-dev` asks (someone pinged the dev team handle and
+  no one has answered in-thread). These are the owner's to ROUTE, not to personally answer:
+  for each, name the likely dev owner (by domain — §4) and frame it as "delegate to <@dev>",
+  with the ask + who's waiting + age + thread link. Drop ones a teammate has already picked up
+  in-thread. If a dev-group ping genuinely needs the owner himself (a real decision/approval),
+  promote it up to **Your reply is pending** instead.
 - **Approvals pending on you** — open CMRs awaiting the owner's approval/execution, and any
   "kindly approve the CMR @owner" slack asks (now caught even when several days old). CMR
   approvals gate prod rectifications — high priority. Cross-check the board: if the CMR has

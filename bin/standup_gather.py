@@ -25,6 +25,11 @@ TERMINAL = {"Done", "Closed", "Resolved", "Released", "Released and Reviewed"}
 INPROG = {"In Progress", "In Review", "In Development"}
 TODO = {"To Do", "Open", "Reopened", "Selected for Development", "Backlog"}
 CMR_CLOSED = {"Released", "Cancelled", "Released and Reviewed", "Implementation Reviewed", "Review Complete", "Rolled Back"}
+# MATCHER-VS-TRUNCATION INVARIANT: every query whose rows are tested by these three
+# regexes (or by `<@uid>` / `<!subteam^…>` substring checks) MUST select the FULL `body`
+# column — never `substr(body, …)`. Trigger words / mentions routinely sit past the first
+# few hundred chars (long greeting + cc-list + URL first), so truncating before the regex
+# silently drops real asks/leaves. Trim only for DISPLAY, in Python (`snip = …[:N]`).
 LEAVE_RE = re.compile(r"\b(on leave|sick|fever|unwell|ooo|out of office|day off|taking the day|wfh|working from home|taking leave|half day)\b", re.I)
 # Automation / non-ask noise to drop from the @-ask scan.
 NOISE_RE = re.compile(r"(Request approved for|marked the issue as resolved|Time to Resolve|Weekly Oncall Stats|Weekly Stats Report|has joined the channel)", re.I)
@@ -43,17 +48,23 @@ def load_roster():
     return out
 
 
-def owner_subteam_ids():
-    """Slack subteam IDs whose ping pulls in the OWNER personally (rows flagged
-    `owner_member: true` in config/team_subteams.yaml — e.g. the team handle and the
-    incident-commander group). Used to widen the owner @-ask scan beyond direct <@uid>
-    mentions, since most escalations page a subteam handle. Fail-soft → []."""
+def owner_subteams():
+    """Map of Slack subteam ping-token -> tier for subteams the OWNER belongs to
+    (rows flagged `owner_member: true` in config/team_subteams.yaml). tier ∈
+    {'managerial','dev'}, defaulting to 'managerial' when unset. Used to widen AND
+    classify the owner @-ask scan: a direct <@owner> mention or a MANAGERIAL-group ping
+    (tech-managers / cbs-ems / IC …) is the owner's own reply-pending; a DEV-group ping
+    (his team handle) is work to ROUTE to a dev, not his personal reply. Fail-soft → {}."""
     import yaml
     try:
         cfg = yaml.safe_load(open(os.path.join(ROOT, "work-context/config/team_subteams.yaml")))
-        return [s["id"] for s in cfg.get("subteams", []) if s.get("owner_member") and s.get("id")]
+        out = {}
+        for s in cfg.get("subteams", []):
+            if s.get("owner_member") and s.get("id"):
+                out[f"<!subteam^{s['id']}"] = (s.get("tier") or "managerial")
+        return out
     except Exception:
-        return []
+        return {}
 
 
 def _opsgenie_cfg():
@@ -173,8 +184,11 @@ def gather_leaves(cur, roster, date_str, W1, WL):
     except sqlite3.Error as e:
         lines.append(f"  ⚠️ team_leaves read failed: {e}")
     sl2canon = {v.get("slack_id"): k for k, v in roster.items() if v.get("slack_id")}
+    # FULL body (no substr) — LEAVE_RE detection must see the whole message; a leave note
+    # ("ooo", "sick", "wfh") often sits after a greeting/cc and would be cut at 200. Display
+    # trims below (snip = …[:120]). See the matcher-vs-truncation note on slack_recent.
     for actor, ts, body, subj in cur.execute(
-            "SELECT actor,ts,substr(body,1,200),subject FROM events "
+            "SELECT actor,ts,body,subject FROM events "
             "WHERE source='slack' AND ts>=? AND ts<? ORDER BY ts", (WL, W1)):
         if actor in sl2canon and LEAVE_RE.search(body or ""):
             snip = re.sub(r"\s+", " ", body or "")[:120]
@@ -316,13 +330,21 @@ def main():
     slack_auth = cur.execute(
         "SELECT actor,ts,channel_id,thread_ts,substr(body,1,260),subject FROM events "
         "WHERE source='slack' AND ts>=? AND ts<? ORDER BY ts", (W0, W1)).fetchall()
+    # FULL body (no substr) — these rows feed regex/mention DETECTION (mtok / ASK_RE /
+    # NOISE_RE / subteam tokens), and a matcher MUST see the whole message. Truncating
+    # before the regex silently drops asks whose trigger words sit past the cut — a real
+    # message often opens with a ping + a long cc-list of @mentions + a tracker URL and
+    # only says "Action Items / please review" much later (validated 2026-06-22: an EM
+    # "CI Gating Beta Rollout" ping of @tech-managers was missed at a 260-char cut). The
+    # same truncation also hid the owner/member being @-mentioned in a trailing `cc:` line.
+    # Display always trims in Python (snip = …[:N]); never trim in SQL that feeds a matcher.
     slack_recent = cur.execute(
-        "SELECT ts,channel_id,thread_ts,actor,substr(body,1,260),subject FROM events "
+        "SELECT ts,channel_id,thread_ts,actor,body,subject FROM events "
         "WHERE source='slack' AND ts>=? AND ts<? AND body LIKE '%<@%'", (WL, W1)).fetchall()
     # OWNER-scoped slack over the LONGER lookback (WLo), incl. subteam pings (<!subteam^)
     # not just direct <@uid> — the owner queue must catch group-handle escalations too.
     slack_owner_recent = cur.execute(
-        "SELECT ts,channel_id,thread_ts,actor,substr(body,1,260),subject FROM events "
+        "SELECT ts,channel_id,thread_ts,actor,body,subject FROM events "
         "WHERE source='slack' AND ts>=? AND ts<? "
         "AND (body LIKE '%<@%' OR body LIKE '%<!subteam^%')", (WLo, W1)).fetchall()
 
@@ -495,22 +517,29 @@ def main():
         "SELECT DISTINCT thread_ts FROM events WHERE source='slack' AND actor=? "
         "AND ts>=? AND ts<? AND thread_ts IS NOT NULL", (o_sl, WLo, W1)).fetchall()}
     o_mtok = f"<@{o_sl}"
-    o_subtoks = [f"<!subteam^{sid}" for sid in owner_subteam_ids()]
+    o_subteams = owner_subteams()  # token -> tier ('managerial' | 'dev')
     o_asks = []
     for ts, ch, thr, actor, body, subj in slack_owner_recent:
         b = body or ""
         if actor == o_sl:
             continue
         direct = o_mtok in b
-        via_subteam = any(t in b for t in o_subtoks)
+        matched_tiers = [tier for tok, tier in o_subteams.items() if tok in b]
+        via_subteam = bool(matched_tiers)
         if not (direct or via_subteam):
             continue
         if thr and thr in o_answered:
             continue
         if NOISE_RE.search(b) or not ASK_RE.search(b):
             continue
-        o_asks.append((ts, ch, thr, actor, b, subj, "direct" if direct else "subteam"))
-    out.append(f"-- OWNER @-asks (your reply pending, {OWNER_ASK_LOOKBACK_DAYS}d->window-end; direct + subteam) ({len(o_asks)}) --")
+        # direct <@owner> OR a managerial-group ping = owner's own reply; a DEV-group ping
+        # (no managerial/direct) = route-to-dev. Managerial wins when both are pinged.
+        if direct or "managerial" in matched_tiers:
+            how = "direct" if direct else "subteam-mgr"
+        else:
+            how = "subteam-dev"
+        o_asks.append((ts, ch, thr, actor, b, subj, how))
+    out.append(f"-- OWNER @-asks (your reply pending = direct/subteam-mgr; subteam-dev = route to a dev; {OWNER_ASK_LOOKBACK_DAYS}d->window-end) ({len(o_asks)}) --")
     for ts, ch, thr, actor, body, subj, how in o_asks[-15:]:
         snip = re.sub(r"\s+", " ", body or "")[:160]
         out.append(f"  [{ts[:16]}] via={how} ch={ch} thr={thr} from={actor} link={slack_link(subj)} :: {snip}")
