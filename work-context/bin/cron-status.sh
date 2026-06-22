@@ -38,6 +38,7 @@ SLACK_CURSORS  = ROOT / "state/slack_cursors.json"
 SLACK_CFG      = ROOT / "config/slack_channels.yaml"
 SLACK_VALIDATE = ROOT / "state/last_slack_validate.json"
 SLACK_DISCOVER = ROOT / "state/last_slack_discover.json"
+SLACK_DISCOVER_UG = ROOT / "state/last_slack_discover_usergroups.json"
 TB_VALIDATE    = ROOT / "state/last_topic_brief_validate.json"
 
 # Per-source validate cache paths (mirror SLACK_VALIDATE convention).
@@ -1600,6 +1601,43 @@ if SLACK_DISCOVER.exists():
 else:
     print(kv("discover",
              f"{DIM}no cache yet · {_disc_sched} IST · next {_disc_next}{RESET}"))
+
+# ── user-group (subteam) discovery — PROPOSE ONLY ──────────────────────────
+# Refreshed by the same run-slack-discover.sh LaunchAgent. Buckets new subteams
+# the owner/team belong to into manager / team / ambiguous. Never auto-applied;
+# owner applies layers explicitly (see project_slack_usergroup_discovery).
+if SLACK_DISCOVER_UG.exists():
+    try:
+        ug = json.loads(SLACK_DISCOVER_UG.read_text())
+        ug_mtime = datetime.fromtimestamp(SLACK_DISCOVER_UG.stat().st_mtime, tz=IST)
+        ug_age_s = int((datetime.now(IST) - ug_mtime).total_seconds())
+        if ug_age_s < 3600:
+            ug_age = f"{ug_age_s // 60}m"
+        elif ug_age_s < 86400:
+            ug_age = f"{ug_age_s // 3600}h"
+        else:
+            ug_age = f"{ug_age_s // 86400}d"
+
+        n_mgr = len(ug.get("manager", []))
+        n_team = len(ug.get("team", []))
+        n_amb = len(ug.get("ambiguous", []))
+        n_pending = n_mgr + n_team + n_amb
+
+        if n_pending > 0:
+            pend_str = (f"{YELLOW}{BOLD}{n_pending} pending{RESET} "
+                        f"{DIM}({n_mgr} mgr + {n_team} team + {n_amb} ambiguous){RESET}")
+        else:
+            pend_str = f"{DIM}0 pending{RESET}"
+        print(kv("usergroups", f"{pend_str}  {DIM}({ug_age} old){RESET}"))
+        if n_pending > 0:
+            print(kv("apply",
+                     f"{DIM}python derive/slack_discover_usergroups.py "
+                     f"--apply-manager <ids> | --apply-team <ids>{RESET}"))
+    except Exception as e:
+        print(kv("usergroups", f"{YELLOW}cache parse error: {str(e)[:40]}{RESET}"))
+else:
+    print(kv("usergroups",
+             f"{DIM}no cache yet (writes after next discover fire){RESET}"))
 
 print(rule())
 print()
