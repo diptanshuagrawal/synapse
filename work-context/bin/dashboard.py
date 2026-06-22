@@ -1462,7 +1462,11 @@ a:hover { text-decoration:underline; }
        color:#6e7681; font-size:10px; border-left:1px solid #161c25; }
 .axis-month { border-bottom:1px solid #1a212b; }
 .axis-month div { padding:3px 0; color:#a7afba; border-left:1px solid #2a313b; }
-.axis-day div { padding:2px 0; }
+.axis-day { border-bottom:1px solid #1a212b; }
+.axis-day div { padding:2px 0; line-height:1.25; }
+.axis-day .wd { display:block; font-size:8px; color:#565f6d; letter-spacing:0; }
+.axis-day .we { background:#ffffff0d; }
+.axis-day .we, .axis-day .we .wd { color:#8a93a0; }
 .spacer { flex:0 0 auto; position:sticky; left:0; z-index:3; background:#080c10;
           border-right:1px solid #2a313b; }
 .row { display:flex; align-items:stretch; border-top:1px solid #11161d; }
@@ -1478,7 +1482,7 @@ a:hover { text-decoration:underline; }
 .bar.open-l { border-top-left-radius:0; border-bottom-left-radius:0; }
 .bar.open-r { border-top-right-radius:0; border-bottom-right-radius:0; }
 .bar a { color:inherit; text-decoration:none; }
-.weekend { position:absolute; top:0; bottom:0; background:#ffffff08; pointer-events:none; }
+.weekend { position:absolute; top:0; bottom:0; background:#ffffff0d; pointer-events:none; }
 .todayline { position:absolute; top:0; bottom:0; width:2px; background:#f2c14e;
              pointer-events:none; z-index:1; }
 .todaylabel { position:absolute; top:0; font-size:9px; color:#f2c14e;
@@ -1507,6 +1511,7 @@ const DAY_W = 22, LABEL_W = 150;
 const COLOR = { vacation:"#4d8eff", wfh:"#48d597", sick:"#d54848",
                 holiday:"#9b8eff", ooo:"#d5b248", other:"#6e7681" };
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const WD = ["S","M","T","W","T","F","S"];
 
 function _esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 function _d(s){ const [y,m,d] = s.split("-").map(Number); return Date.UTC(y, m-1, d); }
@@ -1552,7 +1557,9 @@ async function load() {
     if (mo !== curMonth) { flushMonth(); curMonth = mo; monthSpan = 0;
       monthLabel = `${MONTHS[mo]} ${dt.getUTCFullYear()}`; }
     monthSpan++;
-    dayRow += `<div style="width:${DAY_W}px">${dt.getUTCDate()}</div>`;
+    const wd = dt.getUTCDay();
+    const we = (wd === 0 || wd === 6) ? " we" : "";
+    dayRow += `<div class="${we}" style="width:${DAY_W}px"><span class="wd">${WD[wd]}</span>${dt.getUTCDate()}</div>`;
   }
   flushMonth();
 
