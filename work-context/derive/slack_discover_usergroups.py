@@ -289,6 +289,27 @@ def _write_json(buckets: dict, owner: str, team: dict, path: Path) -> None:
 # ── main ─────────────────────────────────────────────────────────────────────
 
 
+def _refresh_proposal(client: SlackClient, out_path: Path = None,
+                      print_report: bool = False) -> Path:
+    """Re-classify against current config + skiplist and rewrite the proposal JSON.
+    Single source the dashboards/cron-status read — must be refreshed after any
+    apply/skip so a resolved group leaves the pending view immediately."""
+    owner = _load_owner_slack_id()
+    team = _load_team_slack_ids()
+    if not owner:
+        print("[fatal] owner Slack id not resolvable (people.yaml / OWNER_EMAIL).")
+        return None
+    groups = _fetch_groups(client)
+    buckets = classify(groups, owner, team, _load_existing(), _load_skiplist())
+    if print_report:
+        _print_report(buckets, owner, team)
+    path = out_path or DEFAULT_JSON_OUT
+    if not path.is_absolute():
+        path = _REPO_ROOT / path
+    _write_json(buckets, owner, team, path)
+    return path
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply-manager", nargs="+", metavar="SID",
@@ -303,34 +324,34 @@ def main() -> int:
 
     if args.skip:
         _add_skips(args.skip)
-        if not (args.apply_manager or args.apply_team):
-            # --skip alone: suppression is the whole job; no API call, no re-propose.
-            return 0
 
     client = SlackClient()
 
-    if args.apply_manager or args.apply_team:
-        rc = 0
-        if args.apply_manager:
-            rc |= do_apply(client, args.apply_manager, owner_member=True)
-        if args.apply_team:
-            rc |= do_apply(client, args.apply_team, owner_member=False)
+    mutated = bool(args.skip)
+    rc = 0
+    if args.apply_manager:
+        rc |= do_apply(client, args.apply_manager, owner_member=True)
+        mutated = True
+    if args.apply_team:
+        rc |= do_apply(client, args.apply_team, owner_member=False)
+        mutated = True
+
+    if mutated:
+        # Refresh the proposal JSON so the dashboard + cron-status drop the
+        # resolved group right away (not just on the next cron fire). Confirmation
+        # goes to stderr so the apply/skip line stays the last stdout line (Relay
+        # uses that as the button's thread note).
+        p = _refresh_proposal(client)
+        if p:
+            print(f"[proposal] refreshed → {p}", file=sys.stderr)
         return rc
 
-    # propose
-    owner = _load_owner_slack_id()
-    team = _load_team_slack_ids()
-    if not owner:
-        print("[fatal] owner Slack id not resolvable (people.yaml / OWNER_EMAIL).")
+    # pure propose
+    out_path = Path(args.json_out) if args.json_out else None
+    p = _refresh_proposal(client, out_path=out_path, print_report=True)
+    if p is None:
         return 2
-    groups = _fetch_groups(client)
-    buckets = classify(groups, owner, team, _load_existing(), _load_skiplist())
-    _print_report(buckets, owner, team)
-    out_path = Path(args.json_out) if args.json_out else DEFAULT_JSON_OUT
-    if not out_path.is_absolute():
-        out_path = _REPO_ROOT / out_path
-    _write_json(buckets, owner, team, out_path)
-    print(f"\n[proposal] written to {out_path}")
+    print(f"\n[proposal] written to {p}")
     return 0
 
 
