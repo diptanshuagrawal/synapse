@@ -1,0 +1,11 @@
+# Sprint-planner config. Copy to sprint_planning.yaml (the real file is gitignored).
+# Host / owner-email / Jira project come from sources.yaml; on-call schedule from
+# oncall.yaml. This file holds only the planner-specific knobs.
+
+board_id: 123                 # Jira agile board id for the team's scrum board
+                              # (omit to auto-discover the project's first scrum board)
+exclude_canonical: []         # people.yaml canonical slugs to drop from capacity
+                              #   e.g. ["jane-doe"] for someone leaving the org
+role_overrides: {}            # canonical -> SDE1 | SDE2 | SDE3
+                              #   override people.yaml when a role is stale, e.g.
+                              #   john-smith: SDE3
