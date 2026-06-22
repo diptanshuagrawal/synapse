@@ -74,11 +74,29 @@ def parse_candidates(date):
     return out
 
 
-def open_candidates(date):
-    cands = parse_candidates(date)
-    if cands is None:
-        return None
-    return [c for c in cands if (c.get("decision", "pending").lower() == "pending")]
+def all_open_candidates():
+    """Every still-`pending` candidate across all daily files, newest date first,
+    deduped by fingerprint. Each row is tagged with its origin `date` so its buttons
+    apply against the right file."""
+    import glob
+    base = os.path.join(ROOT, "management/standup")
+    rows, seen = [], set()
+    paths = sorted(glob.glob(os.path.join(base, "*", "ticket-candidates.md")), reverse=True)
+    for p in paths:
+        d = os.path.basename(os.path.dirname(p))
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", d):
+            continue
+        for c in (parse_candidates(d) or []):
+            if c.get("decision", "pending").lower() != "pending":
+                continue
+            fp = c.get("fingerprint")
+            if fp and fp in seen:
+                continue
+            if fp:
+                seen.add(fp)
+            c["date"] = d
+            rows.append(c)
+    return rows
 
 
 # ---------- posting ----------
@@ -102,17 +120,76 @@ def fmt_refs(ev):
     return "  ·  ".join(out)
 
 
+def linkify_keys(text, base):
+    """Wrap bare Jira keys (e.g. CBST-2927) in Slack links to their browse URL."""
+    if not text or not base:
+        return text
+    base = base.rstrip("/")
+    return re.sub(r"\b([A-Z][A-Z0-9]+-\d+)\b",
+                  lambda m: f"<{base}/browse/{m.group(1)}|{m.group(1)}>", text)
+
+
+def resolve_card_blocks(blocks, fp, status_md):
+    """Replace the clicked card's button row (block_id act_<fp>) with a resolution line,
+    leaving every other card's buttons live. Also refreshes the 'N open' footer."""
+    new = []
+    for b in (blocks or []):
+        if b.get("block_id") == f"act_{fp}":
+            new.append({"type": "context", "block_id": f"done_{fp}",
+                        "elements": [{"type": "mrkdwn", "text": status_md}]})
+        else:
+            new.append(b)
+    remaining = sum(1 for b in new if b.get("type") == "actions")
+    for b in new:
+        if b.get("block_id") == "footer_open":
+            b["elements"][0]["text"] = f"{remaining} open · created tickets land in the active sprint"
+    return new
+
+
+def fetch_message_blocks(client, channel, ts):
+    """Fetch a posted message's current blocks (the view-submission body lacks them)."""
+    try:
+        r = client.conversations_history(channel=channel, latest=ts, inclusive=True, limit=1)
+        msgs = r.get("messages", [])
+        if msgs and msgs[0].get("ts") == ts:
+            return msgs[0].get("blocks")
+    except Exception as e:
+        print(f"fetch blocks failed: {e}", file=sys.stderr)
+    return None
+
+
+def update_card(client, channel, ts, fp, status_md, blocks=None):
+    """In-place message edit: resolve the clicked card. Best-effort — never raises."""
+    blocks = blocks if blocks is not None else fetch_message_blocks(client, channel, ts)
+    if not blocks:
+        return
+    try:
+        client.chat_update(channel=channel, ts=ts, text="Ticket candidates (updated)",
+                           blocks=resolve_card_blocks(blocks, fp, status_md))
+    except Exception as e:
+        print(f"card update failed: {e}", file=sys.stderr)
+
+
 def build_blocks(date, opens):
+    """`date` = the as-of date (newest run). `opens` may include carried-over candidates
+    from earlier days; each carries its own `c['date']` used for its buttons + label."""
+    carried = sum(1 for c in opens if c.get("date", date) != date)
+    sub = "Everything still open. *Approve* → I create the Jira ticket. *Reject* → I drop it. (only you can act)"
+    if carried:
+        sub += f"\n_{carried} carried over from earlier days._"
     blocks = [
-        {"type": "header", "text": {"type": "plain_text", "text": f"🎫 Ticket candidates — {date}"}},
-        {"type": "context", "elements": [{"type": "mrkdwn",
-            "text": "Untracked work I found. *Approve* → I create the Jira ticket. *Reject* → I drop it. (only you can act)"}]},
+        {"type": "header", "text": {"type": "plain_text", "text": f"🎫 Ticket candidates — as of {date}"}},
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": sub}]},
         {"type": "divider"},
     ]
     for c in opens:
+        origin = c.get("date", date)
+        mmdd = origin[5:]
         tier = c.get("code_tier", "")
         gloss = next((v for k, v in TIER_GLOSS.items() if k in tier), tier)
-        lines = [f"*{c['label']}  ·  {c.get('summary','(no summary)')}*", ""]
+        head = f"*{c['label']}  ·  {c.get('summary','(no summary)')}*"
+        head += f"   🗓️ {origin}" + ("  · _carried over_" if origin != date else "")
+        lines = [head, ""]
         if c.get("why"):
             why = c["why"]
             why = (why[:300].rstrip() + "…") if len(why) > 300 else why
@@ -131,15 +208,18 @@ def build_blocks(date, opens):
         if refs:
             lines.append(f"🔗 *Refs:*  {refs}")
         fp = c.get("fingerprint", "")
+        suffix = f" · {mmdd}" if origin != date else ""
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}})
-        blocks.append({"type": "actions", "block_id": f"act_{c['label']}", "elements": [
-            {"type": "button", "style": "primary", "text": {"type": "plain_text", "text": f"✓ Approve {c['label']}"},
-             "action_id": f"tkz:{date}:{fp}:approve:{c['label']}", "value": c["label"]},
-            {"type": "button", "style": "danger", "text": {"type": "plain_text", "text": "✕ Reject"},
-             "action_id": f"tkz:{date}:{fp}:reject:{c['label']}", "value": c["label"]},
+        blocks.append({"type": "actions", "block_id": f"act_{fp}", "elements": [
+            {"type": "button", "style": "primary",
+             "text": {"type": "plain_text", "text": f"✓ Approve {c['label']}{suffix}"},
+             "action_id": f"tkz:{origin}:{fp}:approve:{c['label']}", "value": c["label"]},
+            {"type": "button", "style": "danger",
+             "text": {"type": "plain_text", "text": f"✕ Reject {c['label']}{suffix}"},
+             "action_id": f"tkz:{origin}:{fp}:reject:{c['label']}", "value": c["label"]},
         ]})
         blocks.append({"type": "divider"})
-    blocks.append({"type": "context", "elements": [
+    blocks.append({"type": "context", "block_id": "footer_open", "elements": [
         {"type": "mrkdwn", "text": f"{len(opens)} open · created tickets land in the active sprint"}]})
     return blocks
 
@@ -147,14 +227,17 @@ def build_blocks(date, opens):
 def do_post(date):
     from slack_sdk import WebClient
     cfg = load_cfg()
-    opens = open_candidates(date)
+    opens = all_open_candidates()          # every still-open candidate, all days, newest first
+    today_exists = os.path.exists(candidates_path(date))
     client = WebClient(token=secret("relay_slack_bot_token"))
     ch = cfg["slack"]["channel_id"]
-    if opens is None:
-        print(f"no candidate file for {date}"); return
     if not opens:
-        client.chat_postMessage(channel=ch, text=f"No new ticketable gaps for {date}. ✅")
-        print("posted: none-open"); return
+        if today_exists:
+            client.chat_postMessage(channel=ch, text=f"No open ticket candidates as of {date}. ✅")
+            print("posted: none-open")
+        else:
+            print(f"no candidate file for {date}")
+        return
     # enrich each candidate with its suggested epic's title (read-only Jira)
     try:
         base, auth = cfg["jira"]["base_url"], ta.jira_auth()
@@ -238,6 +321,7 @@ def run_listener():
     from slack_bolt.adapter.socket_mode import SocketModeHandler
     cfg = load_cfg()
     owner = cfg["slack"]["owner_slack_id"]
+    jira_base = (cfg.get("jira") or {}).get("base_url", "")
     mode = os.environ.get("RELAY_APPLY_MODE", "dry")
     app = App(token=secret("relay_slack_bot_token"))
 
@@ -251,7 +335,7 @@ def run_listener():
         res = subprocess.run(cmd, capture_output=True, text=True)
         out = (res.stdout.strip() or res.stderr.strip() or "")
         note = out.splitlines()[-1] if out else ""
-        return res.returncode == 0, note
+        return res.returncode == 0, linkify_keys(note, jira_base)
 
     def is_owner(body, client):
         uid = body["user"]["id"]
@@ -300,6 +384,9 @@ def run_listener():
         ok, note = run_apply(m["date"], m["fp"], "approve", epic_in or None)
         client.chat_postMessage(channel=m["channel"], thread_ts=m["msg_ts"],
                                 text=f"{'✅' if ok else '⚠️'} *{m['label']}* approved — {note}")
+        if ok and mode == "live":
+            update_card(client, m["channel"], m["msg_ts"], m["fp"],
+                        f"✅ *{m['label']}* approved — {note}")
 
     @app.action(re.compile(r"^tkz:.*:reject:"))
     def on_reject(ack, body, client, action):
@@ -310,6 +397,9 @@ def run_listener():
         ok, note = run_apply(date, fp, "reject")
         client.chat_postMessage(channel=body["channel"]["id"], thread_ts=body["message"]["ts"],
                                 text=f"🗑️ *{label}* rejected — {note}")
+        if ok and mode == "live":
+            update_card(client, body["channel"]["id"], body["message"]["ts"], fp,
+                        f"🗑️ *{label}* rejected", blocks=body["message"]["blocks"])
 
     # ---- doc-sync discovery: Approve → monitor, Reject → excluded ----
     def docsync_apply(page_id, decision, run_id):
