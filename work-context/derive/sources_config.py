@@ -107,6 +107,11 @@ def leave_plan_subteam() -> str:
     """Slack subteam (user-group) id the leave-plan reminder pings. Empty if unset."""
     return _get("slack.leave_plan_subteam", env="LEAVE_PLAN_SUBTEAM", default="")
 
+def usergroup_discover_channel() -> str:
+    """Slack channel id the user-group discovery posts its approve/reject cards to.
+    Empty if unset (then the discover cron skips the Relay post)."""
+    return _get("slack.usergroup_discover_channel", env="USERGROUP_DISCOVER_CHANNEL", default="")
+
 def org_match_tokens() -> list[str]:
     """Org-specific lowercase shorthands used to match channel/slug/ticket names
     (e.g. the jira-key + service abbreviations). Generic by default."""

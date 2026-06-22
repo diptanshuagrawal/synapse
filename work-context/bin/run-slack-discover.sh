@@ -87,6 +87,19 @@ set +e
 "$ROOT/.venv/bin/python" "$ROOT/derive/slack_discover_usergroups.py" \
     --json-out "$ROOT/state/last_slack_discover_usergroups.json" \
     > "$ROOT/logs/slack_discover_usergroups.log" 2>&1
+
+# Post the approve/reject card to Slack (Manager / Team / Reject per group).
+# relay_bot needs slack_sdk/slack_bolt — pick a python that has them. Skips
+# cleanly if nothing pending or no channel configured. Owner clicks are handled
+# by the always-on relay-bot listener (com.diptanshu.relay-bot).
+RELAY_PY="$(for p in /opt/homebrew/bin/python3 python3 "$ROOT/.venv/bin/python"; do
+    "$p" -c 'import slack_sdk' 2>/dev/null && { echo "$p"; break; }; done)"
+if [[ -n "$RELAY_PY" ]]; then
+    "$RELAY_PY" "$ROOT/../bin/relay_bot.py" --post-usergroups "$(date +%Y-%m-%d)" \
+        >> "$ROOT/logs/slack_discover_usergroups.log" 2>&1
+else
+    echo "relay post skipped: no python with slack_sdk" >> "$ROOT/logs/slack_discover_usergroups.log"
+fi
 set -e
 
 exit $exit_code

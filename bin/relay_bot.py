@@ -8,8 +8,12 @@ Consumers: /ticketize and /doc-sync-sweep. Roles:
                            per newly-discovered doc to the doc-sweep channel (config doc_sync.yaml).
                            Approve → promote needs_confirm→monitor; Reject → move to excluded
                            (both via derive/doc_sync_state.py move). Owner-gated, RELAY_APPLY_MODE-gated.
-  (no args)              : run the Socket Mode listener — handle tkz: and dsc: button clicks
-                           (owner-only), apply the decision, and update the message.
+  --post-usergroups <run-id>: read state/last_slack_discover_usergroups.json and post one card
+                           per pending discovered user-group to the channel in that JSON
+                           (slack.usergroup_discover_channel). Buttons: Manager → owner_member,
+                           Team → ingest filter, Reject → skiplist. Owner-gated, RELAY_APPLY_MODE-gated.
+  (no args)              : run the Socket Mode listener — handle tkz:, dsc: and ugd: button
+                           clicks (owner-only), apply the decision, and update the message.
 
 Config: work-context/config/ticketize.yaml (channel_id, owner_slack_id, fallback_epic, …).
 Tokens: ~/.secrets/relay_slack_bot_token (xoxb), ~/.secrets/relay_slack_app_token (xapp).
@@ -315,6 +319,104 @@ def do_post_docsync(run_id):
     print(f"posted {len(docs)} discovery cards to {ch} ts={r['ts']}")
 
 
+# ---------- user-group (subteam) discovery cards ----------
+UGD_PROPOSAL = os.path.join(ROOT, "work-context/state/last_slack_discover_usergroups.json")
+UGD_SCRIPT = os.path.join(ROOT, "work-context/derive/slack_discover_usergroups.py")
+UGD_PY = os.path.join(ROOT, "work-context/.venv/bin/python")
+
+
+def _ugd_pending():
+    """Pending discovered user-groups + target channel from the proposal JSON.
+    Returns (channel, [groups]) where each group carries a `_proposed` bucket tag."""
+    if not os.path.exists(UGD_PROPOSAL):
+        return None, []
+    d = json.load(open(UGD_PROPOSAL))
+    pending = []
+    for bucket in ("manager", "team", "ambiguous"):
+        for g in d.get(bucket, []) or []:
+            pending.append({**g, "_proposed": bucket})
+    return d.get("channel") or "", pending
+
+
+def build_ugd_blocks(run_id, groups):
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": f"👥 Discovered Slack user-groups — {run_id}"}},
+        {"type": "context", "elements": [{"type": "mrkdwn",
+            "text": "User-groups you/your team belong to, not yet tracked. *Manager* → adds it as `owner_member` (a ping counts as an ask to you). *Team* → adds it to the team-involved ingest filter only. *Reject* → never proposed again. (only you can act)"}]},
+        {"type": "divider"},
+    ]
+    for g in groups:
+        gid = str(g.get("id"))
+        handle = g.get("handle", gid)
+        size = g.get("size", 0)
+        reps = g.get("reports", 0)
+        proposed = g.get("_proposed", "")
+        flags = []
+        if g.get("owner_in"):
+            flags.append("you're a member")
+        flags.append(f"{reps} of your reports")
+        if g.get("broad"):
+            flags.append("⚠ broad/likely-skip")
+        lines = [f"*@{handle}*   ·   `{gid}`",
+                 f"👥 {size} members · {' · '.join(flags)}   ·   _proposed: {proposed}_"]
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}})
+        blocks.append({"type": "actions", "block_id": f"ugdact_{gid}", "elements": [
+            {"type": "button", "style": "primary", "text": {"type": "plain_text", "text": "👔 Manager"},
+             "action_id": f"ugd:{run_id}:{gid}:manager", "value": handle},
+            {"type": "button", "text": {"type": "plain_text", "text": "👥 Team"},
+             "action_id": f"ugd:{run_id}:{gid}:team", "value": handle},
+            {"type": "button", "style": "danger", "text": {"type": "plain_text", "text": "✕ Reject"},
+             "action_id": f"ugd:{run_id}:{gid}:reject", "value": handle},
+        ]})
+        blocks.append({"type": "divider"})
+    blocks.append({"type": "context", "block_id": "ugdfooter", "elements": [
+        {"type": "mrkdwn", "text": f"{len(groups)} pending · Manager→owner_member · Team→ingest filter · Reject→never re-proposed"}]})
+    return blocks
+
+
+def resolve_ugd_blocks(blocks, gid, status_md):
+    """Replace one group's button row (block_id ugdact_<gid>) with a resolution line."""
+    new = []
+    for b in (blocks or []):
+        if b.get("block_id") == f"ugdact_{gid}":
+            new.append({"type": "context", "block_id": f"ugddone_{gid}",
+                        "elements": [{"type": "mrkdwn", "text": status_md}]})
+        else:
+            new.append(b)
+    remaining = sum(1 for b in new if b.get("type") == "actions")
+    for b in new:
+        if b.get("block_id") == "ugdfooter":
+            b["elements"][0]["text"] = f"{remaining} pending · Manager→owner_member · Team→ingest filter · Reject→never re-proposed"
+    return new
+
+
+def update_ugd_card(client, channel, ts, gid, status_md, blocks=None):
+    """In-place message edit: resolve one group's card. Best-effort — never raises."""
+    blocks = blocks if blocks is not None else fetch_message_blocks(client, channel, ts)
+    if not blocks:
+        return
+    try:
+        client.chat_update(channel=channel, ts=ts, text="User-groups (updated)",
+                           blocks=resolve_ugd_blocks(blocks, gid, status_md))
+    except Exception as e:
+        print(f"ugd card update failed: {e}", file=sys.stderr)
+
+
+def do_post_usergroups(run_id):
+    from slack_sdk import WebClient
+    ch, pending = _ugd_pending()
+    if not ch:
+        print("no usergroup_discover_channel configured — skipping", file=sys.stderr)
+        return
+    if not pending:
+        print("posted: no pending user-groups this run")
+        return
+    client = WebClient(token=secret("relay_slack_bot_token"))
+    r = client.chat_postMessage(channel=ch, text=f"{len(pending)} user-groups to review — {run_id}",
+                                blocks=build_ugd_blocks(run_id, pending))
+    print(f"posted {len(pending)} user-group cards to {ch} ts={r['ts']}")
+
+
 # ---------- listener ----------
 def run_listener():
     from slack_bolt import App
@@ -434,6 +536,43 @@ def run_listener():
         client.chat_postMessage(channel=body["channel"]["id"], thread_ts=body["message"]["ts"],
                                 text=f"{'🗑️' if ok else '⚠️'} `{pid}` moved to *excluded* — {note}")
 
+    # ---- user-group discovery: Manager → owner_member, Team → ingest filter, Reject → skiplist ----
+    UGD_FLAG = {"manager": "--apply-manager", "team": "--apply-team", "reject": "--skip"}
+
+    def ugd_apply(gid, layer):
+        if mode != "live":
+            verb = {"manager": "apply @%s as MANAGER (owner_member)" % gid,
+                    "team": "apply @%s as TEAM (ingest filter)" % gid,
+                    "reject": "skip @%s (never re-proposed)" % gid}[layer]
+            return True, f"🧪 dry — would {verb}; set RELAY_APPLY_MODE=live to action"
+        # Strip LLM creds — slack_discover_usergroups asserts they're absent.
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")}
+        cmd = [UGD_PY, UGD_SCRIPT, UGD_FLAG[layer], gid]
+        res = subprocess.run(cmd, capture_output=True, text=True, env=env,
+                             cwd=os.path.join(ROOT, "work-context"))
+        out = (res.stdout.strip() or res.stderr.strip() or "")
+        return res.returncode == 0, (out.splitlines()[-1] if out else "")
+
+    def _on_ugd(layer, emoji, label):
+        def handler(ack, body, client, action):
+            ack()
+            if not is_owner(body, client):
+                return
+            _, run_id, gid, _layer = action["action_id"].split(":", 3)
+            handle = action.get("value") or gid
+            ok, note = ugd_apply(gid, layer)
+            client.chat_postMessage(channel=body["channel"]["id"], thread_ts=body["message"]["ts"],
+                                    text=f"{emoji if ok else '⚠️'} @{handle} → *{label}* — {note}")
+            if ok and mode == "live":
+                update_ugd_card(client, body["channel"]["id"], body["message"]["ts"], gid,
+                                f"{emoji} @{handle} → {label} — {note}", blocks=body["message"]["blocks"])
+        return handler
+
+    app.action(re.compile(r"^ugd:.*:manager$"))(_on_ugd("manager", "👔", "manager (owner_member)"))
+    app.action(re.compile(r"^ugd:.*:team$"))(_on_ugd("team", "👥", "team (ingest filter)"))
+    app.action(re.compile(r"^ugd:.*:reject$"))(_on_ugd("reject", "🗑️", "rejected (skiplisted)"))
+
     print(f"relay_bot listening (apply mode = {mode}) …")
     SocketModeHandler(app, secret("relay_slack_app_token")).start()
 
@@ -443,6 +582,8 @@ def main():
         do_post(sys.argv[2])
     elif len(sys.argv) >= 3 and sys.argv[1] == "--post-docsync":
         do_post_docsync(sys.argv[2])
+    elif len(sys.argv) >= 3 and sys.argv[1] == "--post-usergroups":
+        do_post_usergroups(sys.argv[2])
     elif len(sys.argv) == 1 or sys.argv[1] == "--listen":
         run_listener()
     else:

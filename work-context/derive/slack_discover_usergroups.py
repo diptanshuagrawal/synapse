@@ -261,12 +261,22 @@ def _print_report(buckets: dict, owner: str, team: dict) -> None:
         print(f"  {x['id']:<13} @{x['handle']:<34} [{x['layer']}]")
 
 
+def _discover_channel() -> str:
+    """Relay card channel for discovered user-groups (config-driven; empty if unset)."""
+    try:
+        from derive.sources_config import usergroup_discover_channel
+        return usergroup_discover_channel()
+    except Exception:
+        return ""
+
+
 def _write_json(buckets: dict, owner: str, team: dict, path: Path) -> None:
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "owner": owner,
         "team_roster": len(team),
         "reports_min_for_team": REPORTS_MIN_FOR_TEAM,
+        "channel": _discover_channel(),
         "manager": buckets["manager"],
         "team": buckets["team"],
         "ambiguous": buckets["ambiguous"],
@@ -293,6 +303,9 @@ def main() -> int:
 
     if args.skip:
         _add_skips(args.skip)
+        if not (args.apply_manager or args.apply_team):
+            # --skip alone: suppression is the whole job; no API call, no re-propose.
+            return 0
 
     client = SlackClient()
 
@@ -303,10 +316,6 @@ def main() -> int:
         if args.apply_team:
             rc |= do_apply(client, args.apply_team, owner_member=False)
         return rc
-
-    if args.skip and not (args.apply_manager or args.apply_team):
-        # --skip alone: done after suppressing.
-        pass
 
     # propose
     owner = _load_owner_slack_id()
