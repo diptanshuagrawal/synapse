@@ -993,7 +993,7 @@ async function refresh() {
   }).join("");
   const _ugSection = (title, rows, applyFlag) =>
     (rows && rows.length)
-      ? `<tr><td colspan="5" style="padding-top:6px"><b>${title}</b></td></tr>${_ugRows(rows, applyFlag)}`
+      ? `<tr><td colspan="5" style="padding:10px 6px 4px;border-top:1px solid rgba(255,255,255,.12);background:rgba(77,142,255,.10);color:#4d8eff;text-transform:uppercase;font-size:10px;letter-spacing:.08em;font-weight:700">${title}</td></tr>${_ugRows(rows, applyFlag)}`
       : "";
   const ugDetails = ug.has_cache ? `
     <details><summary>discovered user-groups (${ug.n_mgr || 0} mgr · ${ug.n_team || 0} team · ${ug.n_amb || 0} ambiguous · ${ug.n_config || 0} configured) — click to expand</summary>
