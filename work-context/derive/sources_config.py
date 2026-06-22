@@ -90,6 +90,11 @@ def slack_mcp_server() -> str:
     """Slack MCP server id (the hash in mcp__<id>__slack_*). Empty if unset."""
     return _get("slack.mcp_server", env="SLACK_MCP_SERVER", default="")
 
+def dev_updates_channel() -> str:
+    """Slack channel id the daily-standup routine posts the team-facing Standup-updates
+    (per-dev, @-mentioned) message to. Falls back to standup_channel if unset."""
+    return _get("slack.dev_updates_channel", env="DEV_UPDATES_CHANNEL", default="") or standup_channel()
+
 def rollup_channel() -> str:
     """Slack channel id the rollup-classify routine posts its run-summary to. Empty if unset."""
     return _get("slack.rollup_channel", env="ROLLUP_CHANNEL", default="")
