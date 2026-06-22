@@ -94,6 +94,14 @@ def rollup_channel() -> str:
     """Slack channel id the rollup-classify routine posts its run-summary to. Empty if unset."""
     return _get("slack.rollup_channel", env="ROLLUP_CHANNEL", default="")
 
+def leave_plan_channel() -> str:
+    """Slack channel id the leave-plan-reminder routine posts to. Empty if unset."""
+    return _get("slack.leave_plan_channel", env="LEAVE_PLAN_CHANNEL", default="")
+
+def leave_plan_subteam() -> str:
+    """Slack subteam (user-group) id the leave-plan reminder pings. Empty if unset."""
+    return _get("slack.leave_plan_subteam", env="LEAVE_PLAN_SUBTEAM", default="")
+
 def org_match_tokens() -> list[str]:
     """Org-specific lowercase shorthands used to match channel/slug/ticket names
     (e.g. the jira-key + service abbreviations). Generic by default."""

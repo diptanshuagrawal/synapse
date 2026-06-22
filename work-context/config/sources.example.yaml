@@ -29,6 +29,8 @@ slack:
   mom_channels: ["C0EXAMPLE"]
   standup_channel: "C0EXAMPLE"   # daily-standup routine target (env override: STANDUP_CHANNEL)
   rollup_channel: "C0EXAMPLE"    # rollup-classify run-summary target (env override: ROLLUP_CHANNEL)
+  leave_plan_channel: "C0EXAMPLE"  # leave-plan-reminder routine target (env override: LEAVE_PLAN_CHANNEL)
+  leave_plan_subteam: "S0EXAMPLE"  # subteam (user-group) the reminder pings (env override: LEAVE_PLAN_SUBTEAM)
   mcp_server: "example-mcp-id"   # Slack MCP server id, the hash in mcp__<id>__slack_* (env override: SLACK_MCP_SERVER)
 launchd:
   prefix: "com.example"
