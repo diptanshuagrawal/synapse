@@ -271,7 +271,10 @@ def main() -> int:
             "n_orphans": len(res["orphans_created"]),
             "signals_total": res["signals_total"],
         }
-        tmp = STATE_FILE.with_suffix(".json.tmp")
+        # Per-process tmp name: concurrent ingest runs (github/jira/confluence
+        # each call this) must not share one tmp, else the first os.replace
+        # moves it away and the second hits FileNotFoundError.
+        tmp = STATE_FILE.with_suffix(f".json.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(snapshot, indent=2))
         os.replace(tmp, STATE_FILE)
     return 0
