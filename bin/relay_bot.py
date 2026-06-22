@@ -45,7 +45,7 @@ def candidates_path(date):
     return os.path.join(ROOT, f"management/standup/{date}/ticket-candidates.md")
 
 
-HEAD_RE = re.compile(r"^##\s+([CG]\d+)\s+·\s+(.*?)\s*(?:—\s*(\w+).*)?$")
+HEAD_RE = re.compile(r"^##\s+([A-Z]\d+)\s+·\s+(.*?)\s*(?:—\s*(\w+).*)?$")
 FIELD_RE = re.compile(r"^-\s+([a-z_]+):\s*(.*?)\s*(?:#.*)?$")
 
 
@@ -206,6 +206,12 @@ def build_blocks(date, opens):
         else:
             epic_md = (c.get("epic") or "—").split(" (")[0]
         lines.append(f"📂 *Epic (suggested, editable on approve):*  {epic_md}")
+        asg = c.get("assignee") or "—"
+        sug = (c.get("suggested_assignee") or "").split(" (")[0]
+        asg_line = f"👤 *Assignee (editable on approve):*  {asg}"
+        if sug:
+            asg_line += f"   ·   _suggested: {sug}_"
+        lines.append(asg_line)
         if gloss:
             lines.append(f"⚖️ *Risk:*  {gloss}")
         refs = fmt_refs(c.get("evidence", ""))
@@ -427,13 +433,16 @@ def run_listener():
     mode = os.environ.get("RELAY_APPLY_MODE", "dry")
     app = App(token=secret("relay_slack_bot_token"))
 
-    def run_apply(date, fp, decision, epic_input=None):
+    def run_apply(date, fp, decision, epic_input=None, assignee_input=None):
         if mode != "live":
-            return True, f"🧪 dry — would {decision} (epic='{epic_input or ''}'); set RELAY_APPLY_MODE=live to action"
+            extra = f", assignee='{assignee_input}'" if assignee_input else ""
+            return True, f"🧪 dry — would {decision} (epic='{epic_input or ''}'{extra}); set RELAY_APPLY_MODE=live to action"
         cmd = [sys.executable, os.path.join(ROOT, "bin/ticketize_apply.py"),
                "--date", date, "--fingerprint", fp, "--decision", decision]
         if epic_input:
             cmd += ["--epic-input", epic_input]
+        if assignee_input:
+            cmd += ["--assignee-input", assignee_input]
         res = subprocess.run(cmd, capture_output=True, text=True)
         out = (res.stdout.strip() or res.stderr.strip() or "")
         note = out.splitlines()[-1] if out else ""
@@ -457,6 +466,11 @@ def run_listener():
         cands = parse_candidates(date) or []
         c = next((x for x in cands if x.get("fingerprint") == fp), {})
         suggested = (c.get("epic") or "").split(" (")[0]
+        cand_assignee = (c.get("assignee") or "")
+        suggested_dev = (c.get("suggested_assignee") or "").split(" (")[0]
+        asg_hint = (f"Default = {cand_assignee or 'unassigned'}."
+                    + (f" Suggested delegate: {suggested_dev}." if suggested_dev else "")
+                    + " A people.yaml canonical handle (e.g. dheeraj-kumar); blank keeps the default.")
         client.views_open(trigger_id=body["trigger_id"], view={
             "type": "modal", "callback_id": "tkz_apply",
             "private_metadata": json.dumps({"date": date, "fp": fp, "label": label,
@@ -473,6 +487,12 @@ def run_listener():
                              "initial_value": suggested,
                              "placeholder": {"type": "plain_text", "text": "EX-1234  or  keywords e.g. atm charges"}},
                  "hint": {"type": "plain_text", "text": "A key (EX-1234) is used as-is. Keywords search open epics and pick the best match."}},
+                {"type": "input", "block_id": "assignee", "optional": True,
+                 "label": {"type": "plain_text", "text": "Assignee"},
+                 "element": {"type": "plain_text_input", "action_id": "assignee_val",
+                             "initial_value": cand_assignee,
+                             "placeholder": {"type": "plain_text", "text": "canonical handle e.g. dheeraj-kumar"}},
+                 "hint": {"type": "plain_text", "text": asg_hint}},
             ],
         })
 
@@ -482,8 +502,10 @@ def run_listener():
         m = json.loads(view["private_metadata"])
         if body["user"]["id"] != owner:
             return
-        epic_in = (view["state"]["values"]["epic"]["epic_val"].get("value") or "").strip()
-        ok, note = run_apply(m["date"], m["fp"], "approve", epic_in or None)
+        vals = view["state"]["values"]
+        epic_in = (vals["epic"]["epic_val"].get("value") or "").strip()
+        asg_in = (vals.get("assignee", {}).get("assignee_val", {}).get("value") or "").strip()
+        ok, note = run_apply(m["date"], m["fp"], "approve", epic_in or None, asg_in or None)
         client.chat_postMessage(channel=m["channel"], thread_ts=m["msg_ts"],
                                 text=f"{'✅' if ok else '⚠️'} *{m['label']}* approved — {note}")
         if ok and mode == "live":
