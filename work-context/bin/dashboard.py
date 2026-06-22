@@ -640,7 +640,9 @@ tr:nth-child(even) td { background:#0e1319; }
         overflow:auto; white-space:pre; font-size:11px; color:#8e95a0;
         border:1px solid #1a212b; }
 .finding { font-size:11px; padding:4px 8px; margin:4px 0; border-radius:3px;
-           border-left:3px solid #2a313b; background:#0e1319; }
+           border-left:3px solid #2a313b; background:#0e1319; cursor:help; }
+.pill[title] { cursor:help; }
+.finding[title]:hover { background:#141b24; }
 .finding.warn { border-left-color:#d5b248; }
 .finding.fail { border-left-color:#d54848; }
 .finding.muted { border-left-color:#5a6070; opacity:0.7; }
@@ -785,13 +787,53 @@ function _runtimeBadge(rhv) {
 }
 function _runtimeFinding(rhv) {
   if (!rhv) return "";
-  return `<div class="finding ${rhv.level}"><b>${rhv.level.toUpperCase()}</b> · runtime — `
+  return `<div class="finding ${rhv.level}" title="${_esc(CHECK_HELP.runtime)}">`
+       + `<b>${rhv.level.toUpperCase()}</b> · runtime — `
        + `${rhv.label} (run duration vs gap to next fire)</div>`;
 }
-function laneFor(name, state, body) {
+// Plain-English explanation for each validator check / lane state. Shown on
+// hover over the WARN/FAIL badge and over each finding line so the terse
+// "attribution — 4 unmapped" reads as "what it means + what to do".
+const CHECK_HELP = {
+  attribution: "Some contributors couldn't be matched to a known person (team/org/external). Their activity may be miscredited until they're added to the identity map (people.yaml).",
+  freshness: "This source is stale — the last successful ingest is older than expected. The cron likely failed or hasn't fired in its window.",
+  status_capture: "Jira status transitions weren't fully captured for some tickets, so in-progress / in-review state may be incomplete.",
+  schema_nulls: "Some events are missing required columns (id / source / ts / actor) — the ingest wrote malformed rows.",
+  ts_format: "Some event timestamps aren't valid ISO-8601, so date math and ordering can be wrong.",
+  ts_future: "Some events are timestamped in the future — usually a timezone or parsing bug in the ingest.",
+  source_vocab: "An unexpected 'source' value appeared — a new ingest path may be writing an unrecognized source tag.",
+  type_vocab: "An unexpected event_type appeared — a new event kind isn't whitelisted yet.",
+  orphan_refs: "Some references point to a parent event that doesn't exist — a thread/reply was ingested without its root.",
+  fts_sync: "The full-text search index is out of sync with the events table — search may miss or duplicate rows.",
+  raw_path_dupes: "Two events claim the same raw_path back-reference — a re-ingest probably double-wrote.",
+  slack_channel_id: "A Slack event is missing or has a malformed channel_id.",
+  null_actor_subject: "Some events have no actor or subject — they can't be attributed or clustered.",
+  subject_shape: "Some subject ids don't match the expected shape — downstream linking may break.",
+  ref_vocab: "An unexpected ref_type appeared in event_refs.",
+  dangling_derived: "A derived row points to an event that no longer exists.",
+  empty: "The table is empty — nothing has been derived yet.",
+  empty_db: "The events table is empty — nothing has been ingested yet.",
+  all_fields: "Informational: all clusters are fully populated.",
+  schedule: "The scheduled ingest hasn't succeeded today yet — it may be waiting for its fire window, or the last run failed.",
+  runtime: "The job's run time is close to (or past) the gap until its next scheduled fire — runs may overlap or back up.",
+  stale_embedding: "Embeddings are more than 2 days old — re-run the embedding refresh to pick up new events.",
+  stale_codegraph: "The code-graph rebuild hasn't succeeded today — the daily 18:00 job may have failed.",
+  housekeeping_age: "The weekly cleanup prune hasn't run in over a week.",
+  slack_lag: "Slack channels haven't been polled recently — the ingest may be lagging behind live messages.",
+};
+function _fhelp(check) { return CHECK_HELP[check] || ("Validation check: " + check); }
+// One finding line, with a hover explanation derived from its check name.
+function _finding(sev, check, msg) {
+  const lvl = sev.toLowerCase();
+  return `<div class="finding ${lvl}" title="${_esc(_fhelp(check))}">`
+       + `<b>${sev}</b> · ${check} — ${msg}</div>`;
+}
+
+function laneFor(name, state, body, tip) {
   const stateClass = state || "ok";
-  const pill = (state === "fail" ? `<span class="pill fail">FAIL</span>`
-               : state === "warn" ? `<span class="pill warn">WARN</span>`
+  const t = tip ? ` title="${_esc(tip)}"` : "";
+  const pill = (state === "fail" ? `<span class="pill fail"${t}>FAIL</span>`
+               : state === "warn" ? `<span class="pill warn"${t}>WARN</span>`
                : `<span class="pill">OK</span>`);
   return `<div class="lane" data-state="${stateClass}">
     <h2>${name} ${pill}</h2>
@@ -823,7 +865,7 @@ async function refresh() {
     // If lane is WARN/FAIL purely from cron marker (not validate finding),
     // synthesize a reason so the message panel isn't empty.
     const synthReason = (!worstSev && cronState !== "ok")
-      ? `<div class="finding ${cronState}"><b>${cronState.toUpperCase()}</b> · schedule — `
+      ? `<div class="finding ${cronState}" title="${_esc(CHECK_HELP.schedule)}"><b>${cronState.toUpperCase()}</b> · schedule — `
         + (m ? `last success ${m} · cron not yet fired today (next fire window 12-22 IST)`
              : `never ran — wrapper or LaunchAgent not invoked`)
         + `</div>`
@@ -836,9 +878,15 @@ async function refresh() {
     // Render warnings inline so reasons are visible.
     const findingsHtml = findings
       .filter(f => f[0] !== "PASS")
-      .map(([sev, check, msg]) =>
-        `<div class="finding ${sev.toLowerCase()}"><b>${sev}</b> · ${check} — ${msg}</div>`)
+      .map(([sev, check, msg]) => _finding(sev, check, msg))
       .join("");
+
+    // Plain-English tip for the WARN/FAIL badge: worst real finding, else the
+    // synthesized schedule/runtime reason that drove the lane state.
+    const worstF = findings.find(f => f[0] === "FAIL") || findings.find(f => f[0] === "WARN");
+    const laneTip = worstF ? _fhelp(worstF[1])
+                  : synthReason ? CHECK_HELP.schedule
+                  : rhv ? CHECK_HELP.runtime : "";
 
     const lastRun = s.last_run_ts?.[src];
     // Local log timestamps lack tz; treat as IST.
@@ -855,7 +903,7 @@ async function refresh() {
       ${synthReason}${_runtimeFinding(rhv)}${findingsHtml}
       <details><summary>event-type breakdown</summary>
         <table><tr><th>type</th><th>count</th></tr>${typeRows}</table>
-      </details>`));
+      </details>`, laneTip));
   }
 
   // SLACK lane
@@ -879,14 +927,18 @@ async function refresh() {
   const slackV = s.validate?.slack || {};
   const slackFindings = (slackV.findings || [])
     .filter(f => f[0] !== "PASS")
-    .map(([sev, check, msg]) =>
-      `<div class="finding ${sev.toLowerCase()}"><b>${sev}</b> · ${check} — ${msg}</div>`)
+    .map(([sev, check, msg]) => _finding(sev, check, msg))
     .join("");
   const slackValSev = (slackV.findings || []).find(f => f[0] === "FAIL") ? "fail"
                   : (slackV.findings || []).find(f => f[0] === "WARN") ? "warn"
                   : "ok";
   const slackRh = s.run_health?.slack || null;
   const slackWorst = _worstState(slackValSev, slackRh?.level);
+  const slackWorstF = (slackV.findings || []).find(f => f[0] === "FAIL")
+                   || (slackV.findings || []).find(f => f[0] === "WARN");
+  const slackTip = slackWorstF ? _fhelp(slackWorstF[1])
+                 : slackRh ? CHECK_HELP.runtime
+                 : (slackWorst !== "ok" ? CHECK_HELP.slack_lag || "" : "");
   const slackLastRun = s.last_run_ts?.slack;
   const slackLastIso = slackLastRun ? slackLastRun.replace(" ", "T") + "+05:30" : null;
   const disc = s.discover || {};
@@ -913,7 +965,7 @@ async function refresh() {
     </details>
     <details><summary>discovered channels (${disc.n_owner ? disc.n_owner + " owner · " : ""}${disc.n_review || 0} needs_review${disc.n_silent ? " · " + disc.n_silent + " team-silent" : ""}) — click to expand</summary>
       <div id="discoverTable"><span class="muted">loading…</span></div>
-    </details>`));
+    </details>`, slackTip));
 
   // LEAVES lane (team_leaves → Gantt page at /leaves)
   {
@@ -967,7 +1019,7 @@ async function refresh() {
         <span>total</span><b>${e.total.toLocaleString()} vectors</b>
         <span>newest</span><b>${e.newest} <span class="muted">(${_rel(e.newest)})</span></b>
         <span>by source</span><b>${bySrc}</b>
-      </div>`));
+      </div>`, stale ? CHECK_HELP.stale_embedding : ""));
   }
 
   // CODE-GRAPH lane (daily 18:00 code-review-graph rebuild)
@@ -987,13 +1039,16 @@ async function refresh() {
     const lastRunCell = g.running
       ? `<span class="muted">rebuilding since ${g.start || "?"}</span>`
       : (g.done ? `${g.done} <span class="muted">(${_rel(lastRunIso)})</span> · ok=${g.ok} fail=${g.fail}` : "—");
+    const cgTip = g.fail ? "The code-graph rebuild reported failures on its last run — one or more repos didn't parse cleanly."
+                : gState === "warn" ? CHECK_HELP.stale_codegraph
+                : (!sd ? "The code-graph has never recorded a successful rebuild." : "");
     lanes.push(laneFor("CODE-GRAPH", gState, `
       <div class="kv">
         <span>schedule</span><b>daily ${g.sched || "18:00 IST"}${g.next && !g.running ? ` · next ${g.next}` : ""}</b>
         <span>last run</span><b>${lastRunCell}</b>
         <span>success.date</span><b>${sd || "—"}</b>
         <span>repos</span><b>${repos || "—"}</b>
-      </div>`));
+      </div>`, cgTip));
   }
 
   // HOUSEKEEPING lane (weekly launchd prune — distinct from /schedule routines)
@@ -1017,13 +1072,15 @@ async function refresh() {
       ? `<b>${h.date}</b> <span class="muted">(${h.mode || "?"})</span> · `
         + `${h.files ?? "?"} files · ${h.bytes || "?"} <span class="muted">(${hAge})</span>`
       : `<span class="muted">${hAge}</span>`;
+    const hkTip = hState === "fail" ? "The weekly cleanup prune has never run — the launchd job may not be installed."
+                : hState === "warn" ? CHECK_HELP.housekeeping_age : "";
     lanes.push(laneFor("HOUSEKEEPING", hState, `
       <div class="kv">
         <span>schedule</span><b>${h.sched || "—"} IST${h.next ? ` · next ${h.next}` : ""}</b>
         <span>last run</span><b>${lastCell}</b>
         <span>policy</span><b class="muted">weekly · prune old bak/verdicts/handoffs/logs + .DS_Store</b>
         <span>pruned</span><b class="muted">${actStr}</b>
-      </div>`));
+      </div>`, hkTip));
   }
 
   // ROUTINES lane (Claude Code /schedule agents — distinct from launchd crons)
@@ -1049,7 +1106,7 @@ async function refresh() {
       </div>
       <table><tr><th></th><th>routine</th><th>cadence</th>
                   <th>last run</th><th>next fire</th></tr>
-        ${rows}</table>`));
+        ${rows}</table>`, rState === "warn" ? "No scheduled agents are enabled — none of the Claude /schedule routines will fire." : ""));
   }
 
   document.getElementById("lanes").innerHTML = lanes.join("");
