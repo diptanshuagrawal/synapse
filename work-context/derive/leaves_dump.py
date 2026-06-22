@@ -72,8 +72,29 @@ LEAVE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Leave-plan prompt detector. When a thread ROOT asks the team to share
+# their leave plan, the replies are bare date lists ("2-3 July, 7-8 July")
+# that carry no leave keyword and so escape LEAVE_PATTERN. We surface every
+# team-authored reply in such a thread regardless of keyword match.
+LEAVE_PLAN_PROMPT = re.compile(r"leave\s*plan|leave\s*calendar", re.IGNORECASE)
+
 # Body length cap for excerpt sent to chat.
 EXCERPT_MAX = 300
+
+
+def _thread_root_ts(event_id: str, thread_ts: str | None) -> str:
+    """Return the thread-root ts for a slack event.
+
+    Reply ids are `slack:<cid>:<root_ts>:<reply_ts>` (4 colon-parts); root
+    messages are `slack:<cid>:<ts>`. Prefer the id-encoded root, fall back to
+    the thread_ts column, finally the event's own ts (it is itself a root).
+    """
+    parts = event_id.split(":")
+    if len(parts) >= 4:
+        return parts[2]
+    if thread_ts:
+        return thread_ts
+    return parts[-1]
 
 
 def _load_team_emails() -> set[str]:
@@ -189,6 +210,14 @@ For each entry in `pending_leaves.json`, emit one verdict in
 5. **Confidence < 0.7** → row is rejected by apply_leaves and stays
    pending. Don't fabricate certainty.
 
+6. **Leave-plan thread replies** — some events are surfaced because they
+   are replies in a "share your leave plan" thread, NOT because they
+   matched a keyword. These are often bare date lists
+   ("2-3 July, 7-8 July, 13-17July") → parse EACH range into its own
+   `leaves[]` entry (one verdict, many entries), reason `vacation`
+   unless stated otherwise. Resolve the year/month from `mentioned_at`.
+   A pure ack ("noted", "done") in such a thread → `is_leave: false`.
+
 ## Team set (canonical handles)
 
 See `pending_leaves.json::team_canonical` — only these names belong in
@@ -238,12 +267,26 @@ def main() -> int:
         conn.commit()
         print(f"[reset] cleared {n} rows from team_leaves_processed")
 
+    # Thread roots that ask the team for their leave plan. Replies in these
+    # threads are bare date lists with no leave keyword — surface them anyway.
+    # The prompt itself is usually owner-authored (excluded from the team scan),
+    # so scan ALL slack events in window, narrowed by a cheap LIKE prefilter.
+    plan_root_ts: set[str] = set()
+    for rid, rthread, rbody in conn.execute(
+        "SELECT id, thread_ts, body FROM events "
+        "WHERE source = 'slack' AND ts >= ? AND body LIKE '%leave%'",
+        [since_iso],
+    ):
+        if rbody and LEAVE_PLAN_PROMPT.search(rbody):
+            plan_root_ts.add(_thread_root_ts(rid, rthread))
+    print(f"[leave-plan] {len(plan_root_ts)} leave-plan thread root(s) in window")
+
     # Slack events.actor stores raw U-ids — filter on slack_id, resolve to
     # canonical at emit time.
     slack_ids = sorted(team_slack_map.keys())
     placeholders = ",".join(["?"] * len(slack_ids))
     q = f"""
-        SELECT e.id, e.actor, e.ts, e.body, e.channel_id, e.url
+        SELECT e.id, e.actor, e.ts, e.body, e.channel_id, e.url, e.thread_ts
         FROM events e
         WHERE e.source = 'slack'
           AND e.ts >= ?
@@ -257,12 +300,19 @@ def main() -> int:
     print(f"[scan] {len(rows)} candidate events from team in window")
 
     pending: list[dict] = []
+    n_plan_reply = 0
     for r in rows:
-        ev_id, actor_slack_id, ts, body, cid, url = r
+        ev_id, actor_slack_id, ts, body, cid, url, thread_ts = r
         if not body:
             continue
-        if not LEAVE_PATTERN.search(body):
+        in_leave_plan_thread = (
+            plan_root_ts
+            and _thread_root_ts(ev_id, thread_ts) in plan_root_ts
+        )
+        if not LEAVE_PATTERN.search(body) and not in_leave_plan_thread:
             continue
+        if in_leave_plan_thread and not LEAVE_PATTERN.search(body):
+            n_plan_reply += 1
         canonical = team_slack_map.get(actor_slack_id, actor_slack_id)
         excerpt = body[:EXCERPT_MAX]
         if len(body) > EXCERPT_MAX:
@@ -278,7 +328,8 @@ def main() -> int:
             "url": url,
         })
 
-    print(f"[regex] {len(pending)} events matched leave patterns")
+    print(f"[regex] {len(pending)} events matched "
+          f"({n_plan_reply} via leave-plan thread, rest keyword)")
 
     payload = {
         "generated_at": datetime.now(tz=timezone.utc).isoformat(),
