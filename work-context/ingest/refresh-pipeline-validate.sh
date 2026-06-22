@@ -11,8 +11,11 @@
 # code. Call as:  ingest/refresh-pipeline-validate.sh "$ROOT"
 set +e
 ROOT="${1:?usage: refresh-pipeline-validate.sh <repo-root>}"
+# Per-process tmp ($$): every ingest wrapper fires this concurrently, so a
+# shared tmp name lets the first mv win and the rest fail "No such file".
+TMP="$ROOT/state/last_pipeline_validate.json.$$.tmp"
 "$ROOT/.venv/bin/python" "$ROOT/derive/pipeline_validate.py" --json \
-  > "$ROOT/state/last_pipeline_validate.json.tmp" 2>/dev/null \
-  && mv "$ROOT/state/last_pipeline_validate.json.tmp" "$ROOT/state/last_pipeline_validate.json" \
-  || rm -f "$ROOT/state/last_pipeline_validate.json.tmp"
+  > "$TMP" 2>/dev/null \
+  && mv "$TMP" "$ROOT/state/last_pipeline_validate.json" \
+  || rm -f "$TMP"
 exit 0
