@@ -153,6 +153,15 @@ so it is attempt-with-fallback, never a hard failure.
 Only the `new` array is eligible to post. The `skipped` array is already-raised
 findings — leave them alone. This is what guarantees a finding is never commented twice.
 
+`filter-new` dedups in two layers (so reworded re-finds don't slip through):
+- **exact** — same `finding_key` (page+check_type+normalized-anchor) as a tracked comment → skip.
+- **fuzzy (same page)** — `hard` skip when the candidate shares a **snake_case identifier**
+  (e.g. `casa_transaction`, `is_beta`) with an existing finding AND token-Jaccard ≥ 0.25
+  (high-confidence repeat); `soft` keeps the candidate but tags `possible_dup_of` when it only
+  shares a domain acronym / lower-J overlap. Soft is deliberately NON-dropping — a wrongly
+  dropped finding is worse than a flagged one, and the `possible_dup_of` tag surfaces as a ⚠ on
+  the Relay card (Phase 4.5) for the owner to Reject. Never silently drop on a fuzzy guess.
+
 ## Phase 3 — Post inline comments (skip if `--dry-run`)
 
 For each finding in `new`:
@@ -190,22 +199,37 @@ diagrams were actually read this run.
 If `new` is empty: post a one-line "Monthly sweep — all <N> docs clean, no new drift."
 A clean sweep is a valid, valuable result.
 
-## Phase 4.5 — Discovery approve/reject via Relay (interactive)
+## Phase 4.5 — Relay approve/reject cards (interactive maker-checker)
 
-The Phase 0.5 discovery appended new docs to `needs_confirm`. Post them to the same channel as
-buttoned Approve/Reject cards via the Relay socket-mode bot (same bot `/ticketize` uses) so the
-owner promotes/drops each without editing yaml by hand:
+Both drift findings and newly-discovered docs are posted to `#doc-sweep` as buttoned
+Approve/Reject cards via the Relay socket-mode bot (same bot `/ticketize` uses), so the owner
+actions each from Slack. **This is how findings reach Confluence in channel-preview mode: the
+sweep NEVER auto-posts a comment — a human Approve click does.** So these cards are posted even
+under `--dry-run` (the run still writes nothing to Confluence itself). Relay must be a member of
+`#doc-sweep` (`@relaybot`); if the bot errors (not in channel / token), report stderr — never
+silently fail.
+
+**(a) Drift-finding cards.** First write this run's findings to
+`state/doc_sync_findings_<run-id>.json` — one object per candidate with
+`{finding_key, page_id, page_title, page_url, owner_canonical, owner_account, severity,
+check_type, finding_title, anchor, suggested_edit, already_open}`. Set `already_open: true` for
+any finding `filter-new` put in `skipped` (so it's EXCLUDED from buttons — never re-post an
+open comment). `finding_key` = `doc_sync_state._finding_key(page_id, check_type, anchor)`. Then:
 
 ```bash
-$PY bin/relay_bot.py --post-docsync <run-id>
+$PY bin/relay_bot.py --post-findings <run-id>
 ```
 
-It reads `state/doc_sync_discovered.json` (this run's NEW ids only) and posts one card per
-discovered doc with the title + author + repo. On click the Relay LaunchAgent applies live
-(owner-gated): **Approve → promote the id from `needs_confirm` to `monitor`** (so next sweep
-checks it); **Reject → move it to `excluded`** with reason `discovery_rejected`. Both call
-`derive/doc_sync_state.py promote|exclude`. If the bot errors (not in channel / token), DO NOT
-silently fail — report stderr. If discovery found nothing new this run, skip the post.
+One card per actionable finding. On click (owner-gated, `RELAY_APPLY_MODE=live`):
+**Approve → `bin/doc_sync_apply.py` posts the inline Confluence comment** on the doc (footer
+fallback if the anchor can't be matched) and records it `open` in `doc_sync.db`;
+**Reject → records `rejected`**, no Confluence write. The applier uses the Atlassian REST API
+(token auth — the LaunchAgent can't use MCP), cloudId/host from config.
+
+**(b) Discovery cards.** `$PY bin/relay_bot.py --post-docsync <run-id>` reads
+`state/doc_sync_discovered.json` and posts one card per NEW doc. **Approve → promote
+`needs_confirm`→`monitor`** (next sweep checks it); **Reject → move to `excluded`**
+(`discovery_rejected`). Both call `derive/doc_sync_state.py move`. Skip if discovery found nothing.
 
 ## Phase 5 — Chat reply
 

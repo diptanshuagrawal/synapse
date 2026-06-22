@@ -48,12 +48,18 @@ Target id comes from `work-context/config/doc_sync.yaml` slack.channel_id.
   (prefixed "[doc-sync sweep PREVIEW]") to the doc-sweep channel via slack_send_message,
   including the `diagram_pass` status line.
 
-STEP 1.5 — DISCOVERY APPROVE/REJECT (Phase 4.5): if discovery found NEW docs this run, post Relay cards:
-    $PY bin/relay_bot.py --post-docsync <YYYY-MM>
-  One Approve/Reject card per newly-discovered doc → doc-sweep channel. Approve promotes
-  needs_confirm→monitor; Reject moves it to excluded (Relay LaunchAgent applies on click,
-  owner-gated). If the bot errors (not in channel / token), report stderr — do NOT silently fail.
-  Skip if discovery found nothing new.
+STEP 1.5 — RELAY APPROVE/REJECT CARDS (Phase 4.5): post buttoned cards to the doc-sweep channel
+  (Relay bot must be a channel member). These ARE the path to Confluence — the sweep never
+  auto-comments; a human Approve click does. So post cards even under --dry-run.
+  (a) Drift findings: write this run's findings to state/doc_sync_findings_<YYYY-MM>.json (one per
+      candidate incl. finding_key + already_open flag for any filter-new SKIPPED dupe), then
+      `$PY bin/relay_bot.py --post-findings <YYYY-MM>`. Approve → bin/doc_sync_apply.py posts the
+      inline Confluence comment (footer fallback) + records open; Reject → records rejected.
+      Already-open dupes are EXCLUDED from buttons.
+  (b) Discovered docs: `$PY bin/relay_bot.py --post-docsync <YYYY-MM>`. Approve promotes
+      needs_confirm→monitor; Reject → excluded (derive/doc_sync_state.py move).
+  Owner-gated, RELAY_APPLY_MODE=live. If the bot errors (not in channel / token), report stderr —
+  do NOT silently fail. Skip a set if it's empty.
 
 STEP 2 — Output: docs scanned · would-post findings · deduped (already-open) · newly-discovered ·
 clean · diagram/empty · diagram_pass status. No drift state writes in dry-run (discovery append IS written).
@@ -62,8 +68,10 @@ HARD RULES: dry-run preview only — ZERO Confluence writes. Preview + discovery
 doc-sweep channel (config slack.channel_id), never DM. Drift checks on monitor list only (never
 needs_confirm/excluded); discovery appends new docs to needs_confirm only — promotion to monitor
 happens ONLY via the Relay Approve button. Chrome pass is attempt-with-fallback; never fabricate
-diagram steps. To go FULLY LIVE later: drop `--dry-run` (starts posting real Confluence inline
-comments) — but FIRST fix the title-based dedup gate so reworded re-finds don't double-post.
+diagram steps. Comments reach Confluence ONLY via a human Approve on a Relay finding card
+(STEP 1.5) — the sweep never auto-posts, so there's no need to drop `--dry-run`. The dedup gate
+(filter-new) catches reworded re-finds (exact key + fuzzy same-page identifier match; soft
+matches flagged on the card), so approving won't double-post.
 
 ## RECORD SUCCESS (final step — gates the days-1–3 retry)
 ONLY after the PREVIEW post is CONFIRMED delivered to the doc-sweep channel (the would-post summary + discovery cards, or a clean "no drift" line) — stamp the marker with the year-month so the rest of this month's fires idle:
