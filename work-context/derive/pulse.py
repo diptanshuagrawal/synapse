@@ -85,8 +85,11 @@ def _working_days(conn, aliases, since, until, active_thresh: int = 5) -> dict:
 def _leave_mentions(conn, aliases, since, until) -> list[dict]:
     """The person's own slack messages in-window that read as leave/OOO/sick."""
     ph = _ph(aliases)
+    # Select the FULL body — the leave keyword routinely sits past the first
+    # ~160 chars (subteam ping + cc-list precede it). Match on full body; trim
+    # only the display excerpt, in Python. See standup_gather.py commit c316d42.
     rows = conn.execute(
-        f"""SELECT ts, substr(body,1,160) b, url FROM events
+        f"""SELECT ts, body, url FROM events
             WHERE source='slack' AND actor IN ({ph})
               AND ts >= ? AND ts < ? AND body IS NOT NULL
             ORDER BY ts""",
@@ -101,7 +104,8 @@ def _leave_mentions(conn, aliases, since, until) -> list[dict]:
         if key in seen:
             continue
         seen.add(key)
-        out.append({"ts": ts, "excerpt": body.strip(), "url": url})
+        excerpt = body.strip()[:160]
+        out.append({"ts": ts, "excerpt": excerpt, "url": url})
     return out
 
 
