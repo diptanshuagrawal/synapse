@@ -91,11 +91,15 @@ Scan the gather output for work that has **no Jira ticket**. Four signal classes
 **B. Future ask / commitment, no ticket.**
 - A Slack message directed at the member (`<@their_id>` or subteam ping) asking them to
   **take on new work** — "can you pick this up", "please build/add/create X", "next
-  sprint we should…", "raise it to <team>" — that cites no existing ticket.
+  sprint we should…", "raise it to <team>" — that cites no existing ticket. Work of ANY
+  flavour counts: build, fix, investigation, **or** an operational / compliance / security
+  / CI / infra-rollout / audit / onboarding action item. A broadcast (subteam / all-team
+  ping) IS such an ask when it assigns the member a concrete action item with a deadline.
 - A first-person commitment by the member — "I'll pick up X", "we'll need to add Y" —
   with no ticket.
 - A pure status ask ("any update?", "is this resolved?") is NOT a candidate — that's a
-  `/standup` Up-next item, not net-new tracked work.
+  `/standup` Up-next item, not net-new tracked work. Likewise drop pure approvals,
+  review requests, and FYIs with no action for the member.
 - These are REQUESTS (not yet-done work) → `placement: backlog` (§1e).
 
 **C. CMR with no tracking board ticket.**
@@ -133,9 +137,16 @@ change/PR, status `Change Approved` / `Implementation Reviewed` / `Released`). I
 The owner is dropped from the roster everywhere else; ask-scanning is the ONE exception —
 stakeholders pile net-new work onto the manager too. Scan the gather's
 `OWNER FOCUS → OWNER @-asks` block (direct `<@owner>` + owner-subteam pings, already
-emitted — no gather change). **STRICT** bar: propose ONLY a clear net-new build / fix /
-investigation asked of the owner. DROP approvals (CMR sign-off), review requests,
-POC-assignment, status pings, and FYIs — those are `/standup` items, not tracked work.
+emitted — no gather change). **Action-item bar:** propose any ask that hands the
+owner/team a **concrete action item** — a deliverable or task with a clear thing-to-do
+and (usually) an owner + ETA — *regardless of flavour*: build, fix, investigation, **or**
+an operational / compliance / security / CI / infra-rollout / audit / onboarding task.
+A broadcast to `@tech-managers` / all-EMs **is** an ask when it assigns each team a
+concrete action item (often with a deadline) — do NOT treat a broadcast as an FYI by
+default. DROP only: pure approvals (CMR sign-off), review requests, POC-assignment,
+status pings, nominations / awards / scheduling admin, and true FYIs (no action for our
+team) — those are `/standup` items, not tracked work. Conservative dedupe still applies:
+if in-flight work already covers the ask, drop it.
 - `reporter` = the stakeholder who asked (the `from=` actor; resolve to their canonical if
   roster, else keep the raw handle).
 - `assignee` = the **owner** by DEFAULT (your own commitment becomes tracked).
@@ -209,6 +220,27 @@ For each kept gap, pre-fill all fields so approval is one edit:
 - **links_cmr** — for class C: the CMR key to link (`relates to`) on create. For D:
   the release evidence (PR/ticket) the missing CMR should cover.
 - **evidence** — the PR URL and/or Slack thread permalink the gap came from.
+- **desc** — the **dev-facing ticket body**, authored as a `desc: |` block scalar (see
+  §1f). This is what becomes the Jira description on APPLY (manual or bot-click), so it
+  MUST be a complete, self-contained spec a dev can pick up cold — NOT the maker `why`
+  (which is owner-facing and only feeds the Slack approval card). Sections, in markdown:
+  **Context** (what/why in product terms, no "you"/owner language) · **Requirements**
+  (a `- [ ] ` checklist of concrete actions pulled from the evidence; note anything
+  already in flight to verify-not-redo) · **References** (every Slack thread permalink,
+  PR/commit URL, CMR key, doc/tracker link from the evidence — the dev must reach the
+  source without asking) · **Acceptance criteria** (the observable done-state). Use
+  `[label](url)` or bare URLs (both render clickable); resolve `<@U…>`/`<!subteam^…>`
+  to plain names where it helps. The apply renderer (`bin/ticketize_apply.py`) supports
+  `##`/`###` headings, `- `/`* ` bullets, `- [ ]`/`- [x]` checkboxes, `---` rules,
+  `**bold**`, and links — stay within that subset.
+  **ADHD-friendly is MANDATORY for every ticket body, ALWAYS** (this is the ticket's
+  skill-defined format — it does NOT lose data or links, it structures them):
+    - Open with a one-line **TL;DR:** — the bottom line, what must happen, before any heading.
+    - One idea / one action per line. Short sentences. No dense paragraphs or wall-of-text.
+    - Blank line between every section; let it breathe.
+    - Requirements and Acceptance are bullet/checkbox lists, never prose.
+    - Lossless: keep EVERY link, key, number, and concrete detail from the evidence —
+      ADHD-friendly means scannable structure, not omission. Never drop a reference to be brief.
 - **decision** — `pending`.
 
 Type rule still holds: never `Epic`, never `CMR`. Class C → `Bug`/`Task`; class D →
@@ -238,6 +270,24 @@ defaults to the Tech-Misc fallback `EX-2882` if none. Nothing is created until y
 - evidence: https://github.com/example-org/service-a/pull/735
 - why: 6 commits on PR #735 incl. "decouple freeze check" / "remove unused code",
   no EX ref on the PR and no matching board ticket.
+- desc: |
+    **TL;DR:** Extract the IFT freeze-check into its own unit-tested validator. No behaviour change.
+
+    ## Context
+    The IFT execute flow inlines its freeze check.
+    The rule can't be reused or tested in isolation today.
+
+    ## Requirements
+    - [ ] Pull the freeze-check logic out of the IFT execute path into its own validator.
+    - [ ] Wire the validator into IFT execute behind the existing call site (no behaviour change).
+    - [ ] Cover the validator with unit tests (frozen / not-frozen / partial-freeze).
+
+    ## References
+    - PR with the inlined work: https://github.com/example-org/service-a/pull/735
+
+    ## Acceptance criteria
+    - Freeze check lives in a dedicated, unit-tested validator.
+    - IFT execute calls the validator; behaviour unchanged.
 ---
 
 ## CMR gaps
@@ -339,8 +389,25 @@ Owner-invoked: `/ticketize apply <date>`.
      + required fields from §5 (`Environment: PROD` default).
    - **Sprint**: for `placement: active-sprint`, set `customfield_10010` = the active sprint
      id from §6 (via `additional_fields`). For `placement: backlog`, OMIT the sprint field.
-   - description = the `why` clause + an **Evidence** line with the PR/Slack link +
-     `Auto-proposed by /ticketize on <date>` provenance footer.
+   - description = the candidate's `desc` block verbatim if present (the maker already
+     authored the dev-facing spec); otherwise synthesize one. NEVER use the maker `why`
+     as the body (it's owner-facing rationale). Either way the body is a complete,
+     self-contained spec a dev can pick up cold, in markdown (`contentFormat: "markdown"`),
+     and **ADHD-friendly — ALWAYS** (scannable structure, zero data/link loss):
+       - **TL;DR:** one line first — the bottom line, what must happen — before any heading.
+       - **Context** — 1–3 short lines: what this is and why, in product/engineering terms
+         (no "you", no "Diptanshu", no detection/standup language).
+       - **Requirements** — a `- [ ]` checkbox list, one action per line. Pull the exact
+         action items from the evidence (Slack ask, PR, or CMR). Note anything already in
+         flight so the dev verifies-and-ticks rather than redoes it.
+       - **References** — every supporting link: the originating **Slack thread
+         permalink(s)**, PR/commit URLs, CMR keys, and any doc/tracker links named in the
+         evidence. Devs must reach the source without asking — drop NOTHING to be brief.
+       - **Acceptance criteria** — bullet list, the observable done-state.
+     One idea per line; blank line between sections. End with a one-line provenance footer:
+     `Auto-proposed by /ticketize on <date> (<source>); parent <epic> — reattach to the
+     right epic + add story points at planning.` Resolve `<@U…>`/`<!subteam^…>` mentions
+     into plain names where it aids the dev; keep raw Slack URLs intact so they stay clickable.
    - Do NOT set story points — devs add at planning.
    - **Class C (`cmr-no-ticket`)**: after create, link the new issue to each `links_cmr`
      key. Discover the link type first (`getIssueLinkTypes`) and use the neutral
@@ -428,8 +495,11 @@ reply — acceptable because your reply is the gate, but enable it deliberately,
   add). Never create CMRs; only create an Epic on explicit request.
 - CMR coherence (C/D): propose a Bug/Task for a CMR that lacks a tracking ticket; FLAG a
   release that lacks a CMR — but never auto-raise the CMR (human-owned ops process).
-- Owner-asks (E): STRICT — only net-new build/fix/investigation asked of the owner; drop
-  approvals / reviews / status / FYIs. Default assignee = owner, editable to a suggested dev.
+- Owner-asks (E): action-item bar — any concrete action item handed to the owner/team
+  (build / fix / investigation OR operational / compliance / security / CI / infra-rollout
+  / audit / onboarding), incl. all-EM broadcasts that assign a task with a deadline; drop
+  only approvals / reviews / status pings / admin / true FYIs, and anything in-flight work
+  already covers. Default assignee = owner, editable to a suggested dev.
 - On-call is exempt: drop every candidate assigned to the current on-call — their work
   is pre-tracked by the standing 5-SP oncall placeholder ticket.
 - Reporter ≠ assignee. The member who surfaced a reported defect is the reporter; never
