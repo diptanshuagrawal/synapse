@@ -415,6 +415,17 @@ NOT a `###` heading** — a `###` heading escapes the mention to literal `<@U…
 names). (Validated 2026-06-22: `### <@U…>` rendered as literal text; `**<@U…> · …**`
 rendered as a real ping.)
 
+**AUDIENCE — write for the whole team, NEVER addressed to the owner.** This is a general
+broadcast everyone reads, not a note to the manager. So:
+- NO second-person aimed at the owner — never "your", "you", "for your review", "needs your
+  call/approval/decision". The owner is not the reader here.
+- Re-frame an owner-directed ask as a **neutral team statement**: "needs your lookback call"
+  → "pending a decision on the lookback window"; "for your review" → "awaiting review".
+- Owner-directed framing (action items, approvals, decisions the manager owns) belongs ONLY
+  in §7b Your queue and §7d Team summary — both of which post to the owner channel, not here.
+- Keep it dev-friendly: what each person did / is doing / is blocked on / picks up next,
+  stated plainly for peers.
+
 One section per roster member (on-leave members get the one-line leave badge instead). Use
 **nested bullets**: each status is a **bold parent bullet**, and every item sits as an
 indented sub-bullet under it. **Omit any section that has no items** — never render an
