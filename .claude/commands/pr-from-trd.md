@@ -42,6 +42,37 @@ hard rules below are non-negotiable.
    diagram you have not actually read would violate rule 5. Docs whose flow is all inline
    ` ```mermaid ` (already in the artifacts) or that carry no diagram are NOT gated.
 
+## Review pitfalls to pre-empt (learned from real reviews — apply during step 4)
+
+A TRD's contract is *indicative*, not authoritative. Most review churn comes from mirroring
+it too literally. Before raising the PR, self-check:
+1. **Reuse existing platform enums/types** — never mint a parallel one (e.g. a new
+   `AcceptanceChannel` string) when the codebase already models the concept (e.g.
+   `ChannelType`). Grep for an existing enum/field first; map each TRD field onto it.
+2. **Per-variant granularity, then derive** — sub-activity/type should be per-variant
+   (CARD_ATM/POS/ECOM), not one lumped value; derive dependent values (CBS txn_type) from
+   the granular type, not from Mode.
+3. **Gate variant behaviour on the variant** — don't inherit a sibling's hardcode. A
+   single-channel sibling returns `true` because it's always that channel; a multi-channel
+   feature must gate every such method on the channel. Add the variant to aggregate lists too.
+4. **Fetch the authoritative docs** — the request **contract** and the **narration format**
+   often live in separate Confluence docs (e.g. a "<Feature> Contract" page + a
+   "Transaction Narrations <year>" compliance doc), not the TRD. Fetch them for exact fields,
+   string enum values, and narration field-order/labels. When the TRD says TBD, the value
+   usually exists there or the author knows it — ask rather than placeholder.
+5. **Trim each flow's contract** to only what it needs (a non-financial flow has no
+   amount/rrn/currency/TDS attrs); drop redundant assignments; prefer payload values over
+   server defaults (e.g. a payload timestamp over `time.Now()`).
+6. **Test data = real API values** (string enum names, not rpc ints); assert every field
+   you add to an expected-response fixture. For tax/charge flows reviewers expect:
+   threshold-breach, insufficient-balance-due-to-tax, no-PAN→rejected, channel-gating
+   (no tax for non-applicable channels), reversal for BOTH LCS- and CBS-parent, partial +
+   concurrent (under/over parent) refunds.
+7. **Be honest about what's unverified** — flag deferred/can't-wire tests in-thread; say
+   "CI-validated, not local" when the local toolchain can't run the integration leg.
+
+Full detail lives in `~/.claude/engineering-lessons.md` (auto-loaded into every session).
+
 ## Steps
 
 **1. Extract TRD artifacts (deterministic)**
