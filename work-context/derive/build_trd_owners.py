@@ -181,6 +181,9 @@ def main() -> None:
     args = parser.parse_args()
 
     conn = sqlite3.connect(str(DB))
+    # Wait for the write lock instead of failing immediately — Slack ingest can
+    # hold it for minutes and this runs concurrently from every ingest wrapper.
+    conn.execute("PRAGMA busy_timeout = 30000")  # 30s, matches ingest/common.py
     # Ensure schema present.
     if MIGRATION.exists():
         conn.executescript(MIGRATION.read_text())
