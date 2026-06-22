@@ -511,12 +511,89 @@ def get_clusters(limit: int = 10, status: str | None = None) -> list[dict]:
     return out
 
 
+LEAVES_WINDOW_PAST = 14
+LEAVES_WINDOW_FUTURE = 60
+
+# Same dedup logic as derive/render_leaves.py: one slack message can land twice
+# (top-level + thread-context form). Keep the lowest event_id per logical leave.
+_LEAVES_DEDUP_CTE = """
+    WITH dedup AS (
+        SELECT actor, date_start, date_end, reason, mentioned_at,
+               channel_id, channel_name, body_excerpt, url,
+               ROW_NUMBER() OVER (
+                   PARTITION BY actor,
+                                COALESCE(date_start,'_'),
+                                COALESCE(date_end,'_'),
+                                COALESCE(reason,'_')
+                   ORDER BY LENGTH(event_id), event_id
+               ) AS rn
+        FROM team_leaves
+    )
+"""
+
+
+def get_leaves() -> dict:
+    """Dated leaves within [today-14d, today+60d] + recent undated ones.
+
+    Feeds the /leaves Gantt page. `leaves` are dated rows overlapping the
+    window (one dict per logical leave); `ambiguous` are recent date-TBD
+    mentions chat couldn't pin down. Window bounds + today returned so the
+    frontend can lay out the time axis without re-deriving dates.
+    """
+    out = {
+        "today": datetime.now(IST).strftime("%Y-%m-%d"),
+        "window_start": (datetime.now(IST) - timedelta(days=LEAVES_WINDOW_PAST)).strftime("%Y-%m-%d"),
+        "window_end": (datetime.now(IST) + timedelta(days=LEAVES_WINDOW_FUTURE)).strftime("%Y-%m-%d"),
+        "leaves": [],
+        "ambiguous": [],
+        "total": 0,
+    }
+    if not DB_PATH.exists():
+        return out
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        if not conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='team_leaves'"
+        ).fetchone():
+            conn.close()
+            return out
+        cols = ["actor", "date_start", "date_end", "reason", "mentioned_at",
+                "channel_id", "channel_name", "body_excerpt", "url"]
+        sel = ", ".join(cols)
+        dated = conn.execute(_LEAVES_DEDUP_CTE + f"""
+            SELECT {sel} FROM dedup WHERE rn = 1
+              AND date_start IS NOT NULL
+              AND date_start <= ?
+              AND COALESCE(date_end, date_start) >= ?
+            ORDER BY date_start, actor
+        """, (out["window_end"], out["window_start"])).fetchall()
+        ambig = conn.execute(_LEAVES_DEDUP_CTE + f"""
+            SELECT {sel} FROM dedup WHERE rn = 1
+              AND date_start IS NULL
+              AND mentioned_at >= datetime('now', '-30 days')
+            ORDER BY mentioned_at DESC
+        """).fetchall()
+        out["total"] = conn.execute("SELECT COUNT(*) FROM team_leaves").fetchone()[0]
+        conn.close()
+        out["leaves"] = [dict(zip(cols, r)) for r in dated]
+        out["ambiguous"] = [dict(zip(cols, r)) for r in ambig]
+    except Exception as e:
+        out["error"] = str(e)
+    return out
+
+
+# Logs that live outside LOGS/ (resolved by absolute path).
+LOGS_EXTERNAL = {
+    "session-reaper.log": Path.home() / ".claude" / "logs" / "session-reaper.log",
+}
+
+
 def get_log_tail(name: str, n: int = 80) -> list[str]:
     safe = {"identity_reconcile.log", "ingest.log", "rollup.log",
-            "housekeeping.log", "github-reset.log"}
+            "housekeeping.log", "github-reset.log", "session-reaper.log"}
     if name not in safe:
         return [f"refused: {name} not in allowlist"]
-    p = LOGS / name
+    p = LOGS_EXTERNAL.get(name, LOGS / name)
     if not p.exists():
         return ["no such log"]
     return p.read_text().splitlines()[-n:]
@@ -674,6 +751,7 @@ tr:nth-child(even) td { background:#0e1319; }
       <option>ingest.log</option>
       <option>rollup.log</option>
       <option>housekeeping.log</option>
+      <option>session-reaper.log</option>
     </select>
     <a class="refresh-btn" onclick="loadLog()">reload</a>
   </div>
@@ -725,6 +803,7 @@ async function refresh() {
   const r = await fetch("/api/snapshot");
   const s = await r.json();
   const slack = await (await fetch("/api/slack-channels")).json();
+  const leaves = await (await fetch("/api/leaves")).json();
   document.getElementById("when").textContent = s.now_ist || "?";
 
   const lanes = [];
@@ -835,6 +914,30 @@ async function refresh() {
     <details><summary>discovered channels (${disc.n_owner ? disc.n_owner + " owner · " : ""}${disc.n_review || 0} needs_review${disc.n_silent ? " · " + disc.n_silent + " team-silent" : ""}) — click to expand</summary>
       <div id="discoverTable"><span class="muted">loading…</span></div>
     </details>`));
+
+  // LEAVES lane (team_leaves → Gantt page at /leaves)
+  {
+    const today = leaves.today;
+    const dated = leaves.leaves || [];
+    const ambig = leaves.ambiguous || [];
+    const _end = l => l.date_end || l.date_start;
+    const active   = dated.filter(l => l.date_start <= today && _end(l) >= today);
+    const upcoming = dated.filter(l => l.date_start > today);
+    const lvState = leaves.error ? "fail" : "ok";
+    const peopleOut = [...new Set(active.map(l => l.actor))];
+    const peopleStr = peopleOut.length
+      ? peopleOut.slice(0, 6).join(", ") + (peopleOut.length > 6 ? ` +${peopleOut.length - 6}` : "")
+      : "nobody";
+    lanes.push(laneFor("LEAVES", lvState, `
+      <div class="kv">
+        <span>out today</span><b>${active.length} ${active.length === 1 ? "person" : "people"} <span class="muted">${peopleStr}</span></b>
+        <span>upcoming</span><b>${upcoming.length} <span class="muted">(next ${60}d)</span></b>
+        <span>date TBD</span><b>${ambig.length} <span class="muted">ambiguous mention(s)</span></b>
+        <span>tracked</span><b>${(leaves.total || 0).toLocaleString()} total rows</b>
+      </div>
+      ${leaves.error ? `<div class="finding fail"><b>FAIL</b> · ${_esc(leaves.error)}</div>` : ""}
+      <div style="margin-top:8px"><a href="/leaves" target="_blank" style="color:#4d8eff;font-size:12px">📅 view leaves gantt →</a></div>`));
+  }
 
   // IDENTITY lane
   if (s.identity) {
@@ -1330,6 +1433,211 @@ document.getElementById("filter").oninput = render;
 """
 
 
+# Team-leaves Gantt view (linked from the LEAVES lane on the main dashboard).
+# Reads /api/leaves and lays out a horizontal timeline: one row per person,
+# one bar per leave, coloured by reason. Today is marked; weekends shaded.
+LEAVES_HTML = """<!doctype html>
+<html><head><meta charset="utf-8">
+<title>team leaves · gantt</title>
+<style>
+:root { color-scheme: dark; }
+body { font: 13px ui-monospace,SFMono-Regular,Menlo,monospace; background:#0b0f14;
+       color:#d5d9e0; max-width: 1400px; margin: 16px auto; padding: 0 16px; }
+h1 { font-size:18px; margin:0 0 4px; letter-spacing:1px; }
+h2 { font-size:13px; margin:18px 0 6px; color:#a7afba; }
+.subtitle { color:#6e7681; margin-bottom:14px; font-size:11px; }
+a { color:#4d8eff; text-decoration:none; }
+a:hover { text-decoration:underline; }
+.legend { display:flex; gap:14px; flex-wrap:wrap; font-size:11px; color:#a7afba; margin:10px 0; }
+.legend span::before { content:"■"; margin-right:5px; }
+.legend .vacation::before { color:#4d8eff; }
+.legend .wfh::before      { color:#48d597; }
+.legend .sick::before     { color:#d54848; }
+.legend .holiday::before  { color:#9b8eff; }
+.legend .ooo::before      { color:#d5b248; }
+.legend .other::before    { color:#6e7681; }
+.gantt { border:1px solid #1a212b; border-radius:4px; overflow-x:auto; background:#080c10; }
+.axis-month, .axis-day, .grow { display:flex; }
+.axis-month div, .axis-day div { flex:0 0 auto; box-sizing:border-box; text-align:center;
+       color:#6e7681; font-size:10px; border-left:1px solid #161c25; }
+.axis-month { border-bottom:1px solid #1a212b; }
+.axis-month div { padding:3px 0; color:#a7afba; border-left:1px solid #2a313b; }
+.axis-day div { padding:2px 0; }
+.spacer { flex:0 0 auto; position:sticky; left:0; z-index:3; background:#080c10;
+          border-right:1px solid #2a313b; }
+.row { display:flex; align-items:stretch; border-top:1px solid #11161d; }
+.row:hover { background:#0e1319; }
+.label { flex:0 0 auto; position:sticky; left:0; z-index:2; background:inherit;
+         border-right:1px solid #2a313b; padding:0 8px; display:flex; align-items:center;
+         font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.row:hover .label { background:#0e1319; }
+.track { flex:0 0 auto; position:relative; height:26px; }
+.bar { position:absolute; top:4px; bottom:4px; border-radius:3px; font-size:10px;
+       color:#0b0f14; display:flex; align-items:center; padding:0 5px; overflow:hidden;
+       white-space:nowrap; cursor:default; box-shadow:inset 0 0 0 1px #0006; }
+.bar.open-l { border-top-left-radius:0; border-bottom-left-radius:0; }
+.bar.open-r { border-top-right-radius:0; border-bottom-right-radius:0; }
+.bar a { color:inherit; text-decoration:none; }
+.weekend { position:absolute; top:0; bottom:0; background:#ffffff08; pointer-events:none; }
+.todayline { position:absolute; top:0; bottom:0; width:2px; background:#f2c14e;
+             pointer-events:none; z-index:1; }
+.todaylabel { position:absolute; top:0; font-size:9px; color:#f2c14e;
+              transform:translateX(-50%); pointer-events:none; }
+table { border-collapse:collapse; width:100%; font-size:12px; margin-top:4px; }
+th { color:#6e7681; font-weight:normal; text-align:left; padding:4px 8px; border-bottom:1px solid #2a313b; }
+td { padding:4px 8px; }
+tr:nth-child(even) td { background:#0e1319; }
+.muted { color:#6e7681; }
+.empty { color:#6e7681; padding:18px; }
+</style></head>
+<body>
+<h1>TEAM LEAVES — gantt</h1>
+<div class="subtitle"><a href="/">← back to dashboard</a> · <span id="count">loading…</span></div>
+<div class="legend">
+  <span class="vacation">vacation</span><span class="wfh">wfh</span>
+  <span class="sick">sick</span><span class="holiday">holiday</span>
+  <span class="ooo">ooo</span><span class="other">other / untagged</span>
+</div>
+<div id="gantt" class="gantt"><div class="empty">loading…</div></div>
+<h2>Ambiguous — date TBD</h2>
+<div id="ambig"><div class="muted">loading…</div></div>
+
+<script>
+const DAY_W = 22, LABEL_W = 150;
+const COLOR = { vacation:"#4d8eff", wfh:"#48d597", sick:"#d54848",
+                holiday:"#9b8eff", ooo:"#d5b248", other:"#6e7681" };
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+function _esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function _d(s){ const [y,m,d] = s.split("-").map(Number); return Date.UTC(y, m-1, d); }
+function _diffDays(a, b){ return Math.round((_d(b) - _d(a)) / 86400000); }
+function _color(reason){ return COLOR[(reason||"other").toLowerCase()] || COLOR.other; }
+function _fmtRange(s, e){ if(!e || e===s) return s; return `${s} → ${e}`; }
+
+async function load() {
+  let data;
+  try { data = await (await fetch("/api/leaves")).json(); }
+  catch(e){ document.getElementById("gantt").innerHTML = `<div class="empty">load error</div>`; return; }
+
+  const today = data.today, wStart = data.window_start, wEnd = data.window_end;
+  const nDays = _diffDays(wStart, wEnd) + 1;
+  const trackW = nDays * DAY_W;
+  const leaves = data.leaves || [];
+
+  document.getElementById("count").textContent =
+    `${leaves.length} dated leave(s) · window ${wStart} → ${wEnd} · today ${today}`;
+
+  // Group by person; sort active-today first, then by earliest start.
+  const byPerson = {};
+  for (const l of leaves) (byPerson[l.actor] = byPerson[l.actor] || []).push(l);
+  const _end = l => l.date_end || l.date_start;
+  const people = Object.keys(byPerson).sort((a, b) => {
+    const aAct = byPerson[a].some(l => l.date_start <= today && _end(l) >= today);
+    const bAct = byPerson[b].some(l => l.date_start <= today && _end(l) >= today);
+    if (aAct !== bAct) return aAct ? -1 : 1;
+    const aMin = byPerson[a].reduce((m, l) => l.date_start < m ? l.date_start : m, "9999");
+    const bMin = byPerson[b].reduce((m, l) => l.date_start < m ? l.date_start : m, "9999");
+    return aMin < bMin ? -1 : aMin > bMin ? 1 : a.localeCompare(b);
+  });
+
+  // ── axis (month row + day row) ──
+  let monthRow = `<div class="spacer" style="width:${LABEL_W}px"></div>`;
+  let dayRow   = `<div class="spacer" style="width:${LABEL_W}px"></div>`;
+  let curMonth = -1, monthSpan = 0, monthLabel = "";
+  const flushMonth = () => { if (monthSpan) monthRow +=
+      `<div style="width:${monthSpan*DAY_W}px">${monthLabel}</div>`; };
+  for (let i = 0; i < nDays; i++) {
+    const dt = new Date(_d(wStart) + i*86400000);
+    const mo = dt.getUTCMonth();
+    if (mo !== curMonth) { flushMonth(); curMonth = mo; monthSpan = 0;
+      monthLabel = `${MONTHS[mo]} ${dt.getUTCFullYear()}`; }
+    monthSpan++;
+    dayRow += `<div style="width:${DAY_W}px">${dt.getUTCDate()}</div>`;
+  }
+  flushMonth();
+
+  // ── background layer (weekend shading + today line) ──
+  let bg = "";
+  for (let i = 0; i < nDays; i++) {
+    const dt = new Date(_d(wStart) + i*86400000);
+    const wd = dt.getUTCDay();
+    if (wd === 0 || wd === 6)
+      bg += `<div class="weekend" style="left:${i*DAY_W}px;width:${DAY_W}px"></div>`;
+  }
+  const todayOff = _diffDays(wStart, today);
+  if (todayOff >= 0 && todayOff < nDays) {
+    const x = todayOff*DAY_W + DAY_W/2;
+    bg += `<div class="todayline" style="left:${x}px"></div>`;
+  }
+
+  // ── person rows ──
+  let rowsHtml = "";
+  for (const p of people) {
+    let bars = "";
+    for (const l of byPerson[p]) {
+      const s = l.date_start, e = l.date_end || l.date_start;
+      let startOff = _diffDays(wStart, s);
+      let endOff   = _diffDays(wStart, e);
+      const openL = startOff < 0, openR = endOff > nDays - 1;
+      startOff = Math.max(0, startOff);
+      endOff = Math.min(nDays - 1, endOff);
+      if (endOff < startOff) continue;
+      const left = startOff * DAY_W;
+      const width = (endOff - startOff + 1) * DAY_W - 2;
+      const days = _diffDays(s, e) + 1;
+      const tip = `${p} · ${_fmtRange(s, l.date_end)} · ${days}d`
+                + `${l.reason ? " · " + l.reason : ""}`
+                + `${l.channel_name ? " · #" + l.channel_name : ""}`
+                + `${l.body_excerpt ? "\\n" + l.body_excerpt : ""}`;
+      const lbl = (l.reason || "leave") + (days > 1 ? ` ${days}d` : "");
+      const inner = l.url
+        ? `<a href="${_esc(l.url)}" target="_blank" title="${_esc(tip)}">${_esc(lbl)}</a>`
+        : `<span title="${_esc(tip)}">${_esc(lbl)}</span>`;
+      bars += `<div class="bar ${openL?"open-l":""} ${openR?"open-r":""}"
+                 style="left:${left}px;width:${Math.max(width,6)}px;background:${_color(l.reason)}"
+                 title="${_esc(tip)}">${inner}</div>`;
+    }
+    rowsHtml += `<div class="row">
+        <div class="label" style="width:${LABEL_W}px">${_esc(p)}</div>
+        <div class="track" style="width:${trackW}px">${bars}</div>
+      </div>`;
+  }
+
+  const g = document.getElementById("gantt");
+  if (!people.length) { g.innerHTML = `<div class="empty">no dated leaves in window</div>`; }
+  else {
+    g.innerHTML =
+      `<div class="axis-month">${monthRow}</div>` +
+      `<div class="axis-day">${dayRow}</div>` +
+      `<div style="position:relative">` +
+        `<div style="position:absolute;left:${LABEL_W}px;top:0;bottom:0;width:${trackW}px">${bg}</div>` +
+        rowsHtml +
+      `</div>`;
+    // Scroll so today sits ~1/3 in from the left.
+    g.scrollLeft = Math.max(0, todayOff*DAY_W - g.clientWidth/3);
+  }
+
+  // ── ambiguous table ──
+  const ambig = data.ambiguous || [];
+  const ae = document.getElementById("ambig");
+  if (!ambig.length) ae.innerHTML = `<div class="muted">none</div>`;
+  else ae.innerHTML = `<table><tr><th>person</th><th>mentioned</th><th>reason</th>
+      <th>channel</th><th>excerpt</th><th>link</th></tr>` +
+    ambig.map(l => `<tr><td>${_esc(l.actor)}</td>
+        <td class="muted">${_esc((l.mentioned_at||"").slice(0,10))}</td>
+        <td>${_esc(l.reason||"-")}</td>
+        <td class="muted">${_esc(l.channel_name ? "#"+l.channel_name : "-")}</td>
+        <td class="muted">${_esc((l.body_excerpt||"").slice(0,80))}</td>
+        <td>${l.url ? `<a href="${_esc(l.url)}" target="_blank">view</a>` : "-"}</td></tr>`).join("")
+    + `</table>`;
+}
+load();
+setInterval(load, 1_800_000);
+</script>
+</body></html>
+"""
+
+
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
@@ -1362,6 +1670,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html(INDEX_HTML)
         elif path == "/channels":
             self._send_html(CHANNELS_HTML)
+        elif path == "/leaves":
+            self._send_html(LEAVES_HTML)
+        elif path == "/api/leaves":
+            self._send_json(get_leaves())
         elif path == "/api/snapshot":
             self._send_json(get_snapshot())
         elif path == "/api/slack-channels":
