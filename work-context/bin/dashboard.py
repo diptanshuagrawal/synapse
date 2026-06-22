@@ -331,6 +331,34 @@ def get_snapshot() -> dict:
         "next":     disc_sched["next"],
         "has_cache": bool(sd),
     }
+    # User-group (subteam) discovery summary — propose-only, owner applies layers.
+    ug = _read_json(STATE / "last_slack_discover_usergroups.json")
+
+    def _ug_rows(bucket: str) -> list:
+        out = []
+        for g in (ug.get(bucket, []) or []):
+            out.append({
+                "id":      g.get("id", ""),
+                "handle":  g.get("handle", ""),
+                "size":    g.get("size", 0),
+                "owner_in": bool(g.get("owner_in")),
+                "reports": g.get("reports", 0),
+                "broad":   bool(g.get("broad")),
+                "layer":   g.get("layer", ""),
+            })
+        return out
+
+    snap["discover_ug"] = {
+        "n_mgr":    len(ug.get("manager", []) or []),
+        "n_team":   len(ug.get("team", []) or []),
+        "n_amb":    len(ug.get("ambiguous", []) or []),
+        "n_config": len(ug.get("configured", []) or []),
+        "has_cache": bool(ug),
+        "manager":   _ug_rows("manager"),
+        "team":      _ug_rows("team"),
+        "ambiguous": _ug_rows("ambiguous"),
+        "configured": _ug_rows("configured"),
+    }
     snap["identity"] = _read_json(STATE / "last_identity_reconcile.json")
     snap["validate"] = {s: _read_json(STATE / f"last_{s}_validate.json")
                         for s in SOURCES}
@@ -948,6 +976,35 @@ async function refresh() {
   const discRow = disc.sched ? `
       <span>discover</span><b>${discReady} ready${discOwnerStr} · <span class="muted">${disc.n_review || 0} needs_review${discSilentStr}</span></b>
       <span>disc-sched</span><b>${disc.sched} IST · next ${disc.next}</b>` : "";
+  const ug = s.discover_ug || {};
+  const ugPending = (ug.n_mgr || 0) + (ug.n_team || 0) + (ug.n_amb || 0);
+  const ugRow = ug.has_cache ? `
+      <span>usergroups</span><b>${ugPending} pending · <span class="muted">${ug.n_mgr || 0} mgr · ${ug.n_team || 0} team · ${ug.n_amb || 0} ambiguous</span></b>` : "";
+  const _ugRows = (rows, applyFlag) => (rows || []).map(g => {
+    const reps = g.reports ? `${g.reports}` : "—";
+    const layerCell = g.layer
+        ? `<span class="muted">${g.layer}</span>`
+        : (applyFlag
+            ? `<code style="font-size:10px">--apply-${applyFlag} ${g.id}</code>`
+            : "");
+    const flags = [g.owner_in ? "owner" : "", g.broad ? "⚠ broad" : ""].filter(Boolean).join(" · ");
+    return `<tr><td>@${g.handle}</td><td>${g.size}</td><td>${reps}</td>`
+         + `<td><span class="muted">${flags}</span></td><td>${layerCell}</td></tr>`;
+  }).join("");
+  const _ugSection = (title, rows, applyFlag) =>
+    (rows && rows.length)
+      ? `<tr><td colspan="5" style="padding-top:6px"><b>${title}</b></td></tr>${_ugRows(rows, applyFlag)}`
+      : "";
+  const ugDetails = ug.has_cache ? `
+    <details><summary>discovered user-groups (${ug.n_mgr || 0} mgr · ${ug.n_team || 0} team · ${ug.n_amb || 0} ambiguous · ${ug.n_config || 0} configured) — click to expand</summary>
+      <table><tr><th>handle</th><th>size</th><th>reports</th><th>flags</th><th>layer / apply</th></tr>
+        ${_ugSection("manager → owner_member", ug.manager, "manager")}
+        ${_ugSection("team → ingest filter", ug.team, "team")}
+        ${_ugSection("ambiguous (you pick)", ug.ambiguous, "manager")}
+        ${_ugSection("already configured", ug.configured, "")}
+      </table>
+      <div style="margin-top:6px"><span class="muted" style="font-size:11px">apply: python derive/slack_discover_usergroups.py --apply-manager &lt;ids&gt; | --apply-team &lt;ids&gt; | --skip &lt;ids&gt;</span></div>
+    </details>` : "";
   lanes.push(laneFor("SLACK", slackWorst, `
     <div class="kv">
       <span>last run</span><b>${slackLastRun || "—"} <span class="muted">(${_rel(slackLastIso)})</span></b>
@@ -955,6 +1012,7 @@ async function refresh() {
       <span>events</span><b>${(s.db?.by_source?.slack || 0).toLocaleString()}</b>
       ${_runtimeBadge(slackRh)}
       ${discRow}
+      ${ugRow}
     </div>
     ${_runtimeFinding(slackRh)}${slackFindings}
     <details><summary>per-channel detail (top 40 of ${slack.length} by events) — click to expand</summary>
@@ -965,7 +1023,8 @@ async function refresh() {
     </details>
     <details><summary>discovered channels (${disc.n_owner ? disc.n_owner + " owner · " : ""}${disc.n_review || 0} needs_review${disc.n_silent ? " · " + disc.n_silent + " team-silent" : ""}) — click to expand</summary>
       <div id="discoverTable"><span class="muted">loading…</span></div>
-    </details>`, slackTip));
+    </details>
+    ${ugDetails}`, slackTip));
 
   // LEAVES lane (team_leaves → Gantt page at /leaves)
   {

@@ -73,4 +73,20 @@ fi
 # Keep only the 4 most-recent backups.
 ls -1t "$ROOT/state/slack_channels.yaml.bak."* 2>/dev/null | tail -n +5 | xargs -I{} rm -f {} || true
 
+# ── User-group (subteam) discovery — PROPOSE ONLY ──
+# Scans usergroups.list for groups the owner / team belong to that aren't in
+# config/team_subteams.yaml, buckets them into manager (owner_member) vs team
+# layers, and writes a proposal JSON. It NEVER auto-writes config: manager-vs-
+# team-vs-noise can't be decided from membership alone, so the owner applies
+# the layers explicitly with:
+#   python -m derive.slack_discover_usergroups --apply-manager <ids>
+#   python -m derive.slack_discover_usergroups --apply-team    <ids>
+#   python -m derive.slack_discover_usergroups --skip          <ids>   # silence noise
+# Non-fatal: a usergroups API hiccup must not fail the channel job above.
+set +e
+"$ROOT/.venv/bin/python" "$ROOT/derive/slack_discover_usergroups.py" \
+    --json-out "$ROOT/state/last_slack_discover_usergroups.json" \
+    > "$ROOT/logs/slack_discover_usergroups.log" 2>&1
+set -e
+
 exit $exit_code
