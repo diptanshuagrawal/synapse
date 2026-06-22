@@ -1645,6 +1645,280 @@ setInterval(load, 1_800_000);
 """
 
 
+# Team-leaves Gantt — v2. Cleaner layout: weekly axis ticks (not 74 daily
+# numbers), taller rows with avatars + "out now" markers, weekly gridlines,
+# shaded today column, and a custom hover card. Same /api/leaves backend.
+LEAVES_V2_HTML = """<!doctype html>
+<html><head><meta charset="utf-8">
+<title>team leaves · gantt v2</title>
+<style>
+:root { color-scheme: dark; --bg:#0b0f14; --panel:#11161d; --line:#1a212b;
+        --muted:#6e7681; --text:#d5d9e0; --accent:#f2c14e; }
+* { box-sizing:border-box; }
+body { font: 13px ui-monospace,SFMono-Regular,Menlo,monospace; background:var(--bg);
+       color:var(--text); max-width:1500px; margin:18px auto; padding:0 18px; }
+h1 { font-size:17px; margin:0 0 4px; letter-spacing:1px; }
+h2 { font-size:13px; margin:22px 0 8px; color:#a7afba; }
+.subtitle { color:var(--muted); margin-bottom:14px; font-size:11px; }
+a { color:#4d8eff; text-decoration:none; } a:hover { text-decoration:underline; }
+.toprow { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+.legend { display:flex; gap:16px; flex-wrap:wrap; font-size:11px; color:#a7afba; margin:12px 0; }
+.legend span { display:inline-flex; align-items:center; gap:6px; }
+.legend i { width:11px; height:11px; border-radius:3px; display:inline-block; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+        overflow:hidden; }
+.gantt { overflow-x:auto; }
+.inner { position:relative; min-width:max-content; }
+/* header */
+.hdr { position:sticky; top:0; z-index:4; background:var(--panel);
+       border-bottom:1px solid var(--line); }
+.hdr-month, .hdr-week { display:flex; }
+.corner { flex:0 0 auto; position:sticky; left:0; z-index:5; background:var(--panel);
+          border-right:1px solid #2a313b; }
+.hdr-month .mo { flex:0 0 auto; text-align:left; padding:6px 0 4px 10px; color:#c7cdd6;
+                 font-size:12px; border-left:1px solid #2a313b; letter-spacing:.5px; }
+.hdr-day { display:flex; }
+.hdr-day .dn { flex:0 0 auto; text-align:center; font-size:10px; color:#5a6473;
+               padding:3px 0; line-height:1.3; }
+.hdr-day .dn .wd { display:block; font-size:8px; color:#4d5563; letter-spacing:0; }
+.hdr-day .dn.we { color:#828b98; background:#ffffff09; }
+.hdr-day .dn.we .wd { color:#727b88; }
+.hdr-day .dn.mon { box-shadow:inset 1px 0 0 var(--line); }
+.hdr-day .dn.td { color:#0b0f14; background:var(--accent); font-weight:bold; border-radius:4px; }
+.hdr-day .dn.td .wd { color:#0b0f14; }
+/* body */
+.rowwrap { position:relative; }
+.bg { position:absolute; top:0; bottom:0; pointer-events:none; }
+.weekend { background:#ffffff09; }
+.weekgrid { width:1px; background:var(--line); }
+.todaycol { background:#f2c14e14; }
+.todayline { width:2px; background:var(--accent); z-index:1; }
+.todaytag { position:absolute; top:0; transform:translateX(-50%); background:var(--accent);
+            color:#0b0f14; font-size:9px; padding:1px 5px; border-radius:0 0 4px 4px;
+            font-weight:bold; z-index:6; }
+.row { display:flex; align-items:center; height:46px; border-top:1px solid #0e141b;
+       position:relative; }
+.row:hover { background:#0e1319; }
+.row.active { background:#ffffff07; }
+.person { flex:0 0 auto; position:sticky; left:0; z-index:3; background:inherit;
+          border-right:1px solid #2a313b; display:flex; align-items:center; gap:9px;
+          padding:0 12px; height:100%; }
+.row:hover .person, .row.active .person { background:#0e1319; }
+.avatar { width:26px; height:26px; border-radius:50%; flex:0 0 auto; display:flex;
+          align-items:center; justify-content:center; font-size:10px; color:#0b0f14;
+          font-weight:bold; }
+.pname { font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pname .dot { color:#48d597; margin-right:4px; }
+.psub { font-size:9px; color:var(--muted); }
+.track { flex:0 0 auto; position:relative; height:100%; }
+.bar { position:absolute; height:26px; top:10px; border-radius:6px; font-size:11px;
+       color:#08111c; display:flex; align-items:center; padding:0 9px; overflow:hidden;
+       white-space:nowrap; cursor:pointer; box-shadow:0 1px 3px #0007, inset 0 0 0 1px #ffffff22;
+       transition:filter .1s; }
+.bar:hover { filter:brightness(1.12); }
+.bar.open-l { border-top-left-radius:0; border-bottom-left-radius:0; }
+.bar.open-r { border-top-right-radius:0; border-bottom-right-radius:0; }
+.bar b { font-weight:600; }
+.bar .d { opacity:.7; margin-left:5px; font-weight:400; }
+.bar-ext { position:absolute; height:26px; top:10px; display:flex; align-items:center;
+           font-size:11px; white-space:nowrap; pointer-events:none; }
+.bar-ext b { font-weight:600; }
+.bar-ext .d { opacity:.6; margin-left:4px; }
+/* tooltip */
+#tt { position:fixed; z-index:99; background:#161c25; border:1px solid #2a313b;
+      border-radius:6px; padding:9px 11px; font-size:11px; max-width:340px; opacity:0;
+      pointer-events:none; transition:opacity .1s; box-shadow:0 6px 20px #000b; }
+#tt.show { opacity:1; }
+#tt .t { color:#fff; font-size:12px; margin-bottom:3px; }
+#tt .m { color:#a7afba; margin-top:3px; }
+#tt .ex { color:#8e95a0; margin-top:5px; font-style:italic; }
+.empty { color:var(--muted); padding:22px; }
+table { border-collapse:collapse; width:100%; font-size:12px; margin-top:4px; }
+th { color:var(--muted); font-weight:normal; text-align:left; padding:5px 9px; border-bottom:1px solid #2a313b; }
+td { padding:5px 9px; } tr:nth-child(even) td { background:#0e1319; }
+.muted { color:var(--muted); }
+</style></head>
+<body>
+<div class="toprow">
+  <h1>TEAM LEAVES</h1>
+  <span class="subtitle"><a href="/">← dashboard</a> · <a href="/leaves-v1">old view</a> · <span id="count">loading…</span></span>
+</div>
+<div class="legend">
+  <span><i style="background:#4d8eff"></i>vacation</span>
+  <span><i style="background:#48d597"></i>wfh</span>
+  <span><i style="background:#e0564f"></i>sick</span>
+  <span><i style="background:#9b8eff"></i>holiday</span>
+  <span><i style="background:#d5b248"></i>ooo</span>
+  <span><i style="background:#7a8497"></i>other</span>
+</div>
+<div class="card gantt"><div id="inner" class="inner"><div class="empty">loading…</div></div></div>
+<h2>Ambiguous — date TBD</h2>
+<div id="ambig"><div class="muted">loading…</div></div>
+<div id="tt"></div>
+
+<script>
+const DAY_W = 24, PERSON_W = 184, ROW_H = 46;
+const COLOR = { vacation:"#4d8eff", wfh:"#48d597", sick:"#e0564f",
+                holiday:"#9b8eff", ooo:"#d5b248", other:"#7a8497" };
+const AV = ["#4d8eff","#48d597","#e0564f","#9b8eff","#d5b248","#5ec8d8","#e08a4f","#c77dff"];
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const WD3 = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+function _esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function _d(s){ const [y,m,d]=s.split("-").map(Number); return Date.UTC(y,m-1,d); }
+function _diff(a,b){ return Math.round((_d(b)-_d(a))/86400000); }
+function _color(r){ return COLOR[(r||"other").toLowerCase()]||COLOR.other; }
+function _hash(s){ let h=0; for(const c of s) h=(h*31+c.charCodeAt(0))|0; return Math.abs(h); }
+function _initials(s){ const p=s.split(/[-_ ]+/).filter(Boolean);
+  return ((p[0]?.[0]||"")+(p[1]?.[0]||"")).toUpperCase()||"?"; }
+function _fmtRange(s,e){ if(!e||e===s) return s; return `${s} → ${e}`; }
+function _human(s){ const [y,m,d]=s.split("-"); return `${+d} ${MONTHS[+m-1]}`; }
+
+let BARS = [];
+const tt = document.getElementById("tt");
+function showTip(ev, l, p){
+  const days = _diff(l.date_start, l.date_end||l.date_start)+1;
+  tt.innerHTML = `<div class="t">${_esc(p)}</div>`
+    + `<div class="m">${_esc(_fmtRange(l.date_start, l.date_end))} · ${days}d`
+    + `${l.reason?" · "+_esc(l.reason):""}</div>`
+    + `${l.channel_name?`<div class="m">#${_esc(l.channel_name)}</div>`:""}`
+    + `${l.body_excerpt?`<div class="ex">"${_esc(l.body_excerpt.slice(0,160))}"</div>`:""}`
+    + `${l.url?`<div class="m">click to open in slack ↗</div>`:""}`;
+  tt.classList.add("show"); moveTip(ev);
+}
+function moveTip(ev){ let x=ev.clientX+14, y=ev.clientY+14;
+  if(x+350>window.innerWidth) x=ev.clientX-350; tt.style.left=x+"px"; tt.style.top=y+"px"; }
+function hideTip(){ tt.classList.remove("show"); }
+
+async function load(){
+  let data;
+  try { data = await (await fetch("/api/leaves")).json(); }
+  catch(e){ document.getElementById("inner").innerHTML=`<div class="empty">load error</div>`; return; }
+  const today=data.today, wStart=data.window_start, wEnd=data.window_end;
+  const nDays=_diff(wStart,wEnd)+1, trackW=nDays*DAY_W;
+  const leaves=data.leaves||[];
+  const _end=l=>l.date_end||l.date_start;
+
+  document.getElementById("count").textContent =
+    `${leaves.length} dated leave(s) · ${_human(wStart)} → ${_human(wEnd)} · today ${_human(today)}`;
+
+  const byP={}; for(const l of leaves)(byP[l.actor]=byP[l.actor]||[]).push(l);
+  const people=Object.keys(byP).sort((a,b)=>{
+    const aA=byP[a].some(l=>l.date_start<=today&&_end(l)>=today);
+    const bA=byP[b].some(l=>l.date_start<=today&&_end(l)>=today);
+    if(aA!==bA) return aA?-1:1;
+    const am=byP[a].reduce((m,l)=>l.date_start<m?l.date_start:m,"9999");
+    const bm=byP[b].reduce((m,l)=>l.date_start<m?l.date_start:m,"9999");
+    return am<bm?-1:am>bm?1:a.localeCompare(b);
+  });
+
+  // month band
+  let monthBand=`<div class="corner mo-corner" style="width:${PERSON_W}px"></div>`;
+  let curMo=-1, span=0, lbl="";
+  const flush=()=>{ if(span) monthBand+=`<div class="mo" style="width:${span*DAY_W}px">${lbl}</div>`; };
+  for(let i=0;i<nDays;i++){ const dt=new Date(_d(wStart)+i*86400000); const mo=dt.getUTCMonth();
+    if(mo!==curMo){ flush(); curMo=mo; span=0; lbl=`${MONTHS[mo]} ${dt.getUTCFullYear()}`; } span++; }
+  flush();
+
+  // day-number axis + background layers (faint daily gridlines + weekend shade)
+  const tOff=_diff(wStart,today);
+  let dayNums="", bg=`<div class="bg" style="left:0;width:${trackW}px;`
+    + `background-image:repeating-linear-gradient(to right,#ffffff08 0,#ffffff08 1px,`
+    + `transparent 1px,transparent ${DAY_W}px)"></div>`;
+  for(let i=0;i<nDays;i++){
+    const dt=new Date(_d(wStart)+i*86400000), wd=dt.getUTCDay(), x=i*DAY_W;
+    const we=(wd===0||wd===6);
+    if(we) bg+=`<div class="bg weekend" style="left:${x}px;width:${DAY_W}px"></div>`;
+    const cls=`dn${we?" we":""}${i===tOff?" td":""}${wd===1?" mon":""}`;
+    dayNums+=`<div class="${cls}" style="width:${DAY_W}px"><span class="wd">${WD3[wd]}</span>${dt.getUTCDate()}</div>`;
+  }
+  if(tOff>=0&&tOff<nDays){
+    bg+=`<div class="bg todaycol" style="left:${tOff*DAY_W}px;width:${DAY_W}px"></div>`;
+    bg+=`<div class="bg todayline" style="left:${tOff*DAY_W+DAY_W/2}px"></div>`;
+  }
+
+  // rows
+  BARS = [];
+  let rows="";
+  for(const p of people){
+    const items=byP[p];
+    const activeLeave=items.find(l=>l.date_start<=today&&_end(l)>=today);
+    const isActive=!!activeLeave;
+    const next=items.filter(l=>l.date_start>today).sort((a,b)=>a.date_start<b.date_start?-1:1)[0];
+    let sub="", dotColor="#48d597";
+    if(activeLeave){
+      const r=(activeLeave.reason||"").toLowerCase();
+      sub = r==="wfh" ? "wfh today" : (r==="ooo" ? "ooo today" : "out now");
+      dotColor=_color(activeLeave.reason);
+    } else if(next){ sub=`next ${_human(next.date_start)}`; }
+    const av=AV[_hash(p)%AV.length];
+    let bars="";
+    for(const l of items){
+      const s=l.date_start, e=l.date_end||l.date_start;
+      let so=_diff(wStart,s), eo=_diff(wStart,e);
+      const oL=so<0, oR=eo>nDays-1; so=Math.max(0,so); eo=Math.min(nDays-1,eo);
+      if(eo<so) continue;
+      const left=so*DAY_W, width=Math.max((eo-so+1)*DAY_W-3,8);
+      const days=_diff(s,e)+1;
+      const dur=days>1?`<span class="d">${days}d</span>`:"";
+      const txt=`<b>${_esc(l.reason||"leave")}</b>${dur}`;
+      const narrow=width<54;
+      const idx=BARS.length; BARS.push({l,p});
+      bars+=`<div class="bar ${oL?"open-l":""} ${oR?"open-r":""}" data-idx="${idx}"
+              style="left:${left}px;width:${width}px;background:${_color(l.reason)}">${narrow?"":txt}</div>`;
+      if(narrow) bars+=`<div class="bar-ext" style="left:${left+width+6}px;color:${_color(l.reason)}">${txt}</div>`;
+    }
+    rows+=`<div class="row ${isActive?"active":""}">
+        <div class="person" style="width:${PERSON_W}px">
+          <span class="avatar" style="background:${av}">${_esc(_initials(p))}</span>
+          <span><div class="pname">${isActive?`<span class="dot" style="color:${dotColor}">●</span>`:""}${_esc(p)}</div>
+                <div class="psub">${_esc(sub)}</div></span>
+        </div>
+        <div class="track" style="width:${trackW}px">${bars}</div>
+      </div>`;
+  }
+
+  const inner=document.getElementById("inner");
+  if(!people.length){ inner.innerHTML=`<div class="empty">no dated leaves in window</div>`; }
+  else {
+    inner.innerHTML =
+      `<div class="hdr"><div class="hdr-month">${monthBand}</div>`
+      + `<div class="hdr-day"><div class="corner" style="width:${PERSON_W}px"></div>${dayNums}</div></div>`
+      + `<div class="rowwrap">`
+      + `<div style="position:absolute;left:${PERSON_W}px;top:0;bottom:0;width:${trackW}px">${bg}`
+      + `${tOff>=0&&tOff<nDays?`<div class="todaytag" style="left:${tOff*DAY_W+DAY_W/2}px">TODAY</div>`:""}</div>`
+      + rows + `</div>`;
+    // wire bar interactions
+    inner.querySelectorAll(".bar").forEach(b=>{
+      const {l,p}=BARS[+b.dataset.idx];
+      b.addEventListener("mouseenter",e=>showTip(e,l,p));
+      b.addEventListener("mousemove",moveTip);
+      b.addEventListener("mouseleave",hideTip);
+      if(l.url) b.addEventListener("click",()=>window.open(l.url,"_blank"));
+    });
+    const g=document.querySelector(".gantt");
+    g.scrollLeft=Math.max(0,tOff*DAY_W-g.clientWidth/3);
+  }
+
+  const ambig=data.ambiguous||[], ae=document.getElementById("ambig");
+  if(!ambig.length) ae.innerHTML=`<div class="muted">none</div>`;
+  else ae.innerHTML=`<table><tr><th>person</th><th>mentioned</th><th>reason</th>
+      <th>channel</th><th>excerpt</th><th>link</th></tr>`+
+    ambig.map(l=>`<tr><td>${_esc(l.actor)}</td>
+        <td class="muted">${_esc((l.mentioned_at||"").slice(0,10))}</td>
+        <td>${_esc(l.reason||"-")}</td>
+        <td class="muted">${_esc(l.channel_name?"#"+l.channel_name:"-")}</td>
+        <td class="muted">${_esc((l.body_excerpt||"").slice(0,80))}</td>
+        <td>${l.url?`<a href="${_esc(l.url)}" target="_blank">view</a>`:"-"}</td></tr>`).join("")
+    +`</table>`;
+}
+load();
+setInterval(load, 1_800_000);
+</script>
+</body></html>
+"""
+
+
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
@@ -1677,7 +1951,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html(INDEX_HTML)
         elif path == "/channels":
             self._send_html(CHANNELS_HTML)
-        elif path == "/leaves":
+        elif path == "/leaves" or path == "/leaves-v2":
+            self._send_html(LEAVES_V2_HTML)
+        elif path == "/leaves-v1":
             self._send_html(LEAVES_HTML)
         elif path == "/api/leaves":
             self._send_json(get_leaves())
