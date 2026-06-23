@@ -155,9 +155,16 @@ def gather_oncall(roster):
         return [f"  ⚠️ opsgenie lookup failed: {e}"], set()
 
 
-def gather_oncall_forecast(roster, date_str, days=14):
-    """Forecast the on-call primary for each of the next `days` days (rolling, =1
-    sprint). Returns (lines, forecast) where forecast={iso_date: canonical|email|None}.
+# Risk look-ahead = 4 weeks (2 sprints). The forecast that FEEDS the risk scan must span
+# the same horizon — a LEAVE×ONCALL collision in days 15-28 is invisible unless the on-call
+# rota is also forecast that far out. The leave-ANNOUNCEMENT window (gather_leaves) is a
+# separate, narrower concern and stays at one sprint (14d).
+RISK_HORIZON_DAYS = 28
+
+
+def gather_oncall_forecast(roster, date_str, days=RISK_HORIZON_DAYS):
+    """Forecast the on-call primary for each of the next `days` days (rolling, = the risk
+    horizon, 4 weeks). Returns (lines, forecast) where forecast={iso_date: canonical|email|None}.
     One on-calls?date= query per day (noon UTC); each is independently fail-soft so a
     single dead day degrades to None rather than killing the whole forecast."""
     by_email = {v.get("email", ""): k for k, v in roster.items()}
@@ -179,8 +186,8 @@ def gather_oncall_forecast(roster, date_str, days=14):
     return lines, forecast
 
 
-def gather_risks(cur, roster, date_str, forecast, days=14):
-    """Risk/collision scan over the next `days` days (rolling sprint):
+def gather_risks(cur, roster, date_str, forecast, days=RISK_HORIZON_DAYS):
+    """Risk/collision scan over the next `days` days (4-week rolling horizon):
       • LEAVE×ONCALL — a roster member scheduled on-call on a day they're on leave.
       • COVERAGE     — ≥2 roster members out the same day (thin coverage).
     Cross-refs the on-call forecast against durable team_leaves. Fail-soft."""
@@ -582,10 +589,10 @@ def main():
     out.extend(oncall_lines)
     out.append("# LEAVES (team_leaves overlapping day + upcoming 14d; LIVE-SIGNAL = slack scan lookback..window-end)")
     out.extend(gather_leaves(cur, roster, date_str, W1, WL))
-    out.append("# ONCALL FORECAST (14d rolling = 1 sprint; per-day primary via on-calls?date=)")
+    out.append("# ONCALL FORECAST (28d rolling = 4 weeks / 2 sprints; per-day primary via on-calls?date=)")
     fc_lines, forecast = gather_oncall_forecast(roster, date_str)
     out.extend(fc_lines)
-    out.append("# RISKS (14d rolling: LEAVE×ONCALL collisions + COVERAGE gaps; surface in Day update §A)")
+    out.append("# RISKS (28d rolling = 4 weeks: LEAVE×ONCALL collisions + COVERAGE gaps; surface in Day update §A)")
     out.extend(gather_risks(cur, roster, date_str, forecast))
     # PR INDEX — copy these descriptors VERBATIM when rendering any PR; never guess.
     out.append("# PR INDEX (deterministic: author=pr_opened actor→canonical, title+desc from events.db — COPY VERBATIM, never re-derive)")

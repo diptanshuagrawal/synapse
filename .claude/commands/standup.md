@@ -83,8 +83,8 @@ approvals/decisions).
 It also emits **`# ONCALL`** (live Opsgenie, config-driven — §6), **`# LEAVES`**
 (durable `team_leaves` overlapping the day + 14d upcoming, plus `LIVE-SIGNAL` rows from
 the slack leave scan — §5), **`# ONCALL FORECAST`** (per-day on-call primary for the next
-14d = 1 sprint) and **`# RISKS`** (LEAVE×ONCALL collisions + COVERAGE gaps, one sprint
-ahead — §6c) right after the freshness header, so on-call, leave, forecast and risk need
+28d = 4 weeks / 2 sprints) and **`# RISKS`** (LEAVE×ONCALL collisions + COVERAGE gaps, four
+weeks ahead — §6c) right after the freshness header, so on-call, leave, forecast and risk need
 NO separate tool calls.
 
 Read its output, then go straight to formatting (§7). Only fall back to ad-hoc SQL /
@@ -352,17 +352,18 @@ line. Render each row type:
 - Plus the on-call ticket (the `Oncall` epic Task on their board) + any capacity/monitoring posts.
 A thin two-bullet On-call line when the block lists several INCIDENT/FOLLOWUP rows is a regression.
 
-## 6c. ON-CALL FORECAST + RISKS — read `# ONCALL FORECAST` and `# RISKS` (one sprint ahead)
+## 6c. ON-CALL FORECAST + RISKS — read `# ONCALL FORECAST` and `# RISKS` (four weeks ahead)
 
-The gather also forecasts the on-call primary for the next 14 days (rolling = one sprint)
-via per-day `on-calls?date=` lookups, then cross-refs it against `team_leaves` to emit a
-`# RISKS` block. Two risk types, both surfaced in **Message 1 — 📅 Day update** (never
-silently dropped):
+The gather also forecasts the on-call primary for the next 28 days (rolling = 4 weeks /
+2 sprints) via per-day `on-calls?date=` lookups, then cross-refs it against `team_leaves`
+to emit a `# RISKS` block. Looking a full month out gives real runway to fix a rota
+collision before it's urgent. Two risk types, both surfaced in **Message 1 — 📅 Day
+update** (never silently dropped):
 
 - **`LEAVE×ONCALL`** — a roster member is scheduled on-call on a day they're also on leave.
   This is a coverage hole that needs a swap NOW — render it as a clear, dated callout and
   name the date + who, e.g. "⚠️ 25 Jun — Carol is on-call but on leave (vacation); needs a
-  rota swap." Announce it a sprint ahead so there's time to fix.
+  rota swap." Announce it up to four weeks ahead so there's ample time to fix.
 - **`COVERAGE`** — ≥2 roster members out the same day. Flag thin-coverage stretches:
   "⚠️ 22 Jun–1 Jul — Dan + Eve both out; thin coverage." Collapse consecutive
   dates into a range.
@@ -432,10 +433,10 @@ scans. Group as short bullets under bold headers; each item carries its link:
   (DAY SIGNALS release/CMR transitions + deploy callouts), with the owner of each.
 - **Prod / ops watch** — live incidents, TB-diffs, alert bursts, stuck-txn / 5xx threads
   the team is chasing (esp. on the on-call).
-- **Team status & risk (next sprint)** — who's out over the rolling 14d (§5 UPCOMING,
-  date ranges), who's on-call now + upcoming (§6c forecast), and **every `# RISKS` line**:
-  LEAVE×ONCALL collisions first (dated, named, "needs a swap"), then COVERAGE gaps. This is
-  the sprint-ahead heads-up — never omit a risk to save space.
+- **Team status & risk** — who's out over the rolling 14d (§5 UPCOMING, date ranges),
+  who's on-call now + over the next 4 weeks (§6c forecast), and **every `# RISKS` line**:
+  LEAVE×ONCALL collisions first (dated, named, "needs a swap"), then COVERAGE gaps. Risks
+  scan a full four weeks out — this is the heads-up; never omit a risk to save space.
 - **Cross-team** — notable asks/decisions from sister teams touching this team's surface.
 
 Keep it tight but complete; this is FYI awareness, so don't duplicate Message 2's action
@@ -656,6 +657,6 @@ The "pre-save check" (§8) still applies — run it on all four messages before 
   owner channel, NOT appended to the team-facing Standup updates.
 - Per-person uses NESTED bullets — bold status header (Done/In review/In progress/
   Reviewing/Blockers/Up next) as parent, items as sub-bullets; omit empty sections.
-- Announce leave + LEAVE×ONCALL/COVERAGE risks ONE SPRINT (14d) ahead in §7a — never drop
-  a `# RISKS` line to save space.
+- Announce upcoming leave ONE SPRINT (14d) ahead, and LEAVE×ONCALL/COVERAGE risks FOUR
+  WEEKS (28d) ahead, in §7a — never drop a `# RISKS` line to save space.
 - Read-only — no writes to events.db, Confluence, Jira, Opsgenie.
