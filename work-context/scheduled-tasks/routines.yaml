@@ -92,3 +92,15 @@ routines:
     enabled: true
     needs: [rollup_channel]       # posts a run-summary to #rollup (__ROLLUP_CHANNEL__) on success, like rollup-classify. Embeddings use the OpenAI key from ~/.secrets (not a routine token). Overrides the skill's "do not cron" note — owner decision 2026-06-18.
     permissions: [Bash]
+
+  - id: monthly-highs-lows
+    cron: "0,30 12-23 28-31 * *"  # monthly on the 28th, every 30 min 12:00–23:30 IST (days 28–31 = retry insurance if the 28th is fully missed); SKILL.md month-stamp gate idles once succeeded that month (retry-until-success). Never bleeds into the next month.
+    enabled: true
+    needs: [dev_updates_channel]  # pushes the month's highs/lows to the standup-updates channel (__DEV_UPDATES_CHANNEL__) on success. Owner-only channel. Embeddings use the OpenAI key from ~/.secrets (not a routine token).
+    permissions: [Bash]
+    # STEP 1 runs the COMPLETE /refresh-embeddings pipeline (same as refresh-embeddings-weekly, minus the
+    # #rollup run-summary); if the weekly already embedded the delta, STEP 1 reports embed_required==0 and
+    # finishes instantly. STEP 2 invokes /ask "highs and lows from <month>-01 to <month>-28" → highs_lows
+    # intent → delegates to /retro → writes management/retros/<since>-to-<until>.md. STEP 3 posts the
+    # Highs/Lows to __DEV_UPDATES_CHANNEL__ as the owner (5000-char split at the Highs/Lows boundary).
+    # NO Anthropic API anywhere (OpenAI = embeddings only; /ask + /retro synthesise in-chat).
