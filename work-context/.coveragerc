@@ -33,6 +33,19 @@ omit =
     # shard/debug dumps
     derive/_shard_dump.py
     derive/_size15_dump.py
+    # CLI runners / dump-report scripts / server glue — orchestration with no logic
+    # worth unit-testing (synced with .githooks/test-coverage-exempt.txt; these were
+    # silently dragging the floor while exempt from the test-gate).
+    derive/slack_ingest_runner.py
+    derive/slack_discover_usergroups.py
+    derive/slack_reparse_empty.py
+    derive/slack_expand_mentions.py
+    derive/slack_backfill_files.py
+    derive/pr_quality_dump.py
+    derive/pr_quality_report.py
+    derive/plan_brain.py
+    derive/sprint_server.py
+    ingest/slack-compact.py
 
 [report]
 # Lines we never count against coverage.
