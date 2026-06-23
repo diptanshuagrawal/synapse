@@ -115,18 +115,22 @@ Notes:
 Pool the text/schema candidates → write `state/doc_sync_candidates.json` (`{"candidates":[...]}`)
 and the `diagram_pending` page list → `state/doc_sync_diagram_pending.json`.
 
-## Phase 1.5 — Chrome diagram pass (MANDATORY — attempt every run; degrade gracefully)
+## Phase 1.5 — Chrome diagram pass (REQUIRED, DEFAULT — always attempt; no-browser = INCOMPLETE, not a clean skip)
 
 ZenUML/image diagrams are unreadable from the page API but ARE readable in a logged-in work
 browser. This phase reads them visually and runs the same sequence-drift check + DIRECTION
-GATE against code. It is REQUIRED every run, but **headless/cron fires have no browser** —
-so it is attempt-with-fallback, never a hard failure.
+GATE against code. It is the DEFAULT every run — never optional, never pre-judged away. A
+diagram can assert things about *existing* code that page text can't show, so the only valid
+outcomes are (a) actually read it, or (b) record it as still-pending and retry — NEVER skip-as-done.
 
-1. `mcp__Claude_in_Chrome__list_connected_browsers`. If NONE is connected (typical headless
-   cron fire) → emit, for each `diagram_pending` doc, the one-line note "diagram source not
-   machine-readable — Chrome pass skipped (no work browser connected this run); verify
-   manually" and SKIP the rest of this phase. Record `diagram_pass: skipped_no_browser` in the
-   run summary so the reader knows diagrams were not read. NEVER fabricate steps.
+0. Persist the `diagram_pending` page list to `state/doc_sync_diagram_pending_<run-id>.json`
+   so a later browser-available fire can complete the pass even if this one can't.
+1. `mcp__Claude_in_Chrome__list_connected_browsers`. If NONE is connected → the diagram pass is
+   INCOMPLETE for this run. Emit, for each `diagram_pending` doc, the loud note "⚠️ DIAGRAMS NOT
+   READ this run — Chrome pass needs a Confluence-signed-in browser; will retry until one is
+   connected", record `diagram_pass: pending_no_browser`, and SKIP the rest of this phase. The
+   caller (sweep routine) must NOT treat the month as fully done — it retries in diagram-only
+   mode until a browser is available. NEVER fabricate steps.
 2. If a browser is connected but >1, pick the one signed into Confluence (your-org.atlassian.net)
    — `select_browser`; if ambiguous in an attended run, ask. `tabs_context_mcp` → a tab.
 3. For each `diagram_pending` doc: `navigate` to the page, wait for load, expand collapsed

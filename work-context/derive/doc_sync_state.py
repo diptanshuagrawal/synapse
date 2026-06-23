@@ -299,10 +299,8 @@ def cmd_render_digest(args):
             )
         out.append("")
     out.append(
-        "_To resolve: open the [comment] link, reply if needed, then click the "
-        "⋯ (more actions) on the comment and choose *Resolve* — or hover the "
-        "highlighted text and hit the ✓ Resolve button. Resolved threads drop "
-        "off the next digest automatically._"
+        "_Please resolve each comment — either after making the change, or by "
+        "replying with a reason to reject and then marking it resolved._"
     )
     out.append("")
     out.append(f"cc {_mention(args.cc, pmap) if args.cc else ''}".rstrip())

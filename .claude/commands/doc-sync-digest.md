@@ -12,7 +12,8 @@ doc-sync comment, updates state, and posts a per-developer "here's what's still 
 roundup to Slack. It posts NOTHING to Confluence — read-only there.
 
 **Options:**
-- `--target dm|channel` — Slack destination. Default `dm` (test); `channel` = team room.
+- `--target channel|dm` — Slack destination. Default `channel` = #cbs-transactions-internal
+  (`slack.digest_channel_id`); `dm` = owner DM (`slack.dm_user_id`, test only).
 - `--dry-run` — refresh status + print the digest, but don't post to Slack.
 
 ## Phase 0 — Load config
@@ -21,7 +22,8 @@ roundup to Slack. It posts NOTHING to Confluence — read-only there.
 cd $HOME/context/work-context
 ```
 
-- `config/doc_sync.yaml` — Slack target + cc.
+- `config/doc_sync.yaml` — Slack target + cc. `slack.digest_channel_id` =
+  #cbs-transactions-internal (default channel target); `slack.dm_user_id` = DM fallback.
 - `config/people.yaml` — owner canonical → slack_id (the renderer does this).
 - `derive/doc_sync_state.py` — state + renderer. cloudId `YOUR_CONFLUENCE_CLOUD_ID`.
 
@@ -64,7 +66,8 @@ The renderer groups the remaining OPEN comments per developer (most-open first) 
 comment links. If nothing is open, it emits a clean "no pending reviews 🎉" line.
 
 Post the rendered message to the Slack target (`slack_send_message`, `<@slack_id>`
-mentions). Skip the post on `--dry-run` (print instead).
+mentions) — `slack.digest_channel_id` (#cbs-transactions-internal) for `--target channel`,
+`slack.dm_user_id` for `--target dm`. Skip the post on `--dry-run` (print instead).
 
 ## Phase 3 — Chat reply
 
@@ -77,10 +80,11 @@ the Slack message link.
 - Track only OUR comment_ids (the state table). NEVER count arbitrary page comments —
   pages carry unrelated review threads that must not pollute the per-dev count.
 - Owner/slack ids from config — never hardcode.
-- Default `--target dm` until the owner flips to `channel`.
+- Default `--target channel` → #cbs-transactions-internal (`slack.digest_channel_id`).
+  Use `--target dm` only for testing.
 
 ## Anti-patterns (refuse)
 
 - Counting inline comments not in the state table.
 - Resolving / replying to threads on the dev's behalf.
-- Posting to the channel before the owner has flipped the target.
+- Hardcoding the channel/DM id instead of reading it from `config/doc_sync.yaml`.
