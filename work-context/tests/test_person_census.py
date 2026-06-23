@@ -46,6 +46,21 @@ def test_is_oncall_duty():
     assert pc._is_oncall_duty("payout fix", "jira") is False
 
 
+# ── @oncall-handle incident detection (GAP-1: shared with standup/retro) ─────
+
+def test_oncall_handle_routes_to_incident():
+    # person_census reuses retro_census._signal_type WITH oncall_tokens now, so a thread
+    # in a plain DOMAIN channel that pings @oncall is classified as an incident — the
+    # cross-channel on-call work that name-based detection used to miss (2026-06-23).
+    tok = "<!subteam^S0ONCALL"
+    st, ev = pc._signal_type(
+        "lien query", "can <!subteam^S0ONCALL|@oncall> check this account?", "slack",
+        set(), channel_id="C0DOMAIN", incident_channels=set(), alert_channels=set(),
+        oncall_tokens=[tok])
+    assert (st, ev) == ("incident", "oncall-handle")
+    assert callable(pc.oncall_handle_tokens)   # config-driven loader wired into person_census
+
+
 # ── _resolve_canonical (lookup-driven) ───────────────────────────────────────
 
 def test_resolve_canonical(monkeypatch):

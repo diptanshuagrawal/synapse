@@ -44,6 +44,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from ingest.common import DB_PATH  # noqa: E402
 from derive.sources_config import home_team, slack_workspace, github_org, atlassian_host, org_match_tokens  # noqa: E402
+from derive.oncall_signals import oncall_handle_tokens  # noqa: E402  (config-driven on-call identity)
 
 HOME_TEAM = home_team()
 
@@ -122,7 +123,8 @@ OOO_HR_PATTERNS = [
 def _signal_type(title: str, body: str, source: str, event_types: set[str],
                  channel_id: str = "", incident_channels: set[str] | None = None,
                  alert_channels: set[str] | None = None,
-                 issue_type: str | None = None, went_done: bool = False) -> tuple[str, str]:
+                 issue_type: str | None = None, went_done: bool = False,
+                 oncall_tokens: list[str] | None = None) -> tuple[str, str]:
     """Return (signal_type, matched_evidence).
 
     STRUCTURAL signals (channel role, source, event_type, jira issue_type,
@@ -171,6 +173,13 @@ def _signal_type(title: str, body: str, source: str, event_types: set[str],
     # 6. Auto-alert FEED channel (opsgenie/grafana) — machine alerts, recurring.
     if channel_id and channel_id in alert_channels:
         return "alert_auto", "alert-feed-channel"
+
+    # 6b. @oncall HANDLE pinged in the body — on-call work reaches plain DOMAIN channels
+    #     via the handle, not only alert-named channels (validated 2026-06-23: incidents
+    #     spanned plain domain channels — lending / recon / liabilities). Structural + additive: a
+    #     literal @oncall page is a strong incident signal regardless of the channel.
+    if oncall_tokens and any(tok in (body or "") for tok in oncall_tokens):
+        return "incident", "oncall-handle"
 
     # 7. OOO / HR / leave (slack) → noise.
     m = _has(t, OOO_HR_PATTERNS)
@@ -279,6 +288,9 @@ def _load_incident_channels() -> tuple[set[str], set[str]]:
         cid = c.get("id")
         if not cid:
             continue
+        if (c.get("class") or "") == "oncall":   # config-driven, not a name heuristic
+            response.add(cid)
+            continue
         if ("oncall" in n or "on-call" in n) and not n.startswith("it-"):
             response.add(cid)          # service-c-oncall channels, on-call
         elif "incident" in n:
@@ -291,6 +303,7 @@ def _load_incident_channels() -> tuple[set[str], set[str]]:
 def build_census(conn: sqlite3.Connection, since: str, until: str) -> dict:
     team_ids = _load_team_ids()
     incident_channels, alert_channels = _load_incident_channels()
+    oncall_tokens = oncall_handle_tokens()        # @oncall pings → incident in any channel
 
     # 1. Denominator — every subject with ≥1 event in window. went_done =
     #    reached a terminal status (config-driven, status_classes) IN window.
@@ -354,7 +367,7 @@ def build_census(conn: sqlite3.Connection, since: str, until: str) -> dict:
         oclass = _ownership_class(owner, team_ids)
         stype, evidence = _signal_type(title, body, source, etset, channel_id,
                                        incident_channels, alert_channels,
-                                       issue_type, bool(went_done))
+                                       issue_type, bool(went_done), oncall_tokens)
         by_owner[oclass] += 1
         by_signal[stype] += 1
 

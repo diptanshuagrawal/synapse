@@ -87,6 +87,13 @@ Scan the gather output for work that has **no Jira ticket**. Four signal classes
   post, a design decision) that produced real work but references no ticket/CMR.
 - Heuristic: a one-off "checking", "looking", or a question is NOT a ticket. A
   multi-message effort, a posted fix/PR, or a concluded root-cause IS.
+- **Read the gather's `THREADS engaged` block as the primary source for this class** — it
+  lists the threads the member substantively replied in (trivial acks already filtered),
+  tagged `heavy` (≥3 replies = sustained) and `xteam` (root by a non-roster author =
+  cross-team support); `heavy`/`xteam`/`RESOLVED` are the strongest "real work" signals.
+  Before proposing one, cross-check the on-call member's `ON-CALL OPS` block (same thread
+  `link=`) — if the thread is an on-call incident there, it's covered by the standing
+  on-call ticket (§1c), so DROP it even if the participant isn't the on-call assignee.
 
 **B. Future ask / commitment, no ticket.**
 - A Slack message directed at the member (`<@their_id>` or subteam ping) asking them to
@@ -109,6 +116,9 @@ read for their `issuelinks`). A CMR is a prod rectification — many are intenti
 **code/config defect** or points at a **recurring root cause** should have a Bug/Task
 tracking the underlying fix, and often doesn't.
 - Flag a CMR as needing a board ticket only when ALL hold:
+  0. its board line is tagged `active(window)` — **SKIP any CMR tagged `STANDING`** (no
+     window activity = backlog to close, not today's work; it's almost certainly already
+     tracked and not a fresh gap);
   1. it implies a code/config change or a recurring/repeatable root cause (NOT a pure
      one-off data correction — e.g. TB-diff insert, missing-txn backfill, GL balance
      poke with no code path);
@@ -147,6 +157,8 @@ default. DROP only: pure approvals (CMR sign-off), review requests, POC-assignme
 status pings, nominations / awards / scheduling admin, and true FYIs (no action for our
 team) — those are `/standup` items, not tracked work. Conservative dedupe still applies:
 if in-flight work already covers the ask, drop it.
+- An `escalating×N` tag on the ask (the same thread re-pinged N times, still unanswered) is
+  a strong KEEP signal — it's overdue net-new work, not an FYI; don't drop it on ambiguity.
 - `reporter` = the stakeholder who asked (the `from=` actor; resolve to their canonical if
   roster, else keep the raw handle).
 - `assignee` = the **owner** by DEFAULT (your own commitment becomes tracked).
@@ -163,6 +175,9 @@ For each surviving gap, rule it out if ANY holds:
   for the window). Their ops/triage/CMR work is pre-tracked by the standing 5-SP oncall
   placeholder ticket — DROP it (note as "dropped: on-call"). This applies to all four
   signal classes, incl. class-D release-missing-CMR landing on the on-call.
+  - If the gather emitted a `# CHANNEL FRESHNESS` warning (an on-call channel is stale),
+    the on-call ops picture may be incomplete — treat this suppression as lower-confidence
+    and prefer flagging a borderline on-call item over silently dropping it.
 - It cites or clearly maps to an existing ticket the member already has (match the gap
   text against their in-progress / to-do board titles from the gather — same feature
   noun = already tracked).
@@ -323,12 +338,12 @@ defaults to the Tech-Misc fallback `EX-2882` if none. Nothing is created until y
 ---
 
 ## Owner asks  (net-new work asked of YOU — default assignee = you, editable to a dev)
-## E1 · Diptanshu Example
+## E1 · Owner Example
 - decision: pending
 - summary: Build the X reconciliation report for the data team
 - type: Task
 - reporter: erin-example
-- assignee: diptanshu-example         # default = owner; editable at approve
+- assignee: owner-example         # default = owner; editable at approve
 - suggested_assignee: frank-example (guess)   # inferred delegate from domain vs board
 - epic: EX-2882 (fallback)
 - placement: backlog
@@ -396,7 +411,7 @@ Owner-invoked: `/ticketize apply <date>`.
      and **ADHD-friendly — ALWAYS** (scannable structure, zero data/link loss):
        - **TL;DR:** one line first — the bottom line, what must happen — before any heading.
        - **Context** — 1–3 short lines: what this is and why, in product/engineering terms
-         (no "you", no "Diptanshu", no detection/standup language).
+         (no "you", no owner name, no detection/standup language).
        - **Requirements** — a `- [ ]` checkbox list, one action per line. Pull the exact
          action items from the evidence (Slack ask, PR, or CMR). Note anything already in
          flight so the dev verifies-and-ticks rather than redoes it.

@@ -46,6 +46,7 @@ from derive.retro_census import (  # noqa: E402  (reuse — single source of det
     _signal_type, _slack_url, _terminal_states, _terminal_sql,
     _load_incident_channels, ROLLOUT_PCT_RE, _rollout_confirmed,
 )
+from derive.oncall_signals import oncall_handle_tokens  # noqa: E402
 
 
 def _source_of(subject: str) -> str:
@@ -114,6 +115,7 @@ def build_person_census(conn, canonical: str, since: str, until: str) -> dict:
     aliases = get_aliases_for(canonical) or [canonical]
     ph = ",".join("?" * len(aliases))
     incident_channels, alert_channels = _load_incident_channels()
+    oncall_tokens = oncall_handle_tokens()        # @oncall pings → incident in any channel
     terminal_names = _terminal_states()
     term_pred = _terminal_sql("to_status")
 
@@ -163,7 +165,8 @@ def build_person_census(conn, canonical: str, since: str, until: str) -> dict:
         channel_id = subject.split(":")[1] if subject.startswith("slack:") and subject.count(":") == 2 else ""
 
         stype, evidence = _signal_type(title, body, source, etset, channel_id,
-                                       incident_channels, alert_channels, issue_type, went_done)
+                                       incident_channels, alert_channels, issue_type,
+                                       went_done, oncall_tokens)
         # Oncall/duty-roster tickets are not deliveries — reclassify so they
         # don't inflate `shipped`.
         if stype in ("delivery", "work") and _is_oncall_duty(title, source):
