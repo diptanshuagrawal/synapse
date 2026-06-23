@@ -8,6 +8,8 @@ DB_PATH is redirected to a temp file — never touches the real doc_sync.db.
 
 from __future__ import annotations
 
+import argparse
+
 import pytest
 
 from derive import doc_sync_state as ds
@@ -92,3 +94,25 @@ def test_record_and_fetch(tmp_path, monkeypatch):
     assert {r["comment_id"] for r in all_rows} == {"c1", "c2"}
     open_rows = ds._fetch(open_only=True)
     assert {r["comment_id"] for r in open_rows} == {"c1"}   # 'resolved' filtered out
+
+
+# ── cmd_render_digest ────────────────────────────────────────────────────────
+
+def test_render_digest_lists_open_findings_and_resolve_guidance(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(ds, "DB_PATH", str(tmp_path / "doc_sync.db"))
+    monkeypatch.setattr(ds, "_people_map",
+                        lambda: {"acc1": {"name": "Alice", "slack_id": "U0ALICE"}})
+    cols = ("comment_id", "finding_key", "page_id", "page_title", "page_url",
+            "comment_url", "owner_account", "severity", "check_type",
+            "finding_title", "anchor", "resolution_status")
+    with ds._conn() as c:
+        c.execute(
+            f"INSERT INTO doc_sync_comments ({','.join(cols)}) "
+            f"VALUES ({','.join('?' * len(cols))})",
+            ("c1", ds._finding_key("p", "trd", "c1"), "p", "TRD Page", "purl",
+             "https://x/comment", "acc1", "major", "trd", "drift in section A",
+             "c1", "open"))
+    ds.cmd_render_digest(argparse.Namespace(date="2026-06-23", cc=None))
+    out = capsys.readouterr().out
+    assert "drift in section A" in out                 # the open finding is listed
+    assert "Please resolve each comment" in out        # the reworded resolve guidance
