@@ -348,18 +348,21 @@ def stale_thread_parents(channel_id: str) -> list[str]:
     return [line for line in r.stdout.splitlines() if line.strip()]
 
 
-def active_thread_parents(channel_id: str, days: int = 90) -> list[str]:
+def active_thread_parents(channel_id: str, days: int = 90,
+                          ignore_cooldown: bool = False) -> list[str]:
     """Slack-epoch parent_ts for threads whose newest reply is within `days`.
 
     Re-drains late replies to old threads that the cursor-bound incremental
     history + 24h reconcile both miss (parent scrolled below the cursor). The
-    helper's drain cooldown throttles each thread to ~once/day."""
+    helper's drain cooldown throttles each thread to ~once/day; pass
+    ignore_cooldown=True (pre-standup sweep) to bypass it so a previous-evening
+    reply lands before the morning digest."""
     from subprocess import run, PIPE
-    r = run(
-        [".venv/bin/python", "derive/slack_backfill_helper.py",
-         "active-threads", channel_id, "--days", str(days)],
-        cwd=str(_PKG_ROOT), stdout=PIPE, stderr=PIPE, text=True, check=True,
-    )
+    cmd = [".venv/bin/python", "derive/slack_backfill_helper.py",
+           "active-threads", channel_id, "--days", str(days)]
+    if ignore_cooldown:
+        cmd.append("--ignore-cooldown")
+    r = run(cmd, cwd=str(_PKG_ROOT), stdout=PIPE, stderr=PIPE, text=True, check=True)
     return [line for line in r.stdout.splitlines() if line.strip()]
 
 
