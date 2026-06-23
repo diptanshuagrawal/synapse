@@ -24,12 +24,13 @@ while read -r localref localsha remoteref remotesha; do
     python3 "$SCANNER" range "$localsha" "$remotesha" || fail=1   # only the new commits
   fi
   # Test-coverage gate: in-scope source changed → its test must change too.
+  # GATE contract is `range <base> <head>` (diff base..head) — base=remotesha (OLD),
+  # head=localsha (NEW). This is the REVERSE arg order of the leak SCANNER above (which
+  # takes new,base). Passing (new,old) made files ADDED in the push look like deletions
+  # (--diff-filter=d drops them) → a push that adds a brand-new test was false-blocked.
+  # The gate resolves a zero-sha base (new branch) to the merge-base/empty tree itself.
   if [ "${SKIP_TEST_GATE:-0}" != "1" ] && [ -f "$GATE" ]; then
-    if [ "$remotesha" = "$Z" ]; then
-      python3 "$GATE" range "$localsha" || gate_fail=1
-    else
-      python3 "$GATE" range "$localsha" "$remotesha" || gate_fail=1
-    fi
+    python3 "$GATE" range "$remotesha" "$localsha" || gate_fail=1
   fi
 done
 
