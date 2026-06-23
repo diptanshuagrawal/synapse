@@ -2,7 +2,7 @@ Implement a feature in a real Go service from its code-grounded TRD + PRD, then
 raise a PR. Pairs with `/trd-build`: that writes the TRD, this turns it into code.
 Owner-invoked. Outward-facing — gates the push behind explicit confirmation.
 
-## Usage — `/pr-from-trd <trd> <prd> <svc>`
+## Usage — `/pr-from-trd <trd> <prd> <svc> [--type full|integration-test]`
 
 If invoked with `help`, `-h`, or `--help`: print this Usage block verbatim and STOP.
 
@@ -15,10 +15,22 @@ toolchain, then opens a PR.
 - `<trd>` — path to a `/trd-build` TRD (e.g. `work-context/derived/trds/<slug>.md`).
 - `<prd>` — local path OR Confluence URL (intent / acceptance criteria).
 - `<svc>` — service alias (`service-a`, `service-b`). Maps to dev repo `$HOME/git/<svc>`.
+- `--type full|integration-test` — what to produce. Defaults to `full`. See **Modes** below.
 
-**Default mode (owner-chosen):** FULL IMPLEMENTATION → READY-FOR-REVIEW PR →
-new branch in `$HOME/git/<svc>`. These are aggressive on a live service, so the
-hard rules below are non-negotiable.
+## Modes (`--type`)
+
+- **`full`** (default, owner-chosen): FULL IMPLEMENTATION → READY-FOR-REVIEW PR →
+  new branch in `$HOME/git/<svc>`. Builds migrations + proto + handler + domain
+  logic + tests. Aggressive on a live service, so the hard rules below are
+  non-negotiable.
+- **`integration-test`**: TESTS ONLY. Writes integration tests for a feature whose
+  code is **already merged** in `$HOME/git/<svc>`, mirroring the sibling's
+  `test/integration/...` suite and covering the TRD's acceptance cases. Builds NO
+  migrations/proto/handler/domain/mocks. **Precondition:** the code under test must
+  already exist in the repo — tests have to compile + run against real code. If the
+  feature isn't merged yet, STOP and tell the user to use `--type full` (or merge the
+  feature first). Branch is `test/<slug>`, PR is framed as test coverage. All the same
+  safety gates apply (clean tree, green build, gated push).
 
 ## HARD RULES (safety — never skip)
 1. **Repo target:** ONLY `$HOME/git/<svc>` (the human dev clone). NEVER the codegraph
@@ -50,7 +62,7 @@ it too literally. Before raising the PR, self-check:
    `AcceptanceChannel` string) when the codebase already models the concept (e.g.
    `ChannelType`). Grep for an existing enum/field first; map each TRD field onto it.
 2. **Per-variant granularity, then derive** — sub-activity/type should be per-variant
-   (CARD_ATM/POS/ECOM), not one lumped value; derive dependent values (CBS txn_type) from
+   (CARD_ATM/POS/ECOM), not one lumped value; derive dependent values (the core-svc txn_type) from
    the granular type, not from Mode.
 3. **Gate variant behaviour on the variant** — don't inherit a sibling's hardcode. A
    single-channel sibling returns `true` because it's always that channel; a multi-channel
@@ -66,7 +78,7 @@ it too literally. Before raising the PR, self-check:
 6. **Test data = real API values** (string enum names, not rpc ints); assert every field
    you add to an expected-response fixture. For tax/charge flows reviewers expect:
    threshold-breach, insufficient-balance-due-to-tax, no-PAN→rejected, channel-gating
-   (no tax for non-applicable channels), reversal for BOTH LCS- and CBS-parent, partial +
+   (no tax for non-applicable channels), reversal for BOTH ledger-svc- and core-svc-parent, partial +
    concurrent (under/over parent) refunds.
 7. **Be honest about what's unverified** — flag deferred/can't-wire tests in-thread; say
    "CI-validated, not local" when the local toolchain can't run the integration leg.
@@ -124,9 +136,16 @@ cd $HOME/git/<svc> && git fetch origin && git status --porcelain
 If dirty → abort (rule 2). Else branch off latest main:
 ```bash
 git checkout main && git pull --ff-only origin main && \
-  git checkout -b feat/<slug>
+  git checkout -b <branch>
 ```
-`<slug>` = kebab-case of the TRD title.
+`<slug>` = kebab-case of the TRD title. `<branch>` = `feat/<slug>` in `full` mode,
+`test/<slug>` in `integration-test` mode.
+
+**In `integration-test` mode, also verify the feature exists** before building tests:
+use the code-graph (Step 3) / a quick grep of `$HOME/git/<svc>` to confirm the RPC +
+handler under test are present on `main`. If they are NOT, STOP — the tests would not
+compile; report that and tell the user to use `--type full` or merge the feature first
+(precondition in **Modes**).
 
 **3. Locate the sibling to mirror (code-graph)**
 Read the graph per `.claude/shared/code-graph-access.md` (mirror = REMOTE default branch,
@@ -139,7 +158,21 @@ matches conventions:
   (`internal/services/.../server.go`), domain/posting code it calls, and its test.
 Do NOT bulk-read the repo — follow the sibling's call path only.
 
+In `integration-test` mode the sibling's **test file** is the primary artifact to mirror
+(harness setup, fixtures, table-driven structure, assertion helpers); also read the real
+handler/domain code **under test** (not a sibling's) so the test asserts its actual
+behaviour and contract.
+
 **4. Implement (mirror, don't invent)**
+
+**`integration-test` mode — do ONLY the Tests sub-step below.** Skip migrations, proto,
+handler/domain logic, and mocks/wiring entirely (the feature is already merged — Step 2
+precondition). Write integration tests against the EXISTING code, mirroring the sibling
+test suite, covering the TRD's acceptance cases. If a test needs code that does not exist,
+that's a missing-feature signal → STOP and report (do not implement it to make the test
+pass). Then go straight to Step 5.
+
+**`full` mode — do all sub-steps:**
 - **Migrations** — generate via the repo's own target so naming/timestamps are
   conventional, then fill SQL from the TRD `ddl_blocks` verbatim:
   `make generate-migration-pg NAME=<slug>` and/or `make generate-migration-mssql NAME=<slug>`.
@@ -198,10 +231,13 @@ Wait for explicit "push" / "go".
 
 **7. Push + open the PR**
 ```bash
-git push -u origin feat/<slug>
-gh pr create --repo example-org/<svc> --base main --head feat/<slug> \
+git push -u origin <branch>
+gh pr create --repo example-org/<svc> --base main --head <branch> \
   --title "<title>" --body-file <pr-body.md>
 ```
+`<branch>` is `feat/<slug>` (full) or `test/<slug>` (integration-test). In
+`integration-test` mode the PR title is framed as coverage, e.g.
+`test(<area>): integration tests for <feature>`.
 
 **Auth fallback (gh fails / 404 on the repo).** The `git push` uses the SSH key
 (work access); `gh` uses its own OAuth token, which may be a personal account
@@ -212,13 +248,13 @@ When that happens, fall back to the ingestion PAT at `~/.secrets/github_pat`
 ```bash
 # only after the gh-default attempt fails with a 404/resolve error:
 GH_TOKEN="$(cat ~/.secrets/github_pat)" gh pr create \
-  --repo example-org/<svc> --base main --head feat/<slug> \
+  --repo example-org/<svc> --base main --head <branch> \
   --title "<title>" --body-file <pr-body.md>
 ```
 Rules for the PAT: read it ONLY from `~/.secrets/github_pat`, NEVER print or log
 its value, use it ONLY for this single `gh pr create` (don't persist it to gh
 config or env beyond the one command). If the file is absent, stop and give the
-user the compare URL (`https://github.com/example-org/<svc>/compare/main...feat/<slug>?expand=1`)
+user the compare URL (`https://github.com/example-org/<svc>/compare/main...<branch>?expand=1`)
 to open the PR in-browser instead.
 
 PR body MUST contain, in order:
@@ -226,6 +262,8 @@ PR body MUST contain, in order:
   especially ledger/posting logic."
 - Links: PRD + TRD.
 - Summary (from PRD intent) + what changed (migrations / proto / handler / tests).
+  In `integration-test` mode this is the test files only — list the scenarios covered
+  (mapped to the TRD's acceptance cases) and the feature/RPC under test.
 - **Flow source** — which diagram(s) the Step 1.5 Chrome pass read to ground the handler
   flow (or "flow from inline mermaid / TRD prose — no diagram macro present"), so reviewers
   know the sequence logic traces to the canonical diagram.
