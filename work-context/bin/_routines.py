@@ -193,6 +193,39 @@ def _rel_past(iso: str | None) -> str:
         return ""
 
 
+def _rel_past_date(date_str: str | None, now: datetime | None = None) -> str:
+    """Relative age for a YYYY-MM-DD success marker (date granularity, IST)."""
+    if not date_str:
+        return ""
+    try:
+        d = datetime.strptime(date_str.strip()[:10], "%Y-%m-%d").date()
+        today = (now or datetime.now(IST)).date()
+        days = (today - d).days
+        if days <= 0:  return "today"
+        if days == 1:  return "yesterday"
+        return f"{days}d ago"
+    except Exception:
+        return ""
+
+
+def _success_marker_name(file_path: str | None, task_id: str) -> str | None:
+    """The `last_routine_*_success.date` filename a routine stamps on success.
+
+    Routines gate on (and stamp) a per-routine success marker declared in their
+    own SKILL.md (see STEP 0 of each scheduled task). Parse it out so the
+    dashboard can show last-success distinctly from last-run.
+    """
+    p = Path(file_path) if file_path else (SKILL_DIR / task_id / "SKILL.md")
+    if not p.exists():
+        return None
+    try:
+        body = p.read_text()
+    except Exception:
+        return None
+    m = re.search(r"last_[a-z0-9_]*success\.(?:date|month)", body)
+    return m.group(0) if m else None
+
+
 def _rel_future(dt: datetime | None, now: datetime | None = None) -> str:
     if dt is None:
         return "?"
@@ -209,12 +242,17 @@ def _rel_future(dt: datetime | None, now: datetime | None = None) -> str:
 
 # ── public API ──────────────────────────────────────────────────────────────────
 
-def load_routines(now: datetime | None = None) -> list[dict]:
+def load_routines(now: datetime | None = None,
+                  state_dir: "Path | str | None" = None) -> list[dict]:
     """List of routine status dicts, sorted enabled-first then by id.
 
     Each: {id, enabled, cron, sched_human, last_run_iso, last_run_rel,
-           next_fire_iso, next_fire_rel, desc, cwd, stale}
+           next_fire_iso, next_fire_rel, last_success_date, last_success_rel,
+           desc, cwd, stale}
     `stale` = enabled but lastRunAt older than ~2 expected intervals (best-effort).
+    `last_success_*` reflect the routine's own success marker (see STEP 0 of each
+    SKILL.md); distinct from last_run, which fires even when the run idles/fails.
+    Pass `state_dir` (the work-context state/ dir) to resolve those markers.
     """
     reg = registry_path()
     if not reg:
@@ -224,6 +262,7 @@ def load_routines(now: datetime | None = None) -> list[dict]:
     except Exception:
         return []
 
+    sdir = Path(state_dir) if state_dir else None
     now = now or datetime.now(IST)
     out: list[dict] = []
     for t in data.get("scheduledTasks", []):
@@ -231,6 +270,15 @@ def load_routines(now: datetime | None = None) -> list[dict]:
         enabled = bool(t.get("enabled"))
         last_iso = t.get("lastRunAt")
         nf = next_fire(expr, now) if enabled else None
+        marker = _success_marker_name(t.get("filePath"), t.get("id", ""))
+        succ_date = None
+        if marker and sdir:
+            mp = sdir / marker
+            if mp.exists():
+                try:
+                    succ_date = mp.read_text().strip() or None
+                except Exception:
+                    succ_date = None
         out.append({
             "id":            t.get("id", "?"),
             "enabled":       enabled,
@@ -240,6 +288,9 @@ def load_routines(now: datetime | None = None) -> list[dict]:
             "last_run_rel":  _rel_past(last_iso),
             "next_fire_iso": nf.isoformat() if nf else None,
             "next_fire_rel": _rel_future(nf, now) if nf else None,
+            "success_marker":   marker,
+            "last_success_date": succ_date,
+            "last_success_rel":  _rel_past_date(succ_date, now),
             "desc":          _skill_description(t.get("filePath"), t.get("id", "")),
             "cwd":           t.get("cwd", ""),
         })

@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _run_health as rh
 import _codegraph_status as cg
 import _routines as rt
+import _v3_insights as v3i
 
 PLIST_DIR = Path.home() / "Library/LaunchAgents"
 _WD_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
@@ -314,7 +315,7 @@ def get_snapshot() -> dict:
     # Weekly housekeeping prune (launchd LaunchAgent, not a /schedule routine).
     hk_sched = read_plist_weekly(f"{_LP}.housekeeping")
     snap["housekeeping"] = {**hk_sched, **parse_housekeeping_log()}
-    snap["routines"] = rt.load_routines()
+    snap["routines"] = rt.load_routines(state_dir=STATE)
     snap["slack_cursors"] = _read_json(STATE / "slack_cursors.json")
     snap["slack_channel_meta"] = _read_json(STATE / "slack_channel_meta.json").get("channels", {})
     # Slack discover summary + schedule.
@@ -396,6 +397,77 @@ def get_snapshot() -> dict:
         except Exception as e:
             snap["db_error"] = str(e)
     return snap
+
+
+def get_cadence() -> dict:
+    """Today's scheduled fires per lane (ingest LaunchAgents + Claude routines).
+
+    Feeds the v3 "Today's Cadence" rail. Each mark is a scheduled fire today;
+    past fires (<= now) render solid, future fires hollow. This reflects the
+    SCHEDULE + now — per-source health lives in the source cards / verdict.
+    """
+    now = datetime.now(IST)
+    now_min = now.hour * 60 + now.minute
+
+    def _bucket(pairs: dict[int, list]) -> list:
+        # Collapse fine-grained fires (retry-every-5min, etc.) into 30-min slots
+        # so the rail reads as a cadence, not noise. One mark per slot that has
+        # any fire; job = distinct labels in the slot.
+        slots: dict[int, list] = {}
+        for m, labels in pairs.items():
+            slots.setdefault((m // 30) * 30, [])
+            for x in labels:
+                if x not in slots[(m // 30) * 30]:
+                    slots[(m // 30) * 30].append(x)
+        out = []
+        for sm in sorted(slots):
+            hh, mm = divmod(sm, 60)
+            labels = slots[sm]
+            job = (" · ".join(labels) if len(labels) <= 3
+                   else f"{len(labels)} · " + ", ".join(labels[:3]) + " …")
+            out.append({"t": f"{hh:02d}:{mm:02d}", "job": job,
+                        "st": "ok" if sm <= now_min else "due"})
+        return out
+
+    # Ingest lane: union of every source's LaunchAgent fire-minutes.
+    fires: dict[int, list] = {}
+    for s in SOURCES:
+        for fm in _plist_fire_minutes(AGENT_MAP[s]):
+            fires.setdefault(fm, []).append(s)
+    ingest = _bucket(fires)
+
+    # Routines lane: every cron fire of an enabled routine across today.
+    rs = rt.load_routines(now=now, state_dir=STATE)
+    rmarks: dict[int, list] = {}
+    for r in rs:
+        if not r.get("enabled"):
+            continue
+        c = rt.parse_cron(r.get("cron", ""))
+        if not c:
+            continue
+        for minute in range(0, 1440):
+            dt = now.replace(hour=minute // 60, minute=minute % 60,
+                             second=0, microsecond=0)
+            if rt._cron_matches(c, dt):
+                rmarks.setdefault(minute, []).append(r["id"])
+    routines = _bucket(rmarks)
+
+    return {"now_min": now_min,
+            "lanes": [{"name": "ingest", "marks": ingest},
+                      {"name": "routines", "marks": routines}]}
+
+
+def get_insights() -> dict:
+    """Aggregate DB analytics for the v3 Insights deck (see bin/_v3_insights.py)."""
+    if not DB_PATH.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        out = v3i.build(conn)
+        conn.close()
+        return out
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def get_slack_channels() -> list:
@@ -622,15 +694,34 @@ LOGS_EXTERNAL = {
 }
 
 
+def get_log_list() -> list[str]:
+    """Every *.log the dashboard can tail — all of LOGS/ plus external logs."""
+    names = {p.name for p in LOGS.glob("*.log")} if LOGS.exists() else set()
+    names |= set(LOGS_EXTERNAL)
+    # Surface the most-watched logs first, then the rest alphabetically.
+    pref = ["ingest.log", "identity_reconcile.log", "rollup.log",
+            "codegraph.log", "housekeeping.log", "session-reaper.log"]
+    head = [n for n in pref if n in names]
+    return head + sorted(names - set(head))
+
+
 def get_log_tail(name: str, n: int = 80) -> list[str]:
-    safe = {"identity_reconcile.log", "ingest.log", "rollup.log",
-            "housekeeping.log", "github-reset.log", "session-reaper.log"}
-    if name not in safe:
-        return [f"refused: {name} not in allowlist"]
-    p = LOGS_EXTERNAL.get(name, LOGS / name)
+    # Allow any real *.log in LOGS/ or a known external log; reject anything
+    # with path separators (no traversal) and confirm it resolves inside LOGS/.
+    if "/" in name or "\\" in name or not name.endswith(".log"):
+        return [f"refused: {name}"]
+    if name in LOGS_EXTERNAL:
+        p = LOGS_EXTERNAL[name]
+    else:
+        p = LOGS / name
+        try:
+            if p.resolve().parent != LOGS.resolve():
+                return [f"refused: {name}"]
+        except Exception:
+            return [f"refused: {name}"]
     if not p.exists():
         return ["no such log"]
-    return p.read_text().splitlines()[-n:]
+    return p.read_text(errors="replace").splitlines()[-n:]
 
 
 # ── HTML page (inline; no template engine) ────────────────────────────────────
@@ -739,6 +830,8 @@ tr:nth-child(even) td { background:var(--hover); }
 .tooltip.show { opacity:1; }
 .tooltip b { color:var(--text-strong); }
 .tooltip .meta { color:var(--text2); font-size:10px; margin-top:4px; }
+#discoverTable tr.tiprow { cursor:help; }
+#discoverTable tr.tiprow:hover td { background:var(--panel-raised); }
 .view-toggle { display:inline-flex; gap:4px; }
 .view-toggle button { background:var(--panel); color:var(--muted2); border:1px solid var(--line);
                       padding:3px 10px; font:inherit; font-size:11px; cursor:pointer;
@@ -774,7 +867,14 @@ tr:nth-child(even) td { background:var(--hover); }
   document.addEventListener("click",function(e){
     var b=e.target.closest&&e.target.closest("#themeToggle button"); if(!b) return;
     mode=b.dataset.t; localStorage.setItem(KEY,mode); apply(mode); });
-  setInterval(function(){ if((localStorage.getItem(KEY)||"auto")==="auto") apply("auto"); }, 600000);
+  // Re-evaluate the time-based auto theme. The setInterval alone is unreliable:
+  // Chrome throttles/pauses timers in background tabs, so a tab left open across
+  // the 7pm boundary never flips. Re-apply whenever the tab regains focus /
+  // becomes visible so it's always correct the moment the user looks at it.
+  function recheck(){ if((localStorage.getItem(KEY)||"auto")==="auto") apply("auto"); }
+  setInterval(recheck, 60000);
+  document.addEventListener("visibilitychange", function(){ if(!document.hidden) recheck(); });
+  window.addEventListener("focus", recheck);
 })();
 </script>
 <h1>INGEST STATUS DASHBOARD</h1>
@@ -831,11 +931,7 @@ tr:nth-child(even) td { background:var(--hover); }
   <div class="row" style="margin-bottom:8px">
     <label>log tail:</label>
     <select id="logname" onchange="loadLog()">
-      <option>identity_reconcile.log</option>
       <option>ingest.log</option>
-      <option>rollup.log</option>
-      <option>housekeeping.log</option>
-      <option>session-reaper.log</option>
     </select>
     <a class="refresh-btn" onclick="loadLog()">reload</a>
   </div>
@@ -1089,10 +1185,12 @@ async function refresh() {
     const active   = dated.filter(l => l.date_start <= today && _end(l) >= today);
     const upcoming = dated.filter(l => l.date_start > today);
     const lvState = leaves.error ? "fail" : "ok";
-    const peopleOut = [...new Set(active.map(l => l.actor))];
-    const peopleStr = peopleOut.length
-      ? peopleOut.slice(0, 6).join(", ") + (peopleOut.length > 6 ? ` +${peopleOut.length - 6}` : "")
-      : "nobody";
+    // WFH = working remotely, NOT out — count it separately from actual leave.
+    const _isWfh = l => (l.reason || "").toLowerCase() === "wfh";
+    const _names = arr => arr.slice(0, 6).join(", ") + (arr.length > 6 ? ` +${arr.length - 6}` : "");
+    const peopleOut = [...new Set(active.filter(l => !_isWfh(l)).map(l => l.actor))];
+    const wfhPeople = [...new Set(active.filter(_isWfh).map(l => l.actor))];
+    const peopleStr = peopleOut.length ? _names(peopleOut) : "nobody";
     const nh = leaves.next_holiday;
     const nf = leaves.next_fixed_holiday;
     // Headline the soonest holiday; if it's optional, also note the next fixed
@@ -1108,14 +1206,15 @@ async function refresh() {
     }
     lanes.push(laneFor("LEAVES", lvState, `
       <div class="kv">
-        <span>out today</span><b>${active.length} ${active.length === 1 ? "person" : "people"} <span class="muted">${peopleStr}</span></b>
+        <span>out today</span><b>${peopleOut.length} ${peopleOut.length === 1 ? "person" : "people"} <span class="muted">${peopleStr}</span></b>
+        ${wfhPeople.length ? `<span>wfh today</span><b>${wfhPeople.length} <span class="muted">${_names(wfhPeople)}</span></b>` : ""}
         <span>upcoming</span><b>${upcoming.length} <span class="muted">(next ${60}d)</span></b>
         <span>date TBD</span><b>${ambig.length} <span class="muted">ambiguous mention(s)</span></b>
         <span>tracked</span><b>${(leaves.total || 0).toLocaleString()} total rows</b>
         ${holRow}
       </div>
       ${leaves.error ? `<div class="finding fail"><b>FAIL</b> · ${_esc(leaves.error)}</div>` : ""}
-      <div style="margin-top:8px"><a href="/leaves" target="_blank" style="color:#4d8eff;font-size:12px">📅 view leaves gantt →</a></div>`));
+      <div class="leaveslink" style="margin-top:8px"><a href="/leaves" target="_blank" style="color:var(--blue);font-size:12px;font-weight:600">view leaves gantt →</a></div>`));
   }
 
   // IDENTITY lane
@@ -1290,6 +1389,19 @@ async function loadLog() {
   document.getElementById("logtail").textContent = (j.lines || []).join("\\n");
 }
 
+// Populate the log dropdown from whatever *.log files actually exist, so new
+// logs (codegraph, leaves, slack-discover, relay-bot, …) show up automatically.
+async function loadLogList() {
+  const sel = document.getElementById("logname");
+  try {
+    const j = await (await fetch("/api/logs")).json();
+    const cur = sel.value;
+    sel.innerHTML = (j.logs || []).map(n =>
+      `<option${n === cur ? " selected" : ""}>${_esc(n)}</option>`).join("");
+  } catch (e) {}
+  loadLog();
+}
+
 function _esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, ch =>
     ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
@@ -1377,6 +1489,13 @@ function showTooltip(e, c) {
     <div class="meta">${_esc2(c.summary || "").slice(0, 200)}</div>
     <div class="meta">sources: ${srcs}</div>
     <div class="meta">top: ${parts}</div>`;
+  t.classList.add("show");
+  moveTooltip(e);
+}
+
+function showTextTip(e, txt) {
+  const t = document.getElementById("tooltip");
+  t.innerHTML = `<b>promotion criteria</b><div class="meta">${_esc(txt || "no rationale recorded")}</div>`;
   t.classList.add("show");
   moveTooltip(e);
 }
@@ -1488,14 +1607,24 @@ async function loadDiscover() {
     let html = `<div class="muted" style="margin:4px 0">generated ${_esc(d.generated_at||"?")} · window ${d.days||"?"}d · schedule ${_esc(d.sched)} · next ${_esc(d.next)}</div>`;
     for (const [title, rows, lvl] of groups) {
       if (!rows || !rows.length) continue;
-      const trs = rows.map(c =>
-        `<tr><td>${_esc(c.name)}</td><td>${_esc(c.kind)}</td>
+      const trs = rows.map(c => {
+        const tip = c.rationale || "no rationale recorded";
+        return `<tr class="tiprow" data-tip="${_esc(tip)}" title="${_esc(tip)}">
+             <td>${_esc(c.name)}</td><td>${_esc(c.kind)}</td>
              <td>${c.team_members||0}</td><td>${c.team_msgs||0}</td>
-             <td>${c.total_msgs||0}</td><td class="muted">${_esc(c.mode||"")}</td></tr>`).join("");
+             <td>${c.total_msgs||0}</td><td class="muted">${_esc(c.mode||"")}</td></tr>`;
+      }).join("");
       html += `<div class="finding ${lvl}" style="margin-top:8px"><b>${title}</b> (${rows.length})</div>
         <table><tr><th>name</th><th>kind</th><th>team</th><th>t-msg</th><th>all-msg</th><th>mode</th></tr>${trs}</table>`;
     }
     el.innerHTML = html || `<span class="muted">no proposals</span>`;
+    // Wire the dashboard's instant popup tooltip onto each row — native title=
+    // is slow to appear and easy to miss. Shows the promotion criteria/rationale.
+    el.querySelectorAll("tr.tiprow").forEach(tr => {
+      tr.addEventListener("mouseenter", e => showTextTip(e, tr.dataset.tip));
+      tr.addEventListener("mousemove", moveTooltip);
+      tr.addEventListener("mouseleave", hideTooltip);
+    });
   } catch (e) {
     el.innerHTML = `<span class="muted">discover load error</span>`;
   }
@@ -1510,7 +1639,7 @@ async function refreshAll() {
 // can stall). So it is NOT called standalone here — that would run before the
 // div exists. refresh's own interval re-runs it.
 refreshAll();
-loadLog();
+loadLogList();
 loadClusters();
 setInterval(refreshAll, 1_800_000);
 setInterval(loadLog, 1_800_000);
@@ -1518,6 +1647,803 @@ setInterval(loadClusters, 1_800_000);
 </script>
 </body></html>
 """
+
+
+# ── v2: modern re-skin of the main page (served at /v2) ───────────────────────
+# Built by transforming INDEX_HTML so the render JS stays BYTE-IDENTICAL — every
+# field, finding, tooltip, the identity chart, cluster pack/list, discover
+# promotion-tooltips and user-group apply commands are preserved exactly. Only
+# the CSS, the app-bar header, and an added KPI summary strip differ. To adopt
+# v2 as the default, point the "/" route at INDEX_V2_HTML.
+_V2_CSS = """
+:root{
+  color-scheme: dark;
+  --bg:#0a0d14; --bg-deep:#070a10; --panel:#141a26; --panel-raised:#1a2130;
+  --hover:#1b2230; --line:#222b3b; --line2:#2c3850; --line-faint:#19202c;
+  --text:#e7ecf4; --text2:#9aa6bd; --text-strong:#ffffff;
+  --muted:#6b7891; --muted2:#7d8aa3; --ink:#0a0d14;
+  --overlay:#ffffff0d; --overlay-faint:#ffffff09;
+  --green:#34d399; --yellow:#fbbf24; --red:#fb7185; --blue:#7c8cff;
+  --purple:#9a7cff; --amber:#fbbf24; --accent:#7c8cff; --accent2:#9a7cff;
+  --pill-ok-bg:#0f2e26; --pill-warn-bg:#392c0a; --pill-fail-bg:#3a1620;
+  --radius:16px; --radius-sm:10px;
+  --shadow:0 1px 2px #00000055, 0 10px 26px -14px #00000099;
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+html[data-theme="light"]{
+  color-scheme: light;
+  --bg:#f4f6fa; --bg-deep:#e9edf3; --panel:#ffffff; --panel-raised:#ffffff;
+  --hover:#eef1f7; --line:#e4e8f0; --line2:#d3dae6; --line-faint:#eef1f6;
+  --text:#1c2533; --text2:#566077; --text-strong:#0b1220;
+  --muted:#8a93a6; --muted2:#7a8497; --ink:#0b0f14;
+  --overlay:#0000000f; --overlay-faint:#00000008;
+  --green:#10b981; --yellow:#d97706; --red:#e11d48; --blue:#5566f0;
+  --purple:#7c5cf0; --amber:#d97706; --accent:#5566f0; --accent2:#7c5cf0;
+  --pill-ok-bg:#e7f7f0; --pill-warn-bg:#fdf3e2; --pill-fail-bg:#fdeaee;
+  --shadow:0 1px 2px #0000000a, 0 10px 30px -16px #0000002e;
+}
+*{box-sizing:border-box}
+html{transition:background-color .15s,color .15s;}
+body{font:14px/1.5 var(--sans);
+  background:radial-gradient(1100px 540px at 82% -8%, color-mix(in srgb,var(--accent) 9%, transparent), transparent 60%), var(--bg);
+  color:var(--text); max-width:1300px; margin:0 auto; padding:20px 22px 72px; -webkit-font-smoothing:antialiased;}
+
+#themeToggle{position:fixed; top:16px; right:20px; z-index:1000; display:flex;
+  background:var(--panel); border:1px solid var(--line); border-radius:999px; padding:3px;
+  font:12px var(--sans); box-shadow:var(--shadow);}
+#themeToggle button{background:transparent; color:var(--muted); border:0; font:inherit; font-weight:600;
+  padding:5px 12px; border-radius:999px; cursor:pointer; transition:.15s;}
+#themeToggle button:hover{color:var(--text);}
+#themeToggle button.on{background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff;}
+
+.appbar{display:flex; align-items:center; gap:13px; margin-bottom:22px;}
+.brand{display:flex; align-items:center; gap:12px;}
+.logo{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;color:#fff;font-size:15px;
+  background:linear-gradient(135deg,var(--accent),var(--accent2)); box-shadow:0 6px 18px -6px var(--accent);}
+h1{font:700 18px/1.1 var(--sans); margin:0; letter-spacing:-.01em;}
+.subtitle{color:var(--muted); font-size:11.5px; margin-top:3px; font-family:var(--mono);}
+.subtitle .refresh-btn{color:var(--accent); cursor:pointer; text-decoration:none;}
+.live{margin-left:auto; margin-right:128px; display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text2);
+  background:var(--panel); border:1px solid var(--line); padding:6px 12px; border-radius:999px;}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2.4s infinite;}
+@keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--green) 55%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
+
+.kpis{display:grid; grid-template-columns:repeat(5,1fr); gap:13px; margin-bottom:6px;}
+.kpi{background:linear-gradient(180deg,var(--panel-raised),var(--panel)); border:1px solid var(--line);
+  border-radius:var(--radius); padding:14px 15px; box-shadow:var(--shadow);}
+.kpi .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600;}
+.kpi .val{font:750 24px/1.1 var(--mono); letter-spacing:-.02em; margin-top:7px; color:var(--text-strong);}
+.kpi .hint{font-size:11.5px;color:var(--text2);margin-top:4px; min-height:14px;}
+
+.sec{display:flex; align-items:center; gap:10px; margin:26px 0 14px;}
+.sec h2{font:700 13px/1 var(--sans); text-transform:uppercase; letter-spacing:.08em; color:var(--text2); margin:0;}
+.sec .rule{flex:1; height:1px; background:linear-gradient(90deg,var(--line),transparent);}
+
+.grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); gap:16px;}
+.lane{position:relative; background:var(--panel); border:1px solid var(--line);
+  border-radius:var(--radius); padding:15px 16px 14px; box-shadow:var(--shadow);
+  transition:transform .16s,border-color .16s,box-shadow .16s; overflow:hidden;}
+.lane:hover{transform:translateY(-3px); border-color:var(--line2); box-shadow:0 1px 2px #00000055,0 18px 40px -20px #000000b0;}
+.lane::before{content:"";position:absolute;inset:0 0 auto 0;height:3px;background:var(--blue);}
+.lane[data-state="ok"]::before{background:linear-gradient(90deg,var(--green),transparent);}
+.lane[data-state="warn"]::before{background:linear-gradient(90deg,var(--yellow),transparent);}
+.lane[data-state="fail"]::before{background:linear-gradient(90deg,var(--red),transparent);}
+.lane h2{font:700 14.5px/1 var(--sans); margin:2px 0 12px; display:flex; align-items:center;
+  justify-content:space-between; gap:10px; letter-spacing:.02em;}
+
+.pill{display:inline-flex; align-items:center; gap:6px; font:700 10.5px/1 var(--sans); text-transform:uppercase;
+  letter-spacing:.05em; padding:4px 9px; border-radius:999px; background:var(--pill-ok-bg); color:var(--green); white-space:nowrap;}
+.pill::before{content:""; width:7px; height:7px; border-radius:50%; background:currentColor; flex:0 0 auto;}
+.pill.warn{background:var(--pill-warn-bg); color:var(--yellow);}
+.pill.fail{background:var(--pill-fail-bg); color:var(--red);}
+.pill[title]{cursor:help;}
+
+.kv{display:grid; grid-template-columns:auto 1fr; gap:7px 14px; align-items:baseline; font-size:12.5px;}
+.kv>span{color:var(--muted); font-size:12px;}
+.kv b{color:var(--text); font-weight:600; font-family:var(--mono); font-size:12px; text-align:right; word-break:break-word;}
+.kv b .pill{font-family:var(--sans);}
+.kv .muted{color:var(--muted);}
+
+.finding{font-size:11.5px; line-height:1.45; padding:9px 11px; margin:10px 0 0; border-radius:var(--radius-sm);
+  background:var(--hover); border:1px solid var(--line); cursor:help;}
+.finding b{color:var(--text-strong); font-weight:700;}
+.finding.warn{background:var(--pill-warn-bg); border-color:color-mix(in srgb,var(--yellow) 24%,transparent);}
+.finding.fail{background:var(--pill-fail-bg); border-color:color-mix(in srgb,var(--red) 26%,transparent);}
+.finding.muted{background:var(--hover); border-color:var(--line); opacity:.75;}
+
+details{margin-top:12px;}
+summary{cursor:pointer; color:var(--accent); font-size:11.5px; font-weight:600; padding:5px 0; list-style:none;}
+summary::-webkit-details-marker{display:none;}
+summary::before{content:"\\25B8  "; color:var(--muted);}
+details[open] summary::before{content:"\\25BE  ";}
+table{border-collapse:collapse; width:100%; margin-top:8px; font-size:12px;}
+th{color:var(--muted); font-weight:600; text-align:left; padding:6px 8px; border-bottom:1px solid var(--line);
+  text-transform:uppercase; font-size:10.5px; letter-spacing:.04em; cursor:pointer; user-select:none;}
+th:hover{color:var(--text);}
+td{padding:6px 8px; border-bottom:1px solid var(--line-faint); font-family:var(--mono); font-size:11.5px;}
+tr:last-child td{border-bottom:0;}
+table tr:hover td{background:var(--hover);}
+.muted{color:var(--muted);}
+
+/* ROUTINES is the only lane whose table is a DIRECT child (others nest theirs
+   inside <details>). It's wide, so let it span the full grid row instead of
+   being squeezed into one auto-fill column, and stop its cells wrapping. */
+#lanes .lane:has(> table){grid-column:1 / -1;}
+#lanes .lane:has(> table) th,#lanes .lane:has(> table) td{white-space:nowrap;}
+#lanes .lane:has(> table) .kv{max-width:520px;}
+
+.chart-wrap{background:var(--panel); border:1px solid var(--line); padding:16px; border-radius:var(--radius);
+  margin-top:24px; box-shadow:var(--shadow);}
+.chart-wrap h2{font:700 13px/1 var(--sans); text-transform:uppercase; letter-spacing:.08em; color:var(--text2); margin:0 0 12px;}
+.tail{background:var(--bg-deep); padding:12px; border-radius:var(--radius-sm); max-height:300px; overflow:auto;
+  white-space:pre; font:11px var(--mono); color:var(--muted2); border:1px solid var(--line-faint);}
+
+.cluster{background:var(--panel-raised); border:1px solid var(--line); border-left:3px solid var(--blue);
+  padding:12px 14px; margin:10px 0; border-radius:var(--radius-sm);}
+.cluster h3{font:600 13.5px/1.2 var(--sans); margin:0 0 5px; color:var(--text);}
+.cluster .meta{color:var(--muted); font-size:11px; margin-bottom:5px;}
+.cluster .summary{color:var(--text2); font-size:12.5px; margin:7px 0;}
+.cluster .chips span{display:inline-block; padding:2px 8px; margin:2px; font-size:10.5px;
+  background:var(--hover); border:1px solid var(--line); border-radius:999px; color:var(--text2);}
+.cluster .json-block{background:var(--bg-deep); padding:8px; margin:5px 0; border-radius:var(--radius-sm);
+  font:11px var(--mono); color:var(--muted2); white-space:pre-wrap; word-break:break-word;}
+.cluster[data-status="ACTIVE"]{border-left-color:var(--green);}
+.cluster[data-status="RECURRING"]{border-left-color:var(--blue);}
+.cluster[data-status="STALE"]{border-left-color:var(--yellow);}
+.cluster[data-status="RESOLVED"]{border-left-color:var(--muted);}
+#clusterPack{width:100%; height:560px; background:var(--bg-deep); border-radius:var(--radius-sm); border:1px solid var(--line-faint);}
+#clusterPack circle{stroke:var(--bg); stroke-width:1.2; cursor:pointer;}
+#clusterPack circle:hover{stroke:var(--text-strong); stroke-width:2;}
+#clusterPack text{fill:var(--text); pointer-events:none; font-size:11px; text-anchor:middle; font-family:var(--sans);}
+
+.tooltip{position:absolute; background:var(--panel-raised); color:var(--text); padding:9px 11px;
+  border-radius:var(--radius-sm); border:1px solid var(--line); font-size:11.5px; max-width:360px;
+  pointer-events:none; opacity:0; transition:opacity .12s; z-index:999; box-shadow:0 12px 32px -8px #000000b0;}
+.tooltip.show{opacity:1;}
+.tooltip b{color:var(--text-strong);}
+.tooltip .meta{color:var(--text2); font-size:10.5px; margin-top:4px;}
+#discoverTable tr.tiprow{cursor:help;}
+#discoverTable tr.tiprow:hover td{background:var(--panel-raised);}
+
+.view-toggle{display:inline-flex; gap:0; background:var(--panel); border:1px solid var(--line); border-radius:999px; padding:3px;}
+.view-toggle button{background:transparent; color:var(--muted); border:0; padding:5px 13px; font:600 11.5px var(--sans);
+  cursor:pointer; border-radius:999px; transition:.15s;}
+.view-toggle button:hover{color:var(--text);}
+.view-toggle button.active{background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff;}
+.legend{display:flex; gap:14px; flex-wrap:wrap; font-size:11px; color:var(--text2); margin:10px 0;}
+.legend span::before{content:"\\25CF"; margin-right:5px;}
+.legend .active::before{color:var(--green);}
+.legend .recurring::before{color:var(--blue);}
+.legend .stale::before{color:var(--yellow);}
+.legend .resolved::before{color:var(--muted);}
+.row{display:flex; gap:14px; align-items:center;}
+.row label{color:var(--muted); font-size:11px;}
+.row select{background:var(--panel); color:var(--text); border:1px solid var(--line);
+  padding:6px 10px; font:inherit; font-size:12px; border-radius:8px;}
+.refresh-btn{cursor:pointer;}
+@media(max-width:1000px){.kpis{grid-template-columns:repeat(2,1fr)} .grid{grid-template-columns:1fr} .live{display:none}}
+"""
+
+_V2_OLD_HEADER = """<h1>INGEST STATUS DASHBOARD</h1>
+<div class="subtitle">
+  <span id="when">loading…</span>
+  &nbsp;·&nbsp; <span id="auto">auto-refresh 30min</span>
+  &nbsp;·&nbsp; <a class="refresh-btn" onclick="refresh()">refresh now</a>
+</div>
+
+<div class="grid" id="lanes"></div>"""
+
+_V2_NEW_HEADER = """<header class="appbar">
+  <div class="brand">
+    <div class="logo">◆</div>
+    <div>
+      <h1>Ingest Status</h1>
+      <div class="subtitle"><span id="when">loading…</span> &nbsp;·&nbsp; <span id="auto">auto-refresh 30min</span> &nbsp;·&nbsp; <a class="refresh-btn" onclick="refresh()">refresh now</a></div>
+    </div>
+  </div>
+  <div class="live"><span class="dot"></span> live</div>
+</header>
+
+<div class="kpis" id="kpis"></div>
+<div class="sec"><h2>Sources</h2><span class="rule"></span></div>
+<div class="grid" id="lanes"></div>"""
+
+# Added KPI summary strip — derived from the same snapshot the lanes use; the
+# healthy/warn/down counts are read off the just-rendered lane DOM so they can
+# never diverge from the per-source verdicts.
+_V2_KPI_JS = """function _kfmt(n){ n=+n||0; if(n>=1e6) return (n/1e6).toFixed(1)+"M"; if(n>=1e3) return Math.round(n/1e3)+"K"; return ""+n; }
+function _relFut(d){ const s=(d.getTime()-Date.now())/1000; if(s<60) return "now"; if(s<3600) return "~"+Math.floor(s/60)+"m"; if(s<86400) return "~"+Math.floor(s/3600)+"h"; return "~"+Math.floor(s/86400)+"d"; }
+function renderKpis(s, slack, leaves){
+  const el=document.getElementById("kpis"); if(!el) return;
+  const c=sel=>document.querySelectorAll("#lanes .lane"+sel).length;
+  const ok=c('[data-state="ok"]'), warn=c('[data-state="warn"]'), fail=c('[data-state="fail"]'); const tot=ok+warn+fail||1;
+  const bySrc=(s.db&&s.db.by_source)||{};
+  const ev=Object.values(bySrc).reduce((a,b)=>a+(+b||0),0);
+  const evTop=Object.entries(bySrc).sort((a,b)=>b[1]-a[1]).slice(0,3).map(kv=>kv[0]+" "+_kfmt(kv[1])).join(" · ");
+  const disc=s.discover||{}; const ready=(disc.n_full||0)+(disc.n_team||0)+(disc.n_owner||0), rev=disc.n_review||0;
+  const today=leaves.today; const out=new Set((leaves.leaves||[]).filter(l=>l.date_start<=today&&(l.date_end||l.date_start)>=today&&(l.reason||"").toLowerCase()!=="wfh").map(l=>l.actor)).size;
+  const nh=leaves.next_holiday; const hol=nh?("next holiday "+nh.date):"no upcoming holiday";
+  let soon=null, soonId=""; (s.routines||[]).forEach(r=>{ if(r.enabled&&r.next_fire_iso){ const t=new Date(r.next_fire_iso); if(!soon||t<soon){soon=t;soonId=r.id;} }});
+  const tiles=[
+    ["Sources healthy", ok+" / "+tot, warn+" warn · "+fail+" down"],
+    ["Events ingested", _kfmt(ev), evTop],
+    ["Discover queue", (ready+rev), ready+" ready · "+rev+" review"],
+    ["Out today", out, hol],
+    ["Next routine", soon?_relFut(soon):"—", soonId||"—"],
+  ];
+  el.innerHTML=tiles.map(t=>'<div class="kpi"><div class="lbl">'+_esc(t[0])+'</div><div class="val">'+_esc(""+t[1])+'</div><div class="hint">'+_esc(t[2]||"")+'</div></div>').join("");
+}
+
+async function refresh() {"""
+
+
+def _build_index_v2() -> str:
+    """Modern re-skin of INDEX_HTML with identical render JS (see note above)."""
+    import re as _re
+    html = INDEX_HTML
+    html = html.replace("<title>cron-status · dashboard</title>",
+                        "<title>Ingest Status · dashboard</title>")
+    html = _re.sub(r"<style>.*?</style>",
+                   lambda _m: "<style>" + _V2_CSS + "</style>",
+                   html, count=1, flags=_re.S)
+    html = html.replace(_V2_OLD_HEADER, _V2_NEW_HEADER)
+    html = html.replace('document.getElementById("lanes").innerHTML = lanes.join("");',
+                        'document.getElementById("lanes").innerHTML = lanes.join("");\n  renderKpis(s, slack, leaves);')
+    html = html.replace("async function refresh() {", _V2_KPI_JS)
+    return html
+
+
+INDEX_V2_HTML = _build_index_v2()
+
+
+# ── v3: "telemetry / observatory" console (served at /v3) ─────────────────────
+# Like _build_index_v2, this transforms INDEX_HTML so ALL the per-source data
+# logic stays byte-identical (findings, discover/usergroup tables, channel
+# detail, run-health, cluster pack, signals chart, log tail). v3 changes the
+# PRESENTATION: a new shell (appbar + system verdict + the signature "Today's
+# Cadence" rail + KPI strip), card-chrome lanes (icon/subtitle/spine), a
+# last-success column on routines, and a live Insights deck (/api/insights).
+_V3_FONTS = (
+    '<link rel="preconnect" href="https://fonts.googleapis.com">'
+    '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+    '<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700'
+    '&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">'
+)
+
+_V3_CSS = r"""
+:root{
+  color-scheme: dark;
+  --bg:#080d11; --bg2:#0b1217; --well:#06090c; --bg-deep:#06090c;
+  --panel:#0f171d; --panel2:#132027; --panel-raised:#16242c;
+  --line:#1e2c34; --line2:#284049; --line-faint:#16222a;
+  --text:#dde6e9; --text2:#8ea0a8; --text3:#6a7e86; --muted:#566a72; --muted2:#6a7e86; --ink:#05080a;
+  --beacon:#2dd4cf; --beacon-dim:#2dd4cf24; --beacon-faint:#2dd4cf12;
+  --green:#47d182; --yellow:#edb23c; --red:#f15873; --blue:#5eb1ff; --purple:#9b8eff; --amber:#edb23c; --accent:#2dd4cf;
+  --ok:#47d182; --warn:#edb23c; --bad:#f15873;
+  --ok-bg:#0e2a1d; --warn-bg:#2e2410; --bad-bg:#2e151c;
+  --pill-ok-bg:#0e2a1d; --pill-warn-bg:#2e2410; --pill-fail-bg:#2e151c;
+  --ok-line:#47d18238; --warn-line:#edb23c38; --bad-line:#f1587340;
+  --overlay:#ffffff0d; --overlay-faint:#ffffff09;
+  --radius:14px; --radius-sm:9px;
+  --shadow:0 1px 1px #00000055, 0 14px 34px -22px #000000cc;
+  --grot:"Space Grotesk",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+html[data-theme="light"]{
+  color-scheme: light;
+  --bg:#eef2f3; --bg2:#e6ecee; --well:#dfe6e8; --bg-deep:#dfe6e8;
+  --panel:#ffffff; --panel2:#f7fafb; --panel-raised:#ffffff;
+  --line:#dde5e8; --line2:#c6d3d7; --line-faint:#e8eef0;
+  --text:#13242a; --text2:#47585f; --text3:#6b7c83; --muted:#869399; --muted2:#6b7c83; --ink:#ffffff;
+  --beacon:#0c968f; --beacon-dim:#0c968f1f; --beacon-faint:#0c968f10;
+  --green:#0f9d57; --yellow:#b87708; --red:#d13a55; --blue:#2f6fe0; --purple:#6f5fe0; --amber:#b87708; --accent:#0c968f;
+  --ok:#0f9d57; --warn:#b87708; --bad:#d13a55;
+  --ok-bg:#dcf3e7; --warn-bg:#f6ecd3; --bad-bg:#f8dee4;
+  --pill-ok-bg:#dcf3e7; --pill-warn-bg:#f6ecd3; --pill-fail-bg:#f8dee4;
+  --ok-line:#0f9d5733; --warn-line:#b8770833; --bad-line:#d13a5533;
+  --overlay:#0000000f; --overlay-faint:#00000008;
+  --shadow:0 1px 1px #0000000a, 0 12px 30px -20px #00000026;
+}
+*{box-sizing:border-box}
+html{transition:background-color .18s,color .18s}
+body{font:14px/1.5 var(--sans); background:
+    radial-gradient(900px 460px at 88% -12%, var(--beacon-faint), transparent 62%), var(--bg);
+  color:var(--text); max-width:1280px; margin:0 auto; padding:0 22px 70px; -webkit-font-smoothing:antialiased;}
+a{color:var(--beacon);text-decoration:none} a:hover{text-decoration:underline}
+::selection{background:var(--beacon-dim)}
+
+#themeToggle{position:fixed;top:14px;right:18px;z-index:1000;display:flex;
+  background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:3px;
+  font:600 11px var(--grot);box-shadow:var(--shadow);overflow:hidden;}
+#themeToggle button{background:transparent;color:var(--muted);border:0;padding:5px 11px;border-radius:999px;cursor:pointer;font:inherit;}
+#themeToggle button:hover{color:var(--text);}
+#themeToggle button.on{background:var(--beacon);color:var(--ink);}
+
+.appbar{display:flex;align-items:center;gap:12px;padding:16px 0 4px;}
+.brand{display:flex;align-items:center;gap:11px;}
+.mark{width:30px;height:30px;border-radius:8px;position:relative;flex:0 0 auto;
+  background:radial-gradient(circle at 32% 30%, var(--beacon), #0b6f7a 96%);box-shadow:0 0 0 1px #2dd4cf30,0 6px 16px -6px var(--beacon);}
+.mark::after{content:"";position:absolute;inset:0;border-radius:8px;background:repeating-linear-gradient(0deg,#ffffff14 0 1px,transparent 1px 4px);}
+.appbar h1{font:600 16px/1 var(--grot);margin:0;letter-spacing:.2px;}
+.subtitle{color:var(--muted);font:400 11.5px/1.3 var(--mono);margin-top:4px;}
+.subtitle .refresh-btn{color:var(--beacon);cursor:pointer;}
+
+.verdict{display:flex;align-items:center;gap:16px;margin:14px 0 4px;padding:15px 18px;
+  border:1px solid var(--line);border-radius:var(--radius);background:linear-gradient(100deg,var(--panel2),var(--panel));
+  box-shadow:var(--shadow);position:relative;overflow:hidden;}
+.verdict::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--vc,var(--ok));}
+.verdict[data-s="ok"]{--vc:var(--ok)} .verdict[data-s="warn"]{--vc:var(--warn)} .verdict[data-s="bad"]{--vc:var(--bad)}
+.beat{width:40px;height:40px;flex:0 0 auto;border-radius:50%;display:grid;place-items:center;background:color-mix(in srgb,var(--vc) 16%,transparent);}
+.beat span{width:12px;height:12px;border-radius:50%;background:var(--vc);box-shadow:0 0 0 0 var(--vc);animation:beat 2.6s infinite;}
+@keyframes beat{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--vc) 55%,transparent)}70%{box-shadow:0 0 0 12px transparent}100%{box-shadow:0 0 0 0 transparent}}
+.vmain{font:600 18px/1.15 var(--grot);color:var(--text);}
+.vsub{font:400 12px/1.4 var(--mono);color:var(--text2);margin-top:4px;}
+.vsub b{color:var(--text);font-weight:500;}
+.vmeta{margin-left:auto;display:flex;gap:22px;text-align:right;}
+.vmeta .m .n{font:700 20px/1 var(--mono);color:var(--text);}
+.vmeta .m .l{font:600 10px/1 var(--grot);text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-top:6px;}
+.vmeta .m.ok .n{color:var(--ok)} .vmeta .m.warn .n{color:var(--warn)} .vmeta .m.bad .n{color:var(--bad)}
+
+.cadence{margin:14px 0 8px;border:1px solid var(--line);border-radius:var(--radius);background:var(--bg2);box-shadow:var(--shadow);overflow:hidden;}
+.cadence .ch{display:flex;align-items:center;gap:10px;padding:12px 18px 10px;}
+.cadence .ch h2{font:600 11px/1 var(--grot);text-transform:uppercase;letter-spacing:.12em;color:var(--text2);margin:0;}
+.cadence .ch .leg{margin-left:auto;display:flex;gap:14px;font:500 10.5px var(--mono);color:var(--muted);align-items:center;}
+.cadence .ch .leg i{display:inline-flex;align-items:center;gap:5px;}
+.cadence .ch .leg .s{width:9px;height:9px;border-radius:50%;background:var(--ok);}
+.cadence .ch .leg .h{width:9px;height:9px;border-radius:50%;border:1.5px solid var(--muted);}
+.cadence .ch .leg .nd{width:2px;height:11px;background:var(--beacon);box-shadow:0 0 6px var(--beacon);}
+.rail{position:relative;padding:0 18px 14px;}
+.railscale{position:relative;height:16px;margin-left:96px;border-bottom:1px solid var(--line-faint);}
+.railscale .t{position:absolute;transform:translateX(-50%);font:500 9.5px var(--mono);color:var(--muted);bottom:2px;}
+.railscale .gl{position:absolute;top:0;bottom:0;width:1px;background:var(--line-faint);}
+#cadLanes{position:relative;}
+.cadlane{position:relative;height:34px;display:flex;align-items:center;}
+.cadlane .lname{width:96px;flex:0 0 auto;font:600 10.5px var(--grot);text-transform:uppercase;letter-spacing:.06em;color:var(--text3);padding-right:8px;text-align:right;}
+.cadlane .ltrack{position:relative;flex:1;height:100%;}
+.cadlane .ltrack .gl{position:absolute;top:0;bottom:0;width:1px;background:var(--line-faint);opacity:.6;}
+.tick{position:absolute;top:50%;transform:translate(-50%,-50%);width:11px;height:11px;border-radius:50%;cursor:pointer;transition:transform .1s;}
+.tick:hover{transform:translate(-50%,-50%) scale(1.45);z-index:4;}
+.tick.ok{background:var(--ok);box-shadow:0 0 0 3px var(--ok-bg);}
+.tick.fail{background:var(--bad);box-shadow:0 0 0 3px var(--bad-bg);}
+.tick.due{background:transparent;border:1.5px solid var(--text3);}
+.tick.due.soon{border-color:var(--beacon);box-shadow:0 0 7px -1px var(--beacon);}
+.nowfull{position:absolute;top:8px;bottom:8px;width:2px;background:var(--beacon);z-index:3;box-shadow:0 0 9px var(--beacon);}
+.nowfull::before{content:"NOW";position:absolute;top:-15px;left:50%;transform:translateX(-50%);font:700 8.5px var(--grot);letter-spacing:.1em;color:var(--ink);background:var(--beacon);padding:2px 5px;border-radius:4px;white-space:nowrap;}
+.nowfull .pulse{position:absolute;top:-3px;left:50%;transform:translateX(-50%);width:6px;height:6px;border-radius:50%;background:var(--beacon);box-shadow:0 0 8px var(--beacon);animation:beat 2.6s infinite;}
+
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:13px;margin:14px 0 6px;}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:13px 15px;box-shadow:var(--shadow);position:relative;overflow:hidden;}
+.kpi .l{font:600 10.5px/1 var(--grot);text-transform:uppercase;letter-spacing:.07em;color:var(--muted);}
+.kpi .v{font:700 24px/1.05 var(--mono);margin-top:9px;color:var(--text);}
+.kpi .h{font:500 11px/1.3 var(--mono);color:var(--text2);margin-top:5px;min-height:14px;}
+.kpi.flag .v{color:var(--warn);}
+.kpi .edge{position:absolute;left:0;right:0;bottom:0;height:2px;background:linear-gradient(90deg,var(--beacon),transparent);}
+
+.sec{display:flex;align-items:center;gap:12px;margin:28px 0 14px;}
+.sec h2{font:600 12px/1 var(--grot);text-transform:uppercase;letter-spacing:.12em;color:var(--text2);margin:0;}
+.sec .dot{width:5px;height:5px;border-radius:50%;background:var(--beacon);}
+.sec .count{font:500 11px var(--mono);color:var(--muted);}
+.sec .rule{flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent);}
+
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:15px;}
+.lane{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:var(--shadow);overflow:hidden;transition:transform .15s,border-color .15s,box-shadow .15s;padding:0 0 4px;}
+.lane:hover{transform:translateY(-2px);border-color:var(--line2);}
+.lane[data-state="ok"]{--sc:var(--ok)} .lane[data-state="warn"]{--sc:var(--warn)} .lane[data-state="fail"]{--sc:var(--bad)}
+.lane .spine{position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--sc,var(--ok));}
+.chd{display:flex;align-items:center;gap:11px;padding:14px 16px 8px 18px;}
+.chd .ic{width:28px;height:28px;flex:0 0 auto;border-radius:7px;display:grid;place-items:center;
+  font:700 11px var(--grot);text-transform:uppercase;color:var(--text2);background:var(--bg2);border:1px solid var(--line);}
+.chd .nm{font:600 14px/1.15 var(--grot);letter-spacing:.2px;}
+.chd .nm small{display:block;font:500 10.5px var(--mono);color:var(--muted);letter-spacing:0;margin-top:2px;}
+.grid .lane:has(> table){grid-column:1 / -1;}
+.grid .lane:has(> table) th,.grid .lane:has(> table) td{white-space:nowrap;}
+/* full-width lane (ROUTINES): keep the meta kv compact on the left and let the
+   table use the whole width. */
+.grid .lane:has(> table) .kv{max-width:560px;}
+.grid .lane:has(> table) > table{width:100%;}
+/* plain card links that aren't inside .kv/details (e.g. the LEAVES "view gantt"
+   link) need the same left indent as the card content. */
+.lane .leaveslink{padding:0 16px 8px 18px;}
+
+.pill{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font:700 9.5px var(--grot);text-transform:uppercase;
+  letter-spacing:.06em;padding:5px 9px;border-radius:999px;background:var(--pill-ok-bg);color:var(--ok);white-space:nowrap;}
+.pill .pd{width:6px;height:6px;border-radius:50%;background:currentColor;}
+.pill.warn{background:var(--pill-warn-bg);color:var(--warn);}
+.pill.fail{background:var(--pill-fail-bg);color:var(--bad);}
+.pill[title]{cursor:help;}
+
+.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;align-items:baseline;padding:4px 16px 10px 18px;font-size:12.5px;}
+.kv>span{font:500 11.5px var(--grot);color:var(--muted);}
+.kv b{color:var(--text);font-weight:500;font-family:var(--mono);font-size:12px;text-align:right;min-width:0;overflow-wrap:anywhere;}
+.kv b .pill{font-family:var(--grot);}
+.kv .muted{color:var(--muted);}
+
+details{margin:8px 16px 0 18px;}
+summary{cursor:pointer;font:600 11px var(--grot);color:var(--beacon);padding:6px 0;list-style:none;user-select:none;}
+summary::-webkit-details-marker{display:none;}
+.muted{color:var(--muted);}
+
+table{border-collapse:collapse;width:100%;margin-top:8px;font-size:12px;}
+th{font:600 9.5px var(--grot);text-transform:uppercase;letter-spacing:.05em;color:var(--muted);text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);cursor:pointer;user-select:none;}
+th:hover{color:var(--text2);}
+td{font:500 11.5px var(--mono);color:var(--text2);padding:6px 8px;border-bottom:1px solid var(--line-faint);}
+tr:last-child td{border-bottom:0;}
+tbody tr:hover td, table tr:hover td{background:var(--bg2);}
+td b{color:var(--text);font-weight:600;}
+/* Tables inside a card's expander (per-channel, discover, user-groups) can be
+   wide AND long. Cap them to a scroll panel so columns never clip and a long
+   list scrolls in place instead of ballooning the card. The full sortable
+   list lives on the dedicated /channels page. */
+.lane details table{display:block;max-height:320px;overflow:auto;white-space:nowrap;}
+.lane details #discoverTable{display:block;max-height:340px;overflow:auto;}
+.lane details #discoverTable table{max-height:none;}
+
+.finding{margin:8px 16px 0 18px;padding:9px 11px;border-radius:var(--radius-sm);font:500 11.5px/1.45 var(--mono);border:1px solid var(--line);background:var(--bg2);cursor:help;}
+.finding b{font-family:var(--grot);font-weight:700;color:var(--text);}
+.finding.warn{background:var(--warn-bg);border-color:var(--warn-line);} .finding.warn b{color:var(--warn);}
+.finding.fail{background:var(--bad-bg);border-color:var(--bad-line);} .finding.fail b{color:var(--bad);}
+.finding.muted{opacity:.72;}
+
+.chart-wrap{background:var(--panel);border:1px solid var(--line);padding:16px;border-radius:var(--radius);margin-top:20px;box-shadow:var(--shadow);}
+.chart-wrap h2{font:600 12px/1 var(--grot);text-transform:uppercase;letter-spacing:.1em;color:var(--text2);margin:0 0 12px;}
+.tail{background:var(--well);border:1px solid var(--line-faint);padding:12px;border-radius:var(--radius-sm);max-height:300px;overflow:auto;white-space:pre;font:11px/1.7 var(--mono);color:var(--text3);}
+
+.cluster{background:var(--bg2);border:1px solid var(--line);border-left:3px solid var(--blue);padding:12px 14px;margin:10px 0;border-radius:var(--radius-sm);}
+.cluster h3{font:600 13.5px var(--grot);margin:0 0 5px;color:var(--text);}
+.cluster .meta{color:var(--muted);font:500 10.5px var(--mono);margin-bottom:5px;}
+.cluster .summary{color:var(--text2);font-size:12.5px;margin:7px 0;}
+.cluster .chips span{display:inline-block;padding:2px 8px;margin:2px;font:500 10px var(--mono);background:var(--panel);border:1px solid var(--line);border-radius:999px;color:var(--text2);}
+.cluster .json-block{background:var(--well);padding:8px;margin:5px 0;border-radius:var(--radius-sm);font:11px var(--mono);color:var(--muted2);white-space:pre-wrap;word-break:break-word;}
+.cluster[data-status="ACTIVE"]{border-left-color:var(--green);} .cluster[data-status="RECURRING"]{border-left-color:var(--blue);}
+.cluster[data-status="STALE"]{border-left-color:var(--yellow);} .cluster[data-status="RESOLVED"]{border-left-color:var(--muted);}
+#clusterPack{width:100%;height:560px;background:var(--well);border-radius:var(--radius-sm);border:1px solid var(--line-faint);}
+#clusterPack circle{stroke:var(--bg);stroke-width:1.2;cursor:pointer;} #clusterPack circle:hover{stroke:var(--text);stroke-width:2;}
+#clusterPack text{fill:var(--text);pointer-events:none;font-size:11px;text-anchor:middle;font-family:var(--mono);}
+
+.tooltip{position:absolute;background:var(--panel-raised);color:var(--text);padding:9px 11px;border-radius:var(--radius-sm);border:1px solid var(--line2);font:500 11.5px var(--mono);max-width:360px;pointer-events:none;opacity:0;transition:opacity .12s;z-index:999;box-shadow:0 16px 40px -10px #000000cc;}
+.tooltip.show{opacity:1;} .tooltip b{color:var(--text);font-family:var(--grot);} .tooltip .meta{color:var(--text2);font-size:10.5px;margin-top:4px;}
+#discoverTable tr.tiprow{cursor:help;} #discoverTable tr.tiprow:hover td{background:var(--panel-raised);}
+
+.view-toggle{display:inline-flex;background:var(--bg2);border:1px solid var(--line);border-radius:999px;padding:3px;}
+.view-toggle button{background:transparent;color:var(--muted);border:0;padding:5px 13px;font:600 11px var(--grot);cursor:pointer;border-radius:999px;}
+.view-toggle button.active{background:var(--beacon);color:var(--ink);}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font:500 11px var(--mono);color:var(--text2);margin:10px 0;}
+.legend span::before{content:"\25CF";margin-right:5px;}
+.legend .active::before{color:var(--green);} .legend .recurring::before{color:var(--blue);}
+.legend .stale::before{color:var(--yellow);} .legend .resolved::before{color:var(--muted);}
+.row{display:flex;gap:14px;align-items:center;} .row label{color:var(--muted);font:500 11px var(--grot);}
+.row select,.row button{background:var(--panel);color:var(--text);border:1px solid var(--line);padding:6px 10px;font:500 11.5px var(--mono);border-radius:8px;cursor:pointer;}
+.refresh-btn{cursor:pointer;}
+
+.totstrip{display:flex;gap:24px;flex-wrap:wrap;font:500 12px var(--mono);color:var(--text2);margin:-2px 0 16px;}
+.totstrip b{color:var(--text);font-weight:700;font-size:14px;}
+.totstrip .lbl{color:var(--muted);font:600 10px var(--grot);text-transform:uppercase;letter-spacing:.06em;display:block;margin-top:2px;}
+.insights{display:grid;grid-template-columns:1fr 1fr;gap:15px;}
+.insights .span2{grid-column:1 / -1;} .insights .panel{margin:0;}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:15px 17px;}
+.panel .ph{display:flex;align-items:center;gap:10px;margin-bottom:12px;}
+.panel .ph h3{font:600 11px var(--grot);text-transform:uppercase;letter-spacing:.1em;color:var(--text2);margin:0;}
+.panel .ph .sub{font:500 10.5px var(--mono);color:var(--muted);margin-left:auto;}
+.chartbox{background:var(--well);border:1px solid var(--line-faint);border-radius:var(--radius-sm);padding:8px;}
+.ig-legend{display:flex;gap:16px;flex-wrap:wrap;font:500 10.5px var(--mono);color:var(--text2);margin-top:11px;}
+.ig-legend i{display:inline-flex;align-items:center;gap:6px;} .ig-legend i::before{content:"";width:10px;height:10px;border-radius:3px;background:var(--c,var(--beacon));}
+svg text{font-family:var(--mono);}
+@media(max-width:1080px){.kpis{grid-template-columns:repeat(2,1fr)} .insights{grid-template-columns:1fr} .vmeta{display:none}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important}}
+:focus-visible{outline:2px solid var(--beacon);outline-offset:2px;border-radius:4px;}
+"""
+
+_V3_OLD_HEADER = """<h1>INGEST STATUS DASHBOARD</h1>
+<div class="subtitle">
+  <span id="when">loading…</span>
+  &nbsp;·&nbsp; <span id="auto">auto-refresh 30min</span>
+  &nbsp;·&nbsp; <a class="refresh-btn" onclick="refresh()">refresh now</a>
+</div>
+
+<div class="grid" id="lanes"></div>"""
+
+_V3_NEW_HEADER = """<header class="appbar">
+  <div class="brand"><div class="mark"></div>
+    <div><h1>ingest console</h1>
+      <div class="subtitle">work-context · <span id="when">loading…</span> &nbsp;·&nbsp; <a class="refresh-btn" onclick="refresh()">refresh</a> &nbsp;·&nbsp; <span id="auto">auto 30min</span></div>
+    </div>
+  </div>
+</header>
+
+<div class="verdict" id="verdict" data-s="ok">
+  <div class="beat"><span></span></div>
+  <div><div class="vmain" id="vmain">loading…</div><div class="vsub" id="vsub"></div></div>
+  <div class="vmeta" id="vmeta"></div>
+</div>
+
+<div class="cadence">
+  <div class="ch"><h2>Today's cadence</h2>
+    <div class="leg"><i><span class="s"></span>ran</i><i><span class="h"></span>upcoming</i><i><span class="nd"></span>now</i></div>
+  </div>
+  <div class="rail"><div class="railscale" id="railscale"></div><div id="cadLanes"></div></div>
+</div>
+
+<div class="kpis" id="kpis"></div>
+
+<div class="sec"><span class="dot"></span><h2>Sources &amp; pipelines</h2><span class="count" id="srcCount"></span><span class="rule"></span></div>
+<div class="grid" id="lanes"></div>"""
+
+_V3_OLD_LANEFOR = """function laneFor(name, state, body, tip) {
+  const stateClass = state || "ok";
+  const t = tip ? ` title="${_esc(tip)}"` : "";
+  const pill = (state === "fail" ? `<span class="pill fail"${t}>FAIL</span>`
+               : state === "warn" ? `<span class="pill warn"${t}>WARN</span>`
+               : `<span class="pill">OK</span>`);
+  return `<div class="lane" data-state="${stateClass}">
+    <h2>${name} ${pill}</h2>
+    ${body}
+  </div>`;
+}"""
+
+_V3_NEW_LANEFOR = r"""const LANE_META={
+  "GITHUB":{ic:"gh",sub:"code · PRs · reviews"}, "JIRA":{ic:"jr",sub:"issues · sprints"},
+  "CONFLUENCE":{ic:"cf",sub:"docs · pages"}, "SLACK":{ic:"sl",sub:"channels · threads"},
+  "LEAVES":{ic:"lv",sub:"team availability"}, "IDENTITY":{ic:"id",sub:"actor reconcile"},
+  "EMBEDDING":{ic:"em",sub:"vectors · clusters"}, "CODE-GRAPH":{ic:"cg",sub:"repos · graph"},
+  "HOUSEKEEPING":{ic:"hk",sub:"prune · tidy"}, "ROUTINES":{ic:"rt",sub:"scheduled agents"},
+};
+function laneFor(name, state, body, tip) {
+  const st = state || "ok";
+  const meta = LANE_META[name] || {ic:"•", sub:""};
+  const t = tip ? ` title="${_esc(tip)}"` : "";
+  const pillTxt = st === "fail" ? "FAIL" : st === "warn" ? "WARN" : "OK";
+  const pillCls = st === "fail" ? "pill fail" : st === "warn" ? "pill warn" : "pill";
+  return `<div class="lane" data-state="${st}"><div class="spine"></div>
+    <div class="chd"><div class="ic">${meta.ic}</div>
+      <div class="nm">${name}<small>${meta.sub}</small></div>
+      <span class="${pillCls}"${t}><span class="pd"></span>${pillTxt}</span></div>
+    ${body}</div>`;
+}
+function _kfmt(n){n=+n||0;if(n>=1e6)return (n/1e6).toFixed(1)+"M";if(n>=1e3)return Math.round(n/1e3)+"K";return ""+n;}
+function _relFut(d){const s=(d.getTime()-Date.now())/1000;if(s<60)return"now";if(s<3600)return"~"+Math.floor(s/60)+"m";if(s<86400)return"~"+Math.floor(s/3600)+"h";return"~"+Math.floor(s/86400)+"d";}
+function renderVerdict(s){
+  const c=sel=>document.querySelectorAll("#lanes .lane"+sel).length;
+  const ok=c('[data-state="ok"]'),warn=c('[data-state="warn"]'),fail=c('[data-state="fail"]');
+  const v=document.getElementById("verdict"); if(!v)return;
+  v.setAttribute("data-s", fail?"bad":warn?"warn":"ok");
+  document.getElementById("vmain").textContent = fail?(fail+" source"+(fail>1?"s":"")+" down — needs attention")
+    : warn?(warn+" source"+(warn>1?"s":"")+" stale — everything else nominal") : "All systems nominal";
+  const lr=Object.values(s.last_run_ts||{}).sort().pop();
+  const nr=(s.routines||[]).filter(r=>r.enabled&&r.next_fire_iso).sort((a,b)=>a.next_fire_iso<b.next_fire_iso?-1:1)[0];
+  document.getElementById("vsub").innerHTML="last ingest <b>"+(lr?_rel(lr.replace(" ","T")+"+05:30"):"—")
+    +"</b> · next routine <b>"+(nr?_esc(nr.id)+" "+(nr.next_fire_rel||""):"—")+"</b> · auto-refresh 30min";
+  document.getElementById("vmeta").innerHTML='<div class="m ok"><div class="n">'+ok+'</div><div class="l">healthy</div></div>'
+    +'<div class="m warn"><div class="n">'+warn+'</div><div class="l">warn</div></div>'
+    +'<div class="m bad"><div class="n">'+fail+'</div><div class="l">down</div></div>';
+}
+function renderKpis(s, slack, leaves){
+  const el=document.getElementById("kpis"); if(!el)return;
+  const c=sel=>document.querySelectorAll("#lanes .lane"+sel).length;
+  const ok=c('[data-state="ok"]'),warn=c('[data-state="warn"]'),fail=c('[data-state="fail"]'),tot=ok+warn+fail||1;
+  const bySrc=(s.db&&s.db.by_source)||{}, ev=Object.values(bySrc).reduce((a,b)=>a+(+b||0),0);
+  const evTop=Object.entries(bySrc).sort((a,b)=>b[1]-a[1]).slice(0,3).map(kv=>kv[0]+" "+_kfmt(kv[1])).join(" · ");
+  const disc=s.discover||{}, ready=(disc.n_full||0)+(disc.n_team||0)+(disc.n_owner||0), rev=disc.n_review||0;
+  const today=leaves.today, out=new Set((leaves.leaves||[]).filter(l=>l.date_start<=today&&(l.date_end||l.date_start)>=today&&(l.reason||"").toLowerCase()!=="wfh").map(l=>l.actor)).size;
+  const nh=leaves.next_holiday, hol=nh?("next holiday "+nh.date):"no upcoming holiday";
+  let soon=null,soonId=""; (s.routines||[]).forEach(r=>{if(r.enabled&&r.next_fire_iso){const t=new Date(r.next_fire_iso);if(!soon||t<soon){soon=t;soonId=r.id;}}});
+  const tiles=[
+    ["Sources healthy",ok+" / "+tot, warn+" warn · "+fail+" down", warn||fail],
+    ["Events ingested",_kfmt(ev), evTop, 0],
+    ["Discover queue",(ready+rev), ready+" ready · "+rev+" review", rev>0],
+    ["Out today",out, hol, 0],
+    ["Next routine",soon?_relFut(soon):"—", soonId||"—", 0],
+  ];
+  el.innerHTML=tiles.map(t=>'<div class="kpi'+(t[3]?' flag':'')+'"><div class="l">'+_esc(t[0])+'</div><div class="v">'+_esc(""+t[1])+'</div><div class="h">'+_esc(t[2]||"")+'</div><div class="edge"></div></div>').join("");
+}
+function _cadPast(d){return d<1?"just now":d<60?d+"m ago":Math.floor(d/60)+"h "+(d%60)+"m ago";}
+function _cadFut(d){return d<60?"~"+d+"m":"~"+Math.floor(d/60)+"h "+(d%60)+"m";}
+async function renderCadence(){
+  let c; try{ c=await (await fetch("/api/cadence")).json(); }catch(e){ return; }
+  const nowMin=c.now_min, pct=m=>m/1440*100;
+  const sc=document.getElementById("railscale"); if(!sc)return;
+  let s=""; for(let h=0;h<=24;h+=3){const x=pct(h*60); s+=`<div class="gl" style="left:${x}%"></div><div class="t" style="left:${x}%">${("0"+h).slice(-2)}</div>`;}
+  sc.innerHTML=s;
+  const lanes=document.getElementById("cadLanes"); let html="";
+  for(const lane of (c.lanes||[])){
+    let gl=""; for(let h=0;h<=24;h+=3) gl+=`<div class="gl" style="left:${pct(h*60)}%"></div>`;
+    let tk="";
+    for(const m of lane.marks){ const [hh,mm]=m.t.split(":").map(Number), mins=hh*60+mm;
+      let cls=m.st==="ok"?"ok":m.st==="fail"?"fail":"due";
+      if(m.st==="due"&&mins-nowMin<=20&&mins>=nowMin)cls+=" soon";
+      const rel=mins<=nowMin?_cadPast(nowMin-mins):"in "+_cadFut(mins-nowMin);
+      tk+=`<div class="tick ${cls}" style="left:${pct(mins)}%" data-t="${m.t} · ${_esc(m.job)}" data-m="${m.st==="due"?"upcoming":"ran"} · ${rel}"></div>`;
+    }
+    html+=`<div class="cadlane"><div class="lname">${_esc(lane.name)}</div><div class="ltrack">${gl}${tk}</div></div>`;
+  }
+  html+=`<div class="nowfull" style="left:calc(96px + (100% - 96px) * ${nowMin/1440})"><div class="pulse"></div></div>`;
+  lanes.innerHTML=html;
+  lanes.querySelectorAll(".tick").forEach(t=>{
+    t.addEventListener("mouseenter",e=>{const tt=document.getElementById("tooltip");tt.innerHTML=`<b>${_esc(t.dataset.t)}</b><div class="meta">${_esc(t.dataset.m)}</div>`;tt.classList.add("show");moveTooltip(e);});
+    t.addEventListener("mousemove",moveTooltip); t.addEventListener("mouseleave",hideTooltip);
+  });
+}"""
+
+_V3_INSIGHTS_HTML = """  <div class="tail" id="logtail">…</div>
+</div>
+
+<div class="sec"><span class="dot"></span><h2>Insights</h2><span class="count" id="insSpan"></span><span class="rule"></span></div>
+<div class="totstrip" id="insTotals"></div>
+<div class="insights" id="insights"><div class="panel span2" style="text-align:center;color:var(--muted)">loading insights…</div></div>"""
+
+_V3_INSIGHTS_JS = r"""(function(){
+const esc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const SRC_COL={slack:"#edb23c",github:"#5eb1ff",jira:"#9b8eff",confluence:"#d56dff"};
+const fmtK=n=>n>=1e6?(n/1e6).toFixed(1)+"M":n>=1e3?Math.round(n/1e3)+"K":""+n;
+function panel(title,sub,body,span2){return `<div class="panel${span2?" span2":""}"><div class="ph"><h3>${esc(title)}</h3>${sub?`<span class="sub">${esc(sub)}</span>`:""}</div>${body}</div>`;}
+function legend(items){return `<div class="ig-legend">`+items.map(([c,l])=>`<i style="--c:${c}">${esc(l)}</i>`).join("")+`</div>`;}
+function vPunch(pc){
+  const W=720,H=196,padL=40,padT=6,bot=22,cw=(W-padL-6)/24,ch=(H-padT-bot)/7;
+  const order=[1,2,3,4,5,6,0],dn=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"],g={};let max=0;
+  pc.forEach(d=>{g[d.wd+"_"+d.hr]=d.n;if(d.n>max)max=d.n;});let s="";
+  order.forEach((wd,ri)=>{for(let hr=0;hr<24;hr++){const n=g[wd+"_"+hr]||0,t=max?Math.sqrt(n/max):0,x=padL+hr*cw,y=padT+ri*ch;
+    const fill=n?`rgba(45,212,207,${(0.08+0.9*t).toFixed(3)})`:"rgba(127,127,127,0.06)";
+    s+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(cw-1.5).toFixed(1)}" height="${(ch-1.5).toFixed(1)}" rx="2" fill="${fill}"><title>${dn[ri]} ${("0"+hr).slice(-2)}:00 — ${n.toLocaleString()} events</title></rect>`;}});
+  order.forEach((wd,ri)=>s+=`<text x="${padL-7}" y="${(padT+ri*ch+ch/2+3).toFixed(1)}" text-anchor="end" style="fill:var(--text3)" font-size="9">${dn[ri]}</text>`);
+  [0,6,12,18,23].forEach(h=>s+=`<text x="${(padL+h*cw+cw/2).toFixed(1)}" y="${H-6}" text-anchor="middle" style="fill:var(--muted)" font-size="9">${("0"+h).slice(-2)}</text>`);
+  return `<div class="chartbox"><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${s}</svg></div>`;
+}
+function vStream(rows){
+  const W=720,H=190,padL=8,padT=10,bot=20,srcs=["slack","github","jira","confluence"],n=rows.length;if(!n)return"";
+  let max=0;rows.forEach(r=>{let t=0;srcs.forEach(k=>t+=r[k]||0);if(t>max)max=t;});
+  const xw=(W-padL*2)/(n-1||1),Y=v=>padT+(1-v/max)*(H-padT-bot);let cum=rows.map(()=>0),areas="";
+  srcs.forEach(k=>{const top=rows.map((r,i)=>cum[i]+(r[k]||0));
+    let d="M "+top.map((v,i)=>`${(padL+i*xw).toFixed(1)},${Y(v).toFixed(1)}`).join(" L ");
+    for(let i=n-1;i>=0;i--)d+=` L ${(padL+i*xw).toFixed(1)},${Y(cum[i]).toFixed(1)}`;
+    areas+=`<path d="${d} Z" fill="${SRC_COL[k]}" fill-opacity="0.5" stroke="${SRC_COL[k]}" stroke-width="0.9"/>`;cum=top;});
+  let xl="";rows.forEach((r,i)=>{if(i%3===0||i===n-1){const an=i===0?"start":i===n-1?"end":"middle",lx=i===0?padL:i===n-1?W-padL:padL+i*xw;
+    xl+=`<text x="${lx.toFixed(1)}" y="${H-5}" text-anchor="${an}" style="fill:var(--muted)" font-size="9">${r.month.slice(2)}</text>`;}});
+  return `<div class="chartbox"><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${areas}${xl}</svg></div>`+legend(srcs.map(k=>[SRC_COL[k],k]));
+}
+function hBars(items){
+  const W=480,rowH=Math.max(20,Math.min(28,220/Math.max(items.length,1))),padT=4,labelW=124,max=Math.max(...items.map(i=>i.n),1),barW=W-labelW-54,H=padT*2+items.length*rowH;
+  let s="";items.forEach((it,i)=>{const y=padT+i*rowH,w=Math.max(2,it.n/max*barW);
+    s+=`<text x="0" y="${y+rowH/2+3}" style="fill:var(--text2)" font-size="11">${esc(it.label)}</text>`
+     +`<rect x="${labelW}" y="${y+3}" width="${w.toFixed(1)}" height="${rowH-9}" rx="3" fill="${it.color||"var(--beacon)"}" fill-opacity="0.9"/>`
+     +`<text x="${(labelW+w+6).toFixed(1)}" y="${y+rowH/2+3}" style="fill:var(--text)" font-size="11" font-weight="700">${it.n.toLocaleString()}<tspan style="fill:var(--muted)" font-weight="400">${it.sub?" "+esc(it.sub):""}</tspan></text>`;});
+  return `<div class="chartbox"><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${s}</svg></div>`;
+}
+const scoreCol=s=>s<3?"#47d182":s<10?"#7bcf8e":s<20?"#edb23c":"#f15873";
+function vDiverge(rows){
+  const W=520,rowH=27,padT=20,mid=W/2,gut=66,max=Math.max(...rows.flatMap(r=>[r.human,r.ai]),1),half=(W-2*gut-60)/2,H=padT+rows.length*rowH+4;
+  let s=`<text x="${mid-gut}" y="13" text-anchor="end" style="fill:#5eb1ff" font-size="10" font-weight="700">◀ HUMAN</text><text x="${mid+gut}" y="13" style="fill:#2dd4cf" font-size="10" font-weight="700">AI ▶</text><line x1="${mid}" y1="17" x2="${mid}" y2="${H}" style="stroke:var(--line)"/>`;
+  rows.forEach((r,i)=>{const y=padT+i*rowH,hw=r.human/max*half,aw=r.ai/max*half;
+    s+=`<rect x="${(mid-gut-hw).toFixed(1)}" y="${y+3}" width="${hw.toFixed(1)}" height="${rowH-10}" rx="3" fill="#5eb1ff" fill-opacity="0.85"/>`
+     +`<rect x="${mid+gut}" y="${y+3}" width="${aw.toFixed(1)}" height="${rowH-10}" rx="3" fill="#2dd4cf" fill-opacity="0.85"/>`
+     +`<text x="${mid}" y="${y+rowH/2+3}" text-anchor="middle" style="fill:var(--text2)" font-size="9.5">${esc(r.category)}</text>`;
+    if(r.human)s+=`<text x="${(mid-gut-hw-5).toFixed(1)}" y="${y+rowH/2+3}" text-anchor="end" style="fill:var(--muted)" font-size="9">${r.human}</text>`;
+    if(r.ai)s+=`<text x="${(mid+gut+aw+5).toFixed(1)}" y="${y+rowH/2+3}" style="fill:var(--muted)" font-size="9">${r.ai}</text>`;});
+  return `<div class="chartbox"><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${s}</svg></div>`;
+}
+function vScatter(pts){
+  const W=520,H=240,padL=34,bot=26,padT=10,xmax=Math.max(...pts.map(p=>p.size),10),lx=v=>Math.log10(Math.max(1,v)),lxm=lx(xmax)||1;
+  const X=v=>padL+lx(v)/lxm*(W-padL-12),Y=s=>padT+(1-Math.min(s,100)/100)*(H-padT-bot);
+  const repos=[...new Set(pts.map(p=>p.repo))],pal=["#5eb1ff","#9b8eff","#47d182","#edb23c"],rc={};repos.forEach((r,i)=>rc[r]=pal[i%pal.length]);
+  let ax=`<line x1="${padL}" y1="${padT}" x2="${padL}" y2="${H-bot}" style="stroke:var(--line)"/><line x1="${padL}" y1="${H-bot}" x2="${W-12}" y2="${H-bot}" style="stroke:var(--line)"/>`;
+  [0,50,100].forEach(t=>{const y=Y(t);ax+=`<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W-12}" y2="${y.toFixed(1)}" style="stroke:var(--line-faint)" stroke-dasharray="2 3"/><text x="${padL-5}" y="${(y+3).toFixed(1)}" text-anchor="end" style="fill:var(--muted)" font-size="9">${t}</text>`;});
+  [10,100,1000,10000].forEach(v=>{if(v<=xmax*1.3){const x=X(v);ax+=`<text x="${x.toFixed(1)}" y="${H-9}" text-anchor="middle" style="fill:var(--muted)" font-size="9">${v>=1000?(v/1000)+"k":v}</text>`;}});
+  ax+=`<text x="${W-12}" y="${padT+2}" text-anchor="end" style="fill:var(--text3)" font-size="9">lines changed →</text><text transform="rotate(-90 9 ${((padT+(H-bot))/2).toFixed(1)})" x="9" y="${((padT+(H-bot))/2).toFixed(1)}" text-anchor="middle" style="fill:var(--text3)" font-size="9">friction ↑</text>`;
+  let dots="";pts.forEach(p=>dots+=`<circle cx="${X(p.size).toFixed(1)}" cy="${Y(p.score).toFixed(1)}" r="3" fill="${rc[p.repo]}" fill-opacity="0.45"><title>${esc(p.repo)} · ${p.size.toLocaleString()} LOC · friction ${p.score} · ${esc(p.cat)}</title></circle>`);
+  return `<div class="chartbox"><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${ax}${dots}</svg></div>`+legend(repos.map(r=>[rc[r],r]));
+}
+function vCadence(rows){
+  const W=520,H=190,padL=8,bot=20,padT=8,n=rows.length,max=Math.max(...rows.map(r=>r.total),1),gap=(W-padL*2)/n,bw=gap*0.62,Y=v=>padT+(1-v/max)*(H-padT-bot);
+  let s="";rows.forEach((r,i)=>{const x=padL+i*gap+(gap-bw)/2,h=(H-bot)-Y(r.total),safe=r.total-r.emergency-r.rolled_back;
+    let yy=H-bot;const seg=(val,col)=>{if(val<=0)return;const hh=h*val/r.total;yy-=hh;s+=`<rect x="${x.toFixed(1)}" y="${yy.toFixed(1)}" width="${bw.toFixed(1)}" height="${hh.toFixed(1)}" fill="${col}"/>`;};
+    seg(safe,"#47d182");seg(r.emergency,"#edb23c");seg(r.rolled_back,"#f15873");
+    if(i%2===0||i===n-1)s+=`<text x="${(x+bw/2).toFixed(1)}" y="${H-5}" text-anchor="middle" style="fill:var(--muted)" font-size="8.5">${r.month.slice(2)}</text>`;});
+  return `<div class="chartbox"><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${s}</svg></div>`+legend([["#47d182","released ok"],["#edb23c","emergency"],["#f15873","rolled back"]]);
+}
+function squarify(data,W,H){
+  const total=data.reduce((s,d)=>s+d.n,0);if(!total)return[];const area=data.map(d=>d.n/total*W*H),res=[];let rect={x:0,y:0,w:W,h:H},i=0;
+  const worst=(row,len)=>{const s=row.reduce((a,b)=>a+b,0),mx=Math.max(...row),mn=Math.min(...row);return Math.max(len*len*mx/(s*s),s*s/(len*len*mn));};
+  while(i<area.length){let row=[],len=Math.min(rect.w,rect.h),j=i;
+    while(j<area.length){const cand=row.concat(area[j]);if(row.length===0||worst(cand,len)<=worst(row,len)){row=cand;j++;}else break;}
+    const sum=row.reduce((a,b)=>a+b,0);
+    if(rect.w>=rect.h){const cw=sum/rect.h;let y=rect.y;for(let k=0;k<row.length;k++){const hh=row[k]/sum*rect.h;res.push({...data[i+k],x:rect.x,y,w:cw,h:hh});y+=hh;}rect.x+=cw;rect.w-=cw;}
+    else{const rh=sum/rect.w;let x=rect.x;for(let k=0;k<row.length;k++){const ww=row[k]/sum*rect.w;res.push({...data[i+k],x,y:rect.y,w:ww,h:rh});x+=ww;}rect.y+=rh;rect.h-=rh;}
+    i+=row.length;}
+  return res;
+}
+function vTreemap(data){
+  const W=720,H=240,cells=squarify(data,W,H),maxN=Math.max(...data.map(d=>d.n),1);let s="";
+  cells.forEach(c=>{const t=c.n/maxN,fill=`rgba(45,212,207,${(0.14+0.66*t).toFixed(3)})`;
+    s+=`<rect x="${c.x.toFixed(1)}" y="${c.y.toFixed(1)}" width="${(c.w-2).toFixed(1)}" height="${(c.h-2).toFixed(1)}" rx="4" fill="${fill}" stroke="var(--well)" stroke-width="1.5"><title>${esc(c.slug)} — ${c.n} clusters</title></rect>`;
+    if(c.w>54&&c.h>26){const tc=t<0.42?"#cdeeec":"#05201f",tc2=t<0.42?"#cdeeec99":"#05201f99";
+      s+=`<text x="${(c.x+7).toFixed(1)}" y="${(c.y+16).toFixed(1)}" style="fill:${tc};font-weight:700" font-size="${c.w>120?12:10.5}">${esc(c.slug.length>Math.floor(c.w/7)?c.slug.slice(0,Math.floor(c.w/7)-1)+"…":c.slug)}</text>`;
+      if(c.h>40)s+=`<text x="${(c.x+7).toFixed(1)}" y="${(c.y+31).toFixed(1)}" style="fill:${tc2}" font-size="9.5">${c.n}</text>`;}});
+  return `<div class="chartbox"><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${s}</svg></div>`;
+}
+function vStack(rows,colmap){
+  const W=480,H=34,total=rows.reduce((s,r)=>s+r.n,0)||1;let x=0,s="";
+  rows.forEach(r=>{const w=r.n/total*W;s+=`<rect x="${x.toFixed(1)}" y="0" width="${Math.max(0,w-1.5).toFixed(1)}" height="${H}" rx="3" fill="${colmap[r.status]||"var(--muted)"}" fill-opacity="0.9"><title>${esc(r.status)} — ${r.n}</title></rect>`;
+    if(w>40)s+=`<text x="${(x+w/2).toFixed(1)}" y="21" text-anchor="middle" style="fill:#05181a;font-weight:700" font-size="11">${r.n}</text>`;x+=w;});
+  return `<div class="chartbox" style="padding:10px 8px"><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${s}</svg></div>`+legend(rows.map(r=>[colmap[r.status]||"var(--muted)",r.status.toLowerCase()]));
+}
+function vOps(rows){
+  const W=520,H=180,padL=8,bot=20,padT=8,pats=["incident","drill","rca","rollback","year_end"];
+  const col={incident:"#f15873",drill:"#edb23c",rca:"#5eb1ff",rollback:"#9b8eff",year_end:"#566a72"};
+  const n=rows.length,max=Math.max(...rows.map(r=>pats.reduce((s,p)=>s+(r[p]||0),0)),1),gap=(W-padL*2)/n,bw=gap*0.62,H0=H-bot;let s="";
+  rows.forEach((r,i)=>{const x=padL+i*gap+(gap-bw)/2,tot=pats.reduce((s,p)=>s+(r[p]||0),0),h=tot/max*(H0-padT);let yy=H0;
+    pats.forEach(p=>{const v=r[p]||0;if(!v)return;const hh=h*v/tot;yy-=hh;s+=`<rect x="${x.toFixed(1)}" y="${yy.toFixed(1)}" width="${bw.toFixed(1)}" height="${hh.toFixed(1)}" fill="${col[p]}"><title>${r.month} · ${p}: ${v}</title></rect>`;});
+    if(i%2===0||i===n-1)s+=`<text x="${(x+bw/2).toFixed(1)}" y="${H-5}" text-anchor="middle" style="fill:var(--muted)" font-size="8.5">${r.month.slice(2)}</text>`;});
+  return `<div class="chartbox"><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${s}</svg></div>`+legend(pats.map(p=>[col[p],p]));
+}
+const STATUS_COL={ACTIVE:"#47d182",RECURRING:"#5eb1ff",STALE:"#edb23c",RESOLVED:"#566a72"};
+const OUTCOME_COL={released:"#47d182",emergency:"#edb23c",cancelled:"#566a72",rolled_back:"#f15873",pending:"#5eb1ff"};
+function renderInsights(D){
+  if(!D||D.error){document.getElementById("insights").innerHTML=`<div class="panel span2" style="color:var(--warn)">insights unavailable${D&&D.error?": "+esc(D.error):""}</div>`;return;}
+  const t=D.totals||{};
+  const span=document.getElementById("insSpan"); if(span)span.textContent=t.span?`${t.span[0]} → ${t.span[1]}`:"";
+  document.getElementById("insTotals").innerHTML=[["events",fmtK(t.events)],["pull requests",t.prs],["releases",t.releases],["topic clusters",t.clusters],["slack threads",fmtK(t.threads)]]
+    .map(([l,v])=>`<span><b>${esc(""+v)}</b><span class="lbl">${esc(l)}</span></span>`).join("");
+  const fr=(D.friction||[]).map(f=>({label:f.category,n:f.n,sub:f.avg_score?`avg ${f.avg_score}`:"",color:scoreCol(f.avg_score)}));
+  const ro=(D.release_outcomes||[]).map(o=>({label:o.outcome,n:o.n,color:OUTCOME_COL[o.outcome],sub:o.features?`${o.features} feat`:""}));
+  const cc=(D.channel_class||[]).map(c=>({label:c.cls,n:c.msgs,sub:`${fmtK(c.threads)} thr`,color:"var(--beacon)"}));
+  const panels=[
+    panel("Work rhythm","hour × weekday · IST · darker = busier", vPunch(D.punchcard||[]), true),
+    panel("Activity stream","monthly volume by source", vStream(D.stream||[]), true),
+    panel("PR friction","dominant category · color = avg score", hBars(fr)),
+    panel("Who flags what","review comments · human vs AI", vDiverge(D.review_taxonomy||[])),
+    panel("PR size vs friction","each dot = one PR (log scale)", vScatter(D.pr_scatter||[]), true),
+    panel("Release outcomes",(t.releases||"")+" change requests", hBars(ro)),
+    panel("Release cadence","monthly · emergency + rollback highlighted", vCadence(D.release_cadence||[])),
+    panel("Projects by cluster volume","topic clusters mapped to projects", vTreemap(D.projects||[]), true),
+    panel("Cluster lifecycle",(t.clusters||"")+" topic clusters by status", vStack(D.cluster_status||[],STATUS_COL)),
+    panel("Channel mix","slack threads by channel class", hBars(cc)),
+    panel("Incidents & ops","monthly · incident/drill/rca/rollback", vOps(D.ops_timeline||[]), true),
+  ];
+  document.getElementById("insights").innerHTML=panels.join("");
+}
+fetch("/api/insights").then(r=>r.json()).then(renderInsights).catch(e=>{document.getElementById("insights").innerHTML=`<div class="panel span2" style="color:var(--warn)">insights data unavailable</div>`;});
+})();
+"""
+
+
+def _build_index_v3() -> str:
+    """v3 console — transforms INDEX_HTML (reuses all per-source data logic)."""
+    import re as _re
+    html = INDEX_HTML
+    html = html.replace("<title>cron-status · dashboard</title>",
+                        "<title>ingest console · v3</title>" + _V3_FONTS)
+    html = _re.sub(r"<style>.*?</style>",
+                   lambda _m: "<style>" + _V3_CSS + "</style>", html, count=1, flags=_re.S)
+    html = html.replace(_V3_OLD_HEADER, _V3_NEW_HEADER)
+    html = html.replace(_V3_OLD_LANEFOR, _V3_NEW_LANEFOR)
+    html = html.replace(
+        'document.getElementById("lanes").innerHTML = lanes.join("");',
+        'document.getElementById("lanes").innerHTML = lanes.join("");\n'
+        '  renderVerdict(s); renderKpis(s, slack, leaves); renderCadence();')
+    # Routines lane: add a last-success column next to last-run.
+    html = html.replace(
+        '<table><tr><th></th><th>routine</th><th>cadence</th>\n'
+        '                  <th>last run</th><th>next fire</th></tr>',
+        '<table><tr><th></th><th>routine</th><th>cadence</th>\n'
+        '                  <th>last run</th><th>last ok</th><th>next fire</th></tr>')
+    html = html.replace(
+        '              <td class="muted">${r.last_run_rel || "—"}</td>\n'
+        '              <td class="muted">${next}</td></tr>`;',
+        '              <td class="muted">${r.last_run_rel || "—"}</td>\n'
+        '              <td class="muted">${r.last_success_rel || "—"}</td>\n'
+        '              <td class="muted">${next}</td></tr>`;')
+    # Insights deck after the log-tail panel.
+    html = html.replace('  <div class="tail" id="logtail">…</div>\n</div>',
+                        _V3_INSIGHTS_HTML)
+    # Insights JS just before the bootstrap calls.
+    html = html.replace(
+        'refreshAll();\nloadLogList();\nloadClusters();\nsetInterval(refreshAll, 1_800_000);',
+        _V3_INSIGHTS_JS + '\nrefreshAll();\nloadLogList();\nloadClusters();\nsetInterval(refreshAll, 1_800_000);')
+    return html
+
+
+INDEX_V3_HTML = _build_index_v3()
 
 
 # Standalone full-list view for every Slack channel (linked from the SLACK
@@ -1593,7 +2519,14 @@ tr:nth-child(even) td { background:var(--hover); }
   document.addEventListener("click",function(e){
     var b=e.target.closest&&e.target.closest("#themeToggle button"); if(!b) return;
     mode=b.dataset.t; localStorage.setItem(KEY,mode); apply(mode); });
-  setInterval(function(){ if((localStorage.getItem(KEY)||"auto")==="auto") apply("auto"); }, 600000);
+  // Re-evaluate the time-based auto theme. The setInterval alone is unreliable:
+  // Chrome throttles/pauses timers in background tabs, so a tab left open across
+  // the 7pm boundary never flips. Re-apply whenever the tab regains focus /
+  // becomes visible so it's always correct the moment the user looks at it.
+  function recheck(){ if((localStorage.getItem(KEY)||"auto")==="auto") apply("auto"); }
+  setInterval(recheck, 60000);
+  document.addEventListener("visibilitychange", function(){ if(!document.hidden) recheck(); });
+  window.addEventListener("focus", recheck);
 })();
 </script>
 <h1>SLACK channels — all</h1>
@@ -1777,7 +2710,14 @@ tr:nth-child(even) td { background:var(--hover); }
   document.addEventListener("click",function(e){
     var b=e.target.closest&&e.target.closest("#themeToggle button"); if(!b) return;
     mode=b.dataset.t; localStorage.setItem(KEY,mode); apply(mode); });
-  setInterval(function(){ if((localStorage.getItem(KEY)||"auto")==="auto") apply("auto"); }, 600000);
+  // Re-evaluate the time-based auto theme. The setInterval alone is unreliable:
+  // Chrome throttles/pauses timers in background tabs, so a tab left open across
+  // the 7pm boundary never flips. Re-apply whenever the tab regains focus /
+  // becomes visible so it's always correct the moment the user looks at it.
+  function recheck(){ if((localStorage.getItem(KEY)||"auto")==="auto") apply("auto"); }
+  setInterval(recheck, 60000);
+  document.addEventListener("visibilitychange", function(){ if(!document.hidden) recheck(); });
+  window.addEventListener("focus", recheck);
 })();
 </script>
 <h1>TEAM LEAVES — gantt</h1>
@@ -2085,7 +3025,14 @@ td { padding:5px 9px; } tr:nth-child(even) td { background:var(--hover); }
   document.addEventListener("click",function(e){
     var b=e.target.closest&&e.target.closest("#themeToggle button"); if(!b) return;
     mode=b.dataset.t; localStorage.setItem(KEY,mode); apply(mode); });
-  setInterval(function(){ if((localStorage.getItem(KEY)||"auto")==="auto") apply("auto"); }, 600000);
+  // Re-evaluate the time-based auto theme. The setInterval alone is unreliable:
+  // Chrome throttles/pauses timers in background tabs, so a tab left open across
+  // the 7pm boundary never flips. Re-apply whenever the tab regains focus /
+  // becomes visible so it's always correct the moment the user looks at it.
+  function recheck(){ if((localStorage.getItem(KEY)||"auto")==="auto") apply("auto"); }
+  setInterval(recheck, 60000);
+  document.addEventListener("visibilitychange", function(){ if(!document.hidden) recheck(); });
+  window.addEventListener("focus", recheck);
 })();
 </script>
 <div class="toprow">
@@ -2286,6 +3233,47 @@ setInterval(load, 1_800_000);
 """
 
 
+# ── v3 re-skin for the standalone subpages (/channels, /leaves) ───────────────
+# These pages share v1's cron palette. Rather than rewrite them, append an
+# override <style> (CSS vars win by cascade order) that maps them onto the v3
+# teal-ink + cyan-beacon palette and Space Grotesk / JetBrains Mono fonts.
+_V3_RESKIN = _V3_FONTS + """<style>
+:root{
+  --bg:#080d11; --bg-deep:#06090c; --panel:#0f171d; --panel-raised:#16242c;
+  --hover:#0f1a20; --line:#1e2c34; --line-faint:#16222a;
+  --text:#dde6e9; --text2:#8ea0a8; --text-strong:#ffffff;
+  --muted:#566a72; --muted2:#6a7e86; --ink:#05080a;
+  --overlay:#ffffff0d; --overlay-faint:#ffffff09;
+  --green:#47d182; --yellow:#edb23c; --red:#f15873; --blue:#2dd4cf;
+  --purple:#9b8eff; --amber:#edb23c; --accent:#2dd4cf;
+  --pill-ok-bg:#0e2a1d; --pill-warn-bg:#2e2410; --pill-fail-bg:#2e151c;
+}
+html[data-theme="light"]{
+  --bg:#eef2f3; --bg-deep:#dfe6e8; --panel:#ffffff; --panel-raised:#ffffff;
+  --hover:#eef1f5; --line:#dde5e8; --line-faint:#e8eef0;
+  --text:#13242a; --text2:#47585f; --text-strong:#000000;
+  --muted:#869399; --muted2:#6b7c83; --ink:#ffffff;
+  --overlay:#0000000f; --overlay-faint:#00000008;
+  --green:#0f9d57; --yellow:#b87708; --red:#d13a55; --blue:#0c968f;
+  --purple:#6f5fe0; --amber:#b87708; --accent:#0c968f;
+  --pill-ok-bg:#dcf3e7; --pill-warn-bg:#f6ecd3; --pill-fail-bg:#f8dee4;
+}
+body{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;}
+h1,h2{font-family:"Space Grotesk",system-ui,sans-serif;letter-spacing:.2px;}
+#themeToggle{border-radius:999px;}
+#themeToggle button.on{background:var(--blue);color:var(--ink);}
+</style>"""
+
+
+def _v3_reskin(html: str) -> str:
+    return html.replace("</head>", _V3_RESKIN + "</head>", 1)
+
+
+CHANNELS_HTML = _v3_reskin(CHANNELS_HTML)
+LEAVES_HTML = _v3_reskin(LEAVES_HTML)
+LEAVES_V2_HTML = _v3_reskin(LEAVES_V2_HTML)
+
+
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
@@ -2314,10 +3302,18 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         path = u.path
         q = parse_qs(u.query)
-        if path == "/" or path == "/index.html":
+        if path == "/" or path == "/index.html" or path == "/v3":
+            self._send_html(INDEX_V3_HTML)   # v3 is the default
+        elif path == "/v2":
+            self._send_html(INDEX_V2_HTML)
+        elif path == "/v1":
             self._send_html(INDEX_HTML)
         elif path == "/channels":
             self._send_html(CHANNELS_HTML)
+        elif path == "/api/cadence":
+            self._send_json(get_cadence())
+        elif path == "/api/insights":
+            self._send_json(get_insights())
         elif path == "/leaves" or path == "/leaves-v2":
             self._send_html(LEAVES_V2_HTML)
         elif path == "/leaves-v1":
@@ -2340,6 +3336,8 @@ class Handler(BaseHTTPRequestHandler):
             limit = int(q.get("limit", ["10"])[0])
             st = q.get("status", [None])[0]
             self._send_json(get_clusters(limit, st))
+        elif path == "/api/logs":
+            self._send_json({"logs": get_log_list()})
         elif path == "/api/log-tail":
             name = q.get("name", ["identity_reconcile.log"])[0]
             n = int(q.get("n", ["80"])[0])
