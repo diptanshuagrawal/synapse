@@ -21,6 +21,20 @@ STEP 1 — Determine the target date (previous WORKING day, IST):
 - (Sat/Sun never fire because the cron is Mon–Fri.)
 - If the target date lands on a known holiday with ~no activity, fall back to the most recent working day before it and note that in the post.
 
+STEP 1.5 — Pre-standup slack thread sweep (freshness; best-effort):
+Slack's own ingest only fires 12:00–23:00, and the 24h thread-drain cooldown can hold a
+previous-evening late reply (on a thread whose root scrolled below the cursor) past this
+06:00 digest — so on-call/queue items get silently missed (validated 2026-06-23: a direct
+@owner reply on an old thread wasn't ingested until ~12:30 next day). Refresh recently-active threads
+on team_involved + oncall channels with the cooldown BYPASSED, so they're in events.db
+before the gather runs:
+
+    cd __REPO__/work-context && PYTHONPATH=__REPO__/work-context \
+      __REPO__/work-context/.venv/bin/python -m ingest.slack_ingest_app --threads-sweep || true
+
+Best-effort: if it errors, log it and proceed to STEP 2 anyway (don't block the digest);
+note in the run output that the sweep failed so freshness may lag.
+
 STEP 2 — Run the standup skill for that date, team scope:
 - Invoke the /standup skill with: team <target-date-YYYY-MM-DD>
 - This is the SAME skill at .claude/commands/standup.md. Follow it exactly: roster = config/people.yaml scope:team (EXCLUDE the manager), credit by assignee/author not transitioner, in-progress/up-next/blockers = current board state, leave + on-call from the gather's `# LEAVES` / `# ONCALL` blocks (explicit On-call line), sprint-ahead leave + on-call-rota collisions/coverage gaps from `# ONCALL FORECAST` / `# RISKS` (surface in §7a Day update), CMRs as ops, describe+enrich+link every ticket.

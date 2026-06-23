@@ -13,6 +13,7 @@ Usage:
 Read-only. Never writes events.db.
 """
 import sqlite3, sys, json, datetime, re, os
+from collections import Counter
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB = os.path.join(ROOT, "work-context/index/events.db")
@@ -35,6 +36,10 @@ LEAVE_RE = re.compile(r"\b(on leave|sick|fever|unwell|ooo|out of office|day off|
 NOISE_RE = re.compile(r"(Request approved for|marked the issue as resolved|Time to Resolve|Weekly Oncall Stats|Weekly Stats Report|has joined the channel)", re.I)
 # A real ask = a question or an imperative directed at someone.
 ASK_RE = re.compile(r"(\?|\bcan you\b|\bcould you\b|\bplease\b|\bpls\b|\bplz\b|\bneed from you\b|\breview\b|\bcheck\b|\bapprove\b|\bconfirm\b|\bshare\b|\bupdate on\b|\bany update\b|\baction item\b|\bpick(ed)? (this )?up\b)", re.I)
+# §2.3 thread-engagement: drop pure acks (no signal); flag resolution language so a
+# teammate's thread the member actually unblocked is credited as work, not noise.
+TRIVIAL_RE = re.compile(r"^\W*(ack|ok(ay)?|k|thanks?|thank you|ty|noted|done|sure|yes|yep|yup|got it|cool|great|nice|\+1|👍|🙏|🙌)\W*$", re.I)
+RESOLVE_RE = re.compile(r"\b(fix(ed|ing)?|resolv|merg|deploy|releas|root[ -]?cause|patch|mitigat|reviewed|approv|clos(e|ed|ing)|use the|should use|will use|added|raised (a )?(pr|cmr)|handled|done with|root caused)\b", re.I)
 
 
 def load_roster():
@@ -65,6 +70,43 @@ def owner_subteams():
         return out
     except Exception:
         return {}
+
+
+def load_channel_names():
+    """channel_id -> name from slack_channels.yaml (for rendering #origin-channel on
+    cross-channel on-call incidents). Fail-soft → {}."""
+    import yaml
+    try:
+        chs = yaml.safe_load(open(os.path.join(ROOT, "work-context/config/slack_channels.yaml")))["channels"]
+        return {c["id"]: c.get("name", c["id"]) for c in chs if c.get("id")}
+    except Exception:
+        return {}
+
+
+def load_oncall_signals():
+    """Config-driven on-call identity (NOT channel-name heuristics — see the
+    validated 2026-06-23 miss where on-call work spanned plain domain channels):
+      • oncall_channels — slack_channels.yaml entries with class=='oncall' (the bot
+        incident hub where the oncall bot posts New-Issue / ack / resolve).
+      • oncall_tokens — '<!subteam^S…' ping tokens for handles whose name contains
+        'oncall'/'on-call' (team_subteams.yaml). On-call work follows THIS handle
+        across the whole org, not a fixed channel list. Fail-soft → ([], [])."""
+    import yaml
+    chans, tokens = [], []
+    try:
+        chs = yaml.safe_load(open(os.path.join(ROOT, "work-context/config/slack_channels.yaml")))["channels"]
+        chans = [c["id"] for c in chs if (c.get("class") or "") == "oncall" and c.get("id")]
+    except Exception:
+        pass
+    try:
+        st = yaml.safe_load(open(os.path.join(ROOT, "work-context/config/team_subteams.yaml"))).get("subteams", [])
+        for s in st:
+            h = (s.get("handle") or "").lower()
+            if ("oncall" in h or "on-call" in h) and s.get("id"):
+                tokens.append(f"<!subteam^{s['id']}")
+    except Exception:
+        pass
+    return chans, tokens
 
 
 def _opsgenie_cfg():
@@ -99,14 +141,18 @@ def _oncall_at(sched, idtype, key, date_iso=None):
 
 def gather_oncall(roster):
     """Live Opsgenie who's-on-call, config-driven (config/oncall.yaml). Fail-soft:
-    a dead Opsgenie must not kill the gather — emit a warning line instead."""
+    a dead Opsgenie must not kill the gather — emit a warning line instead.
+    Returns (lines, oncall_canonicals) — the canonical set drives the per-member
+    ON-CALL OPS aggregation (§6)."""
     try:
         sched, idtype, key = _opsgenie_cfg()
         emails = _oncall_at(sched, idtype, key)
         by_email = {v.get("email", ""): k for k, v in roster.items()}
-        return [f"  {e}  canonical={by_email.get(e, '?(not roster)')}" for e in emails] or ["  (none returned)"]
+        canon = {by_email[e] for e in emails if e in by_email}
+        lines = [f"  {e}  canonical={by_email.get(e, '?(not roster)')}" for e in emails] or ["  (none returned)"]
+        return lines, canon
     except Exception as e:
-        return [f"  ⚠️ opsgenie lookup failed: {e}"]
+        return [f"  ⚠️ opsgenie lookup failed: {e}"], set()
 
 
 def gather_oncall_forecast(roster, date_str, days=14):
@@ -206,6 +252,92 @@ def gather_leaves(cur, roster, date_str, W1, WL):
 # a manager's pending reply/approval/review can legitimately sit unanswered for days,
 # and dropping it after 2d is exactly the blind spot we're closing.
 OWNER_ASK_LOOKBACK_DAYS = 5
+
+
+# The recurring pending-txn "FYI message" auto-acks — hourly spam that drowned real
+# incidents (validated 2026-06-23); collapsed to a count, not rendered per-row.
+_ONCALL_FYI = re.compile(r"as an FYI message", re.I)
+
+
+def gather_oncall_ops(cur, sl, oncall_channels, oncall_tokens, chname, W0, W1, win_cmr_rows):
+    """On-call member's full ops load. On-call work follows the @oncall HANDLE across the
+    WHOLE org + the oncall bot's incident log — NOT a fixed alert-channel name list
+    (validated miss 2026-06-23: incidents spanned plain domain channels — lending / recon /
+    liabilities / cards — not alert-named ones). Emits, for the render (§6) to expand
+    one-per-incident by opening each thread:
+      • CMR-work  — CMRs worked in window (incl. db-oncall reviews of others' CMRs).
+      • INCIDENT  — bot-tracked incidents the member acted on (ack / resolved / Not-Our-Issue),
+        one per thread: issue snippet + origin channel (parsed from the bot 'Issue Link') +
+        the actions taken. Recurring 'FYI message' auto-acks are collapsed to one count.
+      • FOLLOWUP  — threads in ANY channel where the @oncall handle was pinged in-window and
+        the member authored a reply (manual chases the bot doesn't track)."""
+    out = []
+    for ts, et, sub, tost in win_cmr_rows:
+        out.append(f"  CMR-work [{ts[11:16]}] {et} {sub} ->{tost}")
+
+    incidents, fyi_acks = {}, 0
+    # The bot confirmation is "<@member> acknowledged/resolved/marked Not-Our-Issue" — anchor
+    # on the member mention IMMEDIATELY followed by the action so a donna thread-SUMMARY that
+    # merely quotes those words (double-angle <<@member>>) doesn't false-match.
+    act_re = re.compile(
+        rf"<@{re.escape(sl)}[^>]*>\s*(acknowledged the issue|marked the issue as resolved|"
+        rf"marked (?:this|it) as [\"“']?Not Our Issue)", re.I)
+    if oncall_channels:
+        qm = ",".join("?" * len(oncall_channels))
+        for ch, thr, ts, body, subj in cur.execute(
+                f"SELECT channel_id,thread_ts,ts,body,subject FROM events "
+                f"WHERE source='slack' AND channel_id IN ({qm}) AND ts>=? AND ts<? "
+                f"AND body LIKE ?", (*oncall_channels, W0, W1, f"%<@{sl}%")).fetchall():
+            b = body or ""
+            if _ONCALL_FYI.search(b):
+                fyi_acks += 1
+                continue
+            mm = act_re.search(b)
+            if not mm or not thr:          # real bot actions are threaded
+                continue
+            incidents.setdefault((ch, thr), set()).add(re.sub(r"\s+", " ", mm.group(1)).lower())
+    for (ch, thr), acts in incidents.items():
+        # Root via subject (shared across the thread → earliest row = the bot's incident root).
+        root = cur.execute("SELECT body FROM events WHERE subject=? ORDER BY ts LIMIT 1",
+                           (f"slack:{ch}:{thr}",)).fetchone()
+        rb = root[0] if root else ""
+        link_m = re.search(r"archives/(C[0-9A-Z]+)/p\d+", rb or "")
+        origin = f"#{chname.get(link_m.group(1), link_m.group(1))}" if link_m else "(open thread)"
+        issue = re.sub(r"<[^>]+>", " ", rb or "")
+        issue = re.sub(r":[a-z0-9_]+:", " ", issue)
+        issue = re.sub(r"New Issue Reported|Issue (Resolved|Acknowledged|Marked as).*?:", " ", issue, flags=re.I)
+        issue = re.sub(r"[*_>]", " ", issue)
+        issue = re.sub(r"\s+", " ", issue).strip()[:160]
+        out.append(f"  INCIDENT origin={origin} actions={sorted(acts)} link={slack_permalink(ch, thr)} :: {issue}")
+    if fyi_acks:
+        out.append(f"  FYI-ACK (recurring pending-txn auto-acks, collapsed) count={fyi_acks}")
+
+    # FOLLOWUP — member-authored replies in window, in threads (any non-oncall channel)
+    # carrying an @oncall ping. Dedupe vs oncall-channel incidents already emitted.
+    if oncall_tokens:
+        tokq = " OR ".join("body LIKE ?" for _ in oncall_tokens)
+        toklike = [f"%{t}%" for t in oncall_tokens]
+        seen = set()
+        for ch, thr in cur.execute(
+                "SELECT DISTINCT channel_id,thread_ts FROM events WHERE source='slack' "
+                "AND actor=? AND ts>=? AND ts<? AND thread_ts IS NOT NULL", (sl, W0, W1)).fetchall():
+            if ch in oncall_channels or (ch, thr) in seen:
+                continue
+            hit = cur.execute(
+                f"SELECT 1 FROM events WHERE subject=? AND ({tokq}) LIMIT 1",
+                (f"slack:{ch}:{thr}", *toklike)).fetchone()
+            if not hit:
+                continue
+            seen.add((ch, thr))
+            root = cur.execute("SELECT body FROM events WHERE subject=? ORDER BY ts LIMIT 1",
+                               (f"slack:{ch}:{thr}",)).fetchone()
+            rs = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", (root[0] if root else "") or ""))[:120].strip()
+            out.append(f"  FOLLOWUP #{chname.get(ch, ch)} link={slack_permalink(ch, thr)} :: {rs}")
+
+    head = (f"-- ON-CALL OPS (on-call member; render one line per INCIDENT/FOLLOWUP via §6, "
+            f"open each thread) cmrWorked={len(win_cmr_rows)} incidents={len(incidents)} "
+            f"followups={len(seen) if oncall_tokens else 0} fyiAcks={fyi_acks} --")
+    return [head] + out
 
 
 def ist_window(date_str):
@@ -348,6 +480,33 @@ def main():
         "WHERE source='slack' AND ts>=? AND ts<? "
         "AND (body LIKE '%<@%' OR body LIKE '%<!subteam^%')", (WLo, W1)).fetchall()
 
+    # On-call signals (§6) — config-driven: the oncall bot channel(s) (class:oncall) + the
+    # @oncall ping handle tokens. On-call work follows the HANDLE across the whole org, NOT
+    # a channel-name list (validated 2026-06-23: incidents spanned plain domain channels).
+    oncall_channels, oncall_tokens = load_oncall_signals()
+    chname = load_channel_names()
+    # Roster slack_id -> canonical (thread-root author display, §2.3).
+    sl2canon_all = {roster[k].get("slack_id"): k for k in roster if roster[k].get("slack_id")}
+    roster_slids = set(sl2canon_all)
+    # Root-message context for every thread a ROSTER member replied in this window
+    # (§2.3 — render needs the root to say WHAT was resolved, not just the reply).
+    # Scoped to roster-replied threads so the IN-list stays small; chunked for safety.
+    root_subs = {f"slack:{ch}:{thr}" for (a, ts, ch, thr, body, subj) in slack_auth
+                 if thr and a in roster_slids}
+    # NB: in events.db a slack `subject` (slack:{ch}:{thread_ts}) is SHARED by every
+    # message in the thread — it is NOT unique to the root. So the root = the EARLIEST
+    # row for that subject; iterate ts-ascending and keep the first per subject.
+    roots = {}
+    _rs = list(root_subs)
+    for _i in range(0, len(_rs), 800):
+        _chunk = _rs[_i:_i + 800]
+        _qm = ",".join("?" * len(_chunk))
+        for subj, ractor, rbody in cur.execute(
+                f"SELECT subject,actor,substr(body,1,200) FROM events "
+                f"WHERE source='slack' AND subject IN ({_qm}) ORDER BY ts", tuple(_chunk)):
+            if subj not in roots:
+                roots[subj] = (ractor, rbody)
+
     def hhmm(ts): return ts[11:16] if len(ts) > 15 else ts
 
     def slack_link(subject):
@@ -394,8 +553,33 @@ def main():
             + ("  ⚠️ STALE — before window end; data incomplete for this day" if stale else "  ok"))
     out.append(f"# DATA FRESHNESS (vs window end {W1}Z){'  ⚠️ STALE SOURCES PRESENT' if stale_any else ''}")
     out.extend(fresh_rows)
+    # PER-CHANNEL freshness for ONCALL channels — the global source check above can't see a
+    # single stalled channel (validated 2026-06-23). Oncall channels carry a steady bot feed,
+    # so >36h quiet ≈ a stalled ingest, not genuine quiet (low false-positive). Surface it so
+    # the digest flags "on-call channel X may be stale" instead of silently under-reporting.
+    # Only flag a STEADILY-ACTIVE oncall channel (a bot-fed primary, ≥150 events/30d ≈
+    # ≥5/day): there a >36h gap reliably means a stalled ingest. A sparse/generic on-call
+    # channel can be quiet for days legitimately — flagging it every run would be noise.
+    d30 = (datetime.datetime.strptime(W1, "%Y-%m-%dT%H:%M:%S") - datetime.timedelta(days=30)).strftime("%Y-%m-%d")
+    oc_stale = []
+    for ocid in oncall_channels:
+        n30 = cur.execute("SELECT COUNT(*) FROM events WHERE source='slack' AND channel_id=? AND ts>=?",
+                          (ocid, d30)).fetchone()[0]
+        if n30 < 150:
+            continue  # sparse channel — quiet ≠ stall
+        row = cur.execute("SELECT MAX(ts) FROM events WHERE source='slack' AND channel_id=?", (ocid,)).fetchone()
+        newest = _to_dt(row[0] if row else None)
+        if newest is None:
+            oc_stale.append(f"  {chname.get(ocid, ocid)} ({ocid}): NO DATA ⚠️ (was active: {n30}/30d)")
+        elif (w1_dt - newest).total_seconds() > 36 * 3600:
+            age_h = (now_dt - newest).total_seconds() / 3600.0
+            oc_stale.append(f"  {chname.get(ocid, ocid)} ({ocid}): newest {newest.strftime('%Y-%m-%dT%H:%M')}Z (~{age_h:.0f}h old, normally {n30}/30d) ⚠️ possibly STALLED")
+    if oc_stale:
+        out.append("# CHANNEL FRESHNESS  ⚠️ ONCALL CHANNEL(S) MAY BE STALLED — run the pre-standup sweep / check slack ingest; on-call work may be under-reported")
+        out.extend(oc_stale)
     out.append("# ONCALL (live Opsgenie, config/oncall.yaml)")
-    out.extend(gather_oncall(roster))
+    oncall_lines, oncall_now = gather_oncall(roster)
+    out.extend(oncall_lines)
     out.append("# LEAVES (team_leaves overlapping day + upcoming 14d; LIVE-SIGNAL = slack scan lookback..window-end)")
     out.extend(gather_leaves(cur, roster, date_str, W1, WL))
     out.append("# ONCALL FORECAST (14d rolling = 1 sprint; per-day primary via on-calls?date=)")
@@ -425,11 +609,16 @@ def main():
 
         # DONE (window): jira transitions to terminal where member is assignee-at-close + authored PR merges
         out.append("-- WINDOW jira (member as actor or assignee-at-close) --")
+        win_touched = set()       # subjects the member acted on IN window (fresh vs standing)
+        win_cmr_rows = []         # CMR rows worked in-window (feeds §6 on-call ops)
         for ts, et, sub, tost, actor, asg in win_jira:
             owner_now = state.get(sub, {}).get("owner")   # canonical (dev) or latest assignee
             if owner_now == m or actor == em:
+                win_touched.add(sub)
                 tag = "OWN" if owner_now == m else "byActor"
                 out.append(f"  [{hhmm(ts)}] {et} {sub} ->{tost}  owner={nm(owner_now)} {tag} | {state.get(sub,{}).get('title','')}")
+                if state.get(sub, {}).get("type") == "CMR":
+                    win_cmr_rows.append((ts, et, sub, tost))
         out.append("-- WINDOW github --")
         for ts, et, sub, actor, ti in win_gh:
             if actor == gh:
@@ -463,15 +652,18 @@ def main():
         for sub in by_assignee.get(m, []):
             d = state[sub]
             if d.get("type") == "CMR" and d.get("status") not in CMR_CLOSED:
-                cmr.append((sub, d.get("status"), d.get("title", "")))
-        out.append(f"-- BOARD now: inprog={len(ip)} inReview(own)={len(ir)} reviewing={len(reviewing)} todo={len(td)} openCMR={len(cmr)} --")
+                cmr.append((sub, d.get("status"), d.get("title", ""), sub in win_touched))
+        cmr_active = sum(1 for x in cmr if x[3])
+        out.append(f"-- BOARD now: inprog={len(ip)} inReview(own)={len(ir)} reviewing={len(reviewing)} todo={len(td)} openCMR={len(cmr)} (active={cmr_active} standing={len(cmr)-cmr_active}) --")
         for x in ip: out.append(f"  IP   {x[0]} {x[1]}/{x[2]} | {x[3]}")
         for x in ir:
             tail = f"reviewer={nm(x[3])}" if x[3] else "awaiting reviewer"
             out.append(f"  IR   {x[0]} {x[1]}/In Review ({tail}) | {x[2]}")
         for x in reviewing:
             out.append(f"  REVIEWING {x[0]} {x[1]} (dev={nm(x[3])}) | {x[2]}")
-        for x in cmr: out.append(f"  CMR  {x[0]} {x[1]} | {x[2]}")
+        for x in cmr:
+            tag = "active(window)" if x[3] else "STANDING(no window activity → backlog to close, NOT today's work)"
+            out.append(f"  CMR  {x[0]} {x[1]} [{tag}] | {x[2]}")
         for x in td[:8]: out.append(f"  TODO {x[0]} {x[1]} | {x[2]}")
         if len(td) > 8: out.append(f"  TODO (+{len(td)-8} more)")
 
@@ -501,6 +693,44 @@ def main():
             snip = re.sub(r"\s+", " ", body or "")[:120]
             out.append(f"  [{ts[:16]}] ch={ch} thr={thr} from={actor} link={slack_link(subj)} :: {snip}")
 
+        # ON-CALL OPS (§6) — only for the on-call member. Delegated to gather_oncall_ops:
+        # bot-tracked incidents (org-wide, via the @oncall handle + oncall bot) + db-oncall
+        # CMRs + manual @oncall follow-ups, with the recurring FYI-ack spam collapsed.
+        if m in oncall_now:
+            out.extend(gather_oncall_ops(cur, sl, oncall_channels, oncall_tokens, chname, W0, W1, win_cmr_rows))
+
+        # THREADS engaged (§4b/§7c) — threads where the member posted a SUBSTANTIVE
+        # in-window reply (pure acks dropped). Carries the ROOT context + a
+        # RESOLVED/involved tag so render can credit "unblocked/helped <teammate>",
+        # not just the member's own tickets. (Fixes: resolved/involved threads missed.)
+        mem_threads = {}
+        for actor, ts, ch, thr, body, subj in auth:
+            if not thr:
+                continue
+            b = re.sub(r"\s+", " ", body or "").strip()
+            if not b or TRIVIAL_RE.match(b):
+                continue
+            mem_threads.setdefault((ch, thr), []).append(b)
+        # Rank HEAVIEST engagement first (a 5-reply exchange is sustained support, not a
+        # drive-by) so multi-reply threads aren't cut by the cap. Tag `heavy` (≥3 replies =
+        # sustained) and `xteam` (root by a non-roster author = cross-team support in another
+        # team's channel) — both are creditable work the render must NOT collapse (validated
+        # miss 2026-06-23: a 5-reply cross-team API-support thread in another team's channel dropped).
+        ranked = sorted(mem_threads.items(), key=lambda kv: len(kv[1]), reverse=True)
+        out.append(f"-- THREADS engaged (substantive in-window replies; root context; heaviest first) ({len(mem_threads)}) --")
+        for (ch, thr), reps in ranked[:12]:
+            ractor, rbody = roots.get(f"slack:{ch}:{thr}", (None, ""))
+            rauthor = sl2canon_all.get(ractor, ractor or "?")
+            role = "RESOLVED" if any(RESOLVE_RE.search(b) for b in reps) else "involved"
+            tags = ("RESOLVED" if role == "RESOLVED" else "involved")
+            if len(reps) >= 3:
+                tags += ",heavy"
+            if ractor and ractor not in sl2canon_all:
+                tags += ",xteam"                      # cross-team support (root not on roster)
+            own = " (own root)" if ractor == sl else ""
+            rsnip = re.sub(r"\s+", " ", rbody or "")[:110]
+            out.append(f"  [{tags}]{own} #{chname.get(ch, ch)} root by {rauthor}: {rsnip} :: {len(reps)} reply(s) link={slack_permalink(ch, thr)}")
+
     # ---- OWNER FOCUS: what the MANAGER personally needs to action / know ----
     # Emitted for every scope (the owner reads this even on a `team` run). Feeds the
     # 📅 Day update (§7a — DAY SIGNALS) + ⚠️ Your queue (§7b — reply-pending slack asks
@@ -518,6 +748,16 @@ def main():
         "AND ts>=? AND ts<? AND thread_ts IS NOT NULL", (o_sl, WLo, W1)).fetchall()}
     o_mtok = f"<@{o_sl}"
     o_subteams = owner_subteams()  # token -> tier ('managerial' | 'dev')
+    # Re-ping count per thread over owner-relevant pings → ESCALATING signal: the same
+    # ask chased across days that the owner STILL hasn't answered (e.g. R&R noms 2→4→6).
+    # A re-ping is the strongest "still pending, getting urgent" cue — never drop it as FYI.
+    o_ping = Counter()
+    for ts, ch, thr, actor, body, subj in slack_owner_recent:
+        b = body or ""
+        if actor == o_sl or not thr:
+            continue
+        if o_mtok in b or any(tok in b for tok in o_subteams):
+            o_ping[(ch, thr)] += 1
     o_asks = []
     for ts, ch, thr, actor, body, subj in slack_owner_recent:
         b = body or ""
@@ -539,10 +779,18 @@ def main():
         else:
             how = "subteam-dev"
         o_asks.append((ts, ch, thr, actor, b, subj, how))
+    # Collapse re-pings of the SAME thread to the latest (count preserved in o_ping) so
+    # the queue isn't cluttered by every reminder copy — re-sort by ts for display.
+    _seen = {}
+    for row in o_asks:
+        ts, ch, thr = row[0], row[1], row[2]
+        _seen[(ch, thr) if thr else (ch, ts)] = row
+    o_asks = sorted(_seen.values(), key=lambda r: r[0])
     out.append(f"-- OWNER @-asks (your reply pending = direct/subteam-mgr; subteam-dev = route to a dev; {OWNER_ASK_LOOKBACK_DAYS}d->window-end) ({len(o_asks)}) --")
     for ts, ch, thr, actor, body, subj, how in o_asks[-15:]:
         snip = re.sub(r"\s+", " ", body or "")[:160]
-        out.append(f"  [{ts[:16]}] via={how} ch={ch} thr={thr} from={actor} link={slack_link(subj)} :: {snip}")
+        esc = f" escalating×{o_ping[(ch, thr)]}" if thr and o_ping[(ch, thr)] >= 2 else ""
+        out.append(f"  [{ts[:16]}] via={how}{esc} ch={ch} thr={thr} from={actor} link={slack_link(subj)} :: {snip}")
 
     # (A2) Confluence @-mentions of the owner (modern mentions store ri:account-id=<acct>;
     # legacy ri:userkey mentions can't be matched without the owner's userkey and are

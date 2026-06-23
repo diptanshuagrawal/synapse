@@ -355,7 +355,8 @@ _ACTIVE_THREAD_DAYS = 90  # default activity window for late-reply re-drain
 
 
 def _active_thread_parents(
-    conn: sqlite3.Connection, channel_id: str, days: int = _ACTIVE_THREAD_DAYS
+    conn: sqlite3.Connection, channel_id: str, days: int = _ACTIVE_THREAD_DAYS,
+    ignore_cooldown: bool = False,
 ) -> list[str]:
     """Parents (reply_count>0) whose newest *known* reply is within `days`, and
     that weren't drained in the last `_STALE_COOLDOWN_HOURS`. Epoch parent_ts,
@@ -377,13 +378,18 @@ def _active_thread_parents(
     active_since_iso = (now - timedelta(days=days)).isoformat(
         timespec="seconds").replace("+00:00", "Z")
 
+    # ignore_cooldown=True drops the 24h drain throttle — used by the pre-standup
+    # sweep so a previous-evening late reply lands before the 06:00 digest (slack's
+    # own ingest doesn't fire until 12:00, so the cooldown would otherwise hold it).
+    cool = "" if ignore_cooldown else "AND (drain_attempted_at IS NULL OR drain_attempted_at < ?)"
+    params = (channel_id,) if ignore_cooldown else (channel_id, drain_cutoff_iso)
     parents = conn.execute(
-        """SELECT ts FROM events
+        f"""SELECT ts FROM events
             WHERE source='slack' AND channel_id=?
               AND event_type='thread_started'
               AND reply_count > 0
-              AND (drain_attempted_at IS NULL OR drain_attempted_at < ?)""",
-        (channel_id, drain_cutoff_iso),
+              {cool}""",
+        params,
     ).fetchall()
 
     # newest reply ts (ISO) per thread, keyed by epoch thread_ts
@@ -414,7 +420,8 @@ def _active_thread_parents(
 
 
 def cmd_active_threads(args: argparse.Namespace) -> None:
-    for ts in _active_thread_parents(get_db(), args.channel_id, args.days):
+    for ts in _active_thread_parents(get_db(), args.channel_id, args.days,
+                                     ignore_cooldown=getattr(args, "ignore_cooldown", False)):
         print(ts)
 
 
@@ -613,6 +620,8 @@ def main() -> None:
                             "24h reconcile both miss)")
     p.add_argument("channel_id")
     p.add_argument("--days", type=int, default=_ACTIVE_THREAD_DAYS)
+    p.add_argument("--ignore-cooldown", action="store_true",
+                   help="drop the 24h drain throttle (pre-standup sweep)")
     p.set_defaults(func=cmd_active_threads)
 
     args = ap.parse_args()

@@ -56,9 +56,18 @@ PYTHONPATH=$HOME/context/work-context \
 It emits, per roster member, in a single pass:
 - window jira (with **assignee-at-close resolved** + `OWN`/`byActor` tag — credit rule §3 baked in),
 - window github + confluence (with page titles),
-- current BOARD state (inprog / todo / open-CMR, Epics already filtered, §3b),
+- current BOARD state (inprog / todo / open-CMR, Epics already filtered, §3b). Each open
+  CMR is tagged `active(window)` (worked in the window) or `STANDING` (no window activity —
+  backlog to close, NOT today's work — see §6b),
 - **Slack authored in window** + **@-asks over the past 2 days** with an
-  `answered_by_member` flag (the §4b heavy scan, pre-computed).
+  `answered_by_member` flag (the §4b heavy scan, pre-computed),
+- **`ON-CALL OPS`** (only for the on-call member) — the aggregated ops load: CMRs worked
+  in-window (incl. ones only *reviewed* as db-on-call), plus incident/on-call/alert-channel
+  posts + pings (ack/resolve confirmations). Render this as the §6 On-call line — it is the
+  anti-under-reporting guard,
+- **`THREADS engaged`** — threads the member posted a *substantive* in-window reply in
+  (pure acks dropped), each with the **root context** + a `RESOLVED`/`involved` tag. This is
+  how a teammate's thread the member unblocked gets credited (§4b/§7c), not just their own tickets.
 
 It also emits an **`OWNER FOCUS`** block at the end (always — even on a `team` run, the
 owner is the audience): the manager's own **reply-pending @-asks** (slack mentions of the
@@ -99,6 +108,12 @@ standup wrong). So:
 - Never render an empty/quiet section for a person when the source feeding it is stale —
   say "unknown (ingest stale)", not "no tracked activity".
 - If all sources are `ok`, proceed normally (no banner).
+- **`# CHANNEL FRESHNESS` (per-channel stall — read it too).** The source-level check above
+  can't see a single channel that silently stopped ingesting while the global source looks
+  fresh. The gather adds a `# CHANNEL FRESHNESS` block flagging on-call channels quiet >36h
+  (≈ a stall, since they carry a steady bot feed). If it's present, banner it — "⚠️ on-call
+  channel <name> may be stale; on-call work may be under-reported" — and treat that member's
+  on-call section as possibly-incomplete, don't render it as a quiet rotation.
 
 **FIELD SOURCING — do NOT use the window for everything.** Only "Done" is a
 window-bounded event; the rest are CURRENT STATE and must be queried as state,
@@ -235,6 +250,27 @@ becomes a ticket (debugging, prod support, design back-and-forth, helping teamma
 | **Open ask directed at them** | Up next | `<@them>` mention still UNANSWERED by them at scan time (no later reply from their `slack_id` in-thread), or an explicit "can you / pls check / need from you". Pending PR-review requests count here too. |
 | **Stuck / waiting** | Blockers | "blocked on", "waiting for", "can't proceed", "any update", "still failing", unresolved error threads they're in. Only if STILL open (no resolving reply). |
 
+**Threads they resolved / were involved in — read the gather's `THREADS engaged` block.**
+A teammate's thread the member *unblocked* or drove to a decision is real work, but it
+never becomes their ticket, so it was being dropped. The gather now lists every thread the
+member posted a substantive in-window reply in, with the **root** (what the thread was
+about) + a `RESOLVED`/`involved` tag. Fold them in:
+- `RESOLVED` (their reply carried the answer/decision/fix) → render under **Done** as
+  *"unblocked <teammate> on <what the root was about> ([thread])"* — credit the help, framed
+  from the ROOT, not their reply text.
+- `involved` → judge by ENGAGEMENT DEPTH, not a fixed cap. A thread tagged `heavy` (≥3
+  substantive replies = sustained help) or `xteam` (root by a non-roster author = cross-team
+  support in another team's channel) is real, often-invisible work — SURFACE it (e.g. "fielded
+  another team's API questions — contract, edge cases, latency, auth ([thread])"). Cross-team
+  support is exactly what standup should catch.
+  Keep up to ~3 such threads (heaviest/xteam first — the gather ranks them); collapse only the
+  single-reply drive-bys. (Validated miss 2026-06-23: a 5-reply cross-team API-support thread
+  was dropped under the old "at most one involved" cap.)
+- JUDGE the root: skip personal/social roots (condolences, logistics) and bot-reminder
+  roots (CMR-cleanup, standup-join) — those aren't the member's work even if they replied.
+- The `link=` is the thread root permalink — OPEN it (§8) to state what was actually
+  resolved; the one-line root snippet is rarely enough.
+
 **De-dupe + cap so it stays a standup:**
 - If a Slack hit maps to a ticket/PR already rendered, MERGE it (one line, Slack adds
   colour + link) — don't emit a second item.
@@ -296,6 +332,26 @@ chased, and CMRs worked. Don't bury it; it's the bulk of their day. Example:
 "On-call: triaging the category order failure; pushed a recent TB-diff rectification
 ([EX-NNNN]) to Change-Approved."
 
+**Build the On-call line from the gather's `ON-CALL OPS` block — render ONE bullet per
+incident, don't under-report (validated miss 2026-06-23: on-call work follows the @oncall
+HANDLE across the whole org + the oncall bot, NOT a fixed alert-channel list).** The block
+surfaces every incident for recall; you OPEN each thread (`link=`) to write the per-incident
+line. Render each row type:
+- **`INCIDENT`** (bot-tracked: the member acked / resolved / marked Not-Our-Issue) — one
+  bullet each, in a per-incident format: `#<origin-channel> — <issue> — <who> tagged on-call;
+  <resolution>`. The gather gives the issue snippet + `actions` + a thread `link=`; OPEN it to
+  recover the **origin channel** (from the bot's "Issue Link") + the **reporter** + the real
+  resolution. `origin=(open thread)` means the bot edited the root — get it from the thread.
+- **`FOLLOWUP`** (member replied in a thread where @oncall was pinged, any channel) — manual
+  chases the bot doesn't track (e.g. asking if a stale incident is closed). One bullet each:
+  `#<channel> — <what was chased / resolved>`.
+- **`CMR-work`** — CMRs worked in-window, incl. ones the member only *reviewed* as db-on-call
+  (someone else owns them) — still on-call work; render with the CMR id.
+- **`FYI-ACK count=N`** — the recurring pending-txn auto-acks, already collapsed. Mention as
+  one line ("acked N recurring pending-txn FYIs") or drop; never expand to N bullets.
+- Plus the on-call ticket (the `Oncall` epic Task on their board) + any capacity/monitoring posts.
+A thin two-bullet On-call line when the block lists several INCIDENT/FOLLOWUP rows is a regression.
+
 ## 6c. ON-CALL FORECAST + RISKS — read `# ONCALL FORECAST` and `# RISKS` (one sprint ahead)
 
 The gather also forecasts the on-call primary for the next 14 days (rolling = one sprint)
@@ -327,6 +383,18 @@ CMRs cluster heavily on the on-call + ops-leaning ICs; don't drop them — a day
 rectification CMRs is real work even with zero feature tickets. (Validated: a TB-diff
 CMR was Change-Approved during the window and the first pass mis-filed it as feature
 work.)
+
+**`active(window)` vs `STANDING` — never re-report a standing CMR as today's work
+(validated miss 2026-06-23).** A CMR's late states (`Released with Emergency`, `Change
+Released`) are NOT terminal — the ticket stays open until `Implementation Reviewed` /
+`Review Complete`, so a CMR released days ago lingers on the board for a week. The gather
+tags each open CMR:
+- `active(window)` → it had activity in THIS window → render as the day's ops work.
+- `STANDING` (no window activity) → it is BACKLOG, not today's work. Do NOT render it as a
+  Done/On-call accomplishment — that's how the same emergency-released IFT CMR showed up in
+  standup after standup. At most, mention standing CMRs ONCE as a backlog nudge ("N CMRs
+  still open to close"), and only if it adds signal. Never frame a standing CMR as freshly
+  done.
 
 ## 7. Output — FOUR root messages (team scope), in this order
 
@@ -396,6 +464,17 @@ first:
   whose CMR is now Approved on the board). Lead with what's asked + who's waiting + how long
   it's sat. Because the lookback is 5 days, weight staleness: a 4-day-old unanswered ask is
   more urgent to flag, not less.
+  - **An admin/process ask broadcast to a manager group is NOT "FYI" — it's a queue item
+    (validated miss 2026-06-23).** When a `subteam-mgr` ping asks the manager to personally
+    *complete an action* — submit R&R / award nominations, write/own an RCA-POD, sign off a
+    migration his services own, file the team's leave plan, complete a comp/retention step —
+    keep it. The owner must DO the thing; a group audience doesn't make it informational.
+    Only genuinely passive broadcasts (announcements, FYIs with no action on him) get dropped.
+  - **`escalating×N` = the strongest keep signal — never triage it out.** The gather tags an
+    ask `escalating×N` when the same thread has been re-pinged N times across the lookback and
+    the owner still hasn't replied (e.g. R&R noms chased 2→4→6). A re-ping means it's overdue
+    and getting more urgent — rank these to the TOP, and state the chase count + age ("chased
+    3× since 17 Jun, still pending").
 - **🔀 To route / delegate** — `via=subteam-dev` asks (someone pinged the dev team handle and
   no one has answered in-thread). These are the owner's to ROUTE, not to personally answer:
   for each, name the likely dev owner (by domain — §4) and frame it as "delegate to <@dev>",
@@ -411,7 +490,18 @@ first:
   @-mentions` on a doc + In-Review items assigned to him).
 - **Decisions / escalations** — team blockers needing a *manager* call (timeline crunch,
   ownership gaps, unowned incidents, an unresolved LEAVE×ONCALL rota swap), framed as the
-  decision he owns.
+  decision he owns. **This INCLUDES a dev-escalated "should we do X?" proposal directed at
+  the owner** — a direct `<@owner>` question asking for his call on scope/approach/architecture
+  (e.g. "should we take an interim platform-side fix to cut a recurring on-call noise source? @owner"),
+  even when phrased as a forward proposal rather than an urgent blocker. A `?` + direct mention
+  asking the owner to decide is a queue item, not the asking dev's plan. (Validated miss
+  2026-06-23: a direct "should we take this? @owner" RTGS-fix decision was rendered only under
+  the dev's Up-next, never in Your queue.)
+- **Cross-check before posting:** anything rendered in a dev's §7c section as "pending a
+  decision / your call / awaiting your sign-off" MUST also appear here in Your queue — the
+  owner sees every decision awaiting him in ONE place. Surfacing it in the dev's section does
+  NOT substitute for the queue item (the two serve different audiences; §7c is team-facing and
+  must stay neutral per §7c's rules, §7b is the owner's action list).
 
 Each line: one-sentence what + who's waiting + age, then the clickable link
 (`[thread](…)` / `[EX-NNNN](…)`). Rank by (prod/customer impact × staleness). If the queue

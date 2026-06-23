@@ -831,10 +831,37 @@ def write_checked_marks(checked_ids: list[str]) -> None:
 # ── Main ────────────────────────────────────────────────────────────────
 
 
+def sweep_channel_threads(client, ch, dry_run, users_cache, name_resolver, subteams_cache) -> dict:
+    """PRE-STANDUP SWEEP — re-walk recently-active threads with the 24h drain cooldown
+    BYPASSED, so a previous-evening late reply (on a thread whose root has scrolled below
+    the channel cursor) lands BEFORE the 06:00 digest. Slack's own ingest only fires
+    12:00–23:00, and the cooldown would otherwise hold the re-walk past standup time
+    (validated miss 2026-06-23: a direct @owner reply on an old thread wasn't ingested until
+    ~12:30 the next day). Scoped by the caller to team_involved + oncall channels."""
+    cid = ch["id"]
+    keep_bot = str(ch.get("keep_bot_messages", "false")).lower() == "true"
+    if (ch.get("class") or "") == "oncall":
+        keep_bot = True  # the incident bot's ack/resolve replies ARE the on-call signal
+    parents = active_thread_parents(cid, ACTIVE_THREAD_DAYS, ignore_cooldown=True)
+    if not parents:
+        return {"id": cid, "swept": 0, "replies_inserted": 0, "errors": []}
+    repl, _bot, errs, _cap = fetch_threads_capped(
+        client, cid, parents, dry_run, users_cache, keep_bot, name_resolver, subteams_cache,
+    )
+    if not dry_run and repl > 0:
+        from subprocess import run
+        run([".venv/bin/python", "derive/build_thread_summary.py", "--channel", cid],
+            cwd=str(_PKG_ROOT), check=False, capture_output=True)
+    return {"id": cid, "swept": min(len(parents), STALE_CAP), "replies_inserted": repl, "errors": errs}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("channel", nargs="?", help="optional single channel name/id; default = all")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--threads-sweep", action="store_true",
+                    help="pre-standup: re-walk recently-active threads (cooldown bypassed) on "
+                         "team_involved + oncall channels to pull late replies before the digest")
     args = ap.parse_args()
 
     # Sentinel logging — parsed by bin/cron-status.sh (parse_runs).
@@ -864,6 +891,13 @@ def main() -> int:
     else:
         channels = _load_channels_yaml()
 
+    # Pre-standup sweep scopes to the channels where on-call/team late replies matter
+    # (team_involved + oncall) — avoids re-walking every thread in the workspace.
+    if args.threads_sweep:
+        channels = [c for c in channels
+                    if str(c.get("ingest_mode", "")).lower() == "team_involved"
+                    or (c.get("class") or "") == "oncall"]
+
     # Caches once for entire fire
     t0 = time.monotonic()
     print(f"[users] hydrating users.list cache...", flush=True)
@@ -883,9 +917,20 @@ def main() -> int:
     summaries: list[dict] = []
     any_success = False
     checked_ids: list[str] = []
+    if args.threads_sweep:
+        print(f"[threads-sweep] cooldown-bypassed re-walk over {len(channels)} team/oncall channel(s)...")
     for ch in channels:
         cname = ch.get("name", ch["id"])
         t = time.monotonic()
+        if args.threads_sweep:
+            s = sweep_channel_threads(client, ch, args.dry_run, users_cache,
+                                      name_resolver, subteams_cache)
+            s["elapsed_s"] = round(time.monotonic() - t, 2)
+            summaries.append(s)
+            if s.get("replies_inserted"):
+                print(f"  {cname:35s} swept {s.get('swept',0):3d} thr  repl+{s['replies_inserted']:3d}  ({s['elapsed_s']}s)")
+            any_success = True
+            continue
         s = ingest_channel(client, ch, args.dry_run, users_cache, name_resolver,
                            subteams_cache, team_slack_ids=team_slack_ids,
                            team_subteam_ids=team_subteam_ids)
