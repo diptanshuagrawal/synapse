@@ -84,29 +84,13 @@ def load_channel_names():
 
 
 def load_oncall_signals():
-    """Config-driven on-call identity (NOT channel-name heuristics — see the
-    validated 2026-06-23 miss where on-call work spanned plain domain channels):
-      • oncall_channels — slack_channels.yaml entries with class=='oncall' (the bot
-        incident hub where the oncall bot posts New-Issue / ack / resolve).
-      • oncall_tokens — '<!subteam^S…' ping tokens for handles whose name contains
-        'oncall'/'on-call' (team_subteams.yaml). On-call work follows THIS handle
-        across the whole org, not a fixed channel list. Fail-soft → ([], [])."""
-    import yaml
-    chans, tokens = [], []
-    try:
-        chs = yaml.safe_load(open(os.path.join(ROOT, "work-context/config/slack_channels.yaml")))["channels"]
-        chans = [c["id"] for c in chs if (c.get("class") or "") == "oncall" and c.get("id")]
-    except Exception:
-        pass
-    try:
-        st = yaml.safe_load(open(os.path.join(ROOT, "work-context/config/team_subteams.yaml"))).get("subteams", [])
-        for s in st:
-            h = (s.get("handle") or "").lower()
-            if ("oncall" in h or "on-call" in h) and s.get("id"):
-                tokens.append(f"<!subteam^{s['id']}")
-    except Exception:
-        pass
-    return chans, tokens
+    """Config-driven on-call identity — delegates to derive.oncall_signals (the SINGLE
+    source of truth shared with retro_census/person_census, so every skill detects on-call
+    work the same way). Returns (oncall_channel_ids, oncall_handle_tokens). On-call work
+    follows the @oncall HANDLE + class:oncall channels org-wide, NOT alert-channel names
+    (validated 2026-06-23). Fail-soft → ([], [])."""
+    from derive.oncall_signals import oncall_channel_ids, oncall_handle_tokens
+    return list(oncall_channel_ids()), oncall_handle_tokens()
 
 
 def _opsgenie_cfg():
