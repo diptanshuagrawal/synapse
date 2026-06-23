@@ -121,3 +121,7 @@ bin/publish-synapse.sh
 bin/leak-patterns.public.txt
 PUBLISH_PLAN.md
 
+
+# v3 dashboard preview + its aggregated data snapshot (local only, may reflect real org slugs)
+work-context/bin/dashboard_*_preview.html
+work-context/bin/dashboard_v3_data.json
