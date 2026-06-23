@@ -129,7 +129,7 @@ def fmt_refs(ev):
 
 
 def linkify_keys(text, base):
-    """Wrap bare Jira keys (e.g. CBST-2927) in Slack links to their browse URL."""
+    """Wrap bare Jira keys (e.g. EX-1234) in Slack links to their browse URL."""
     if not text or not base:
         return text
     base = base.rstrip("/")
@@ -137,20 +137,24 @@ def linkify_keys(text, base):
                   lambda m: f"<{base}/browse/{m.group(1)}|{m.group(1)}>", text)
 
 
-def resolve_card_blocks(blocks, fp, status_md):
-    """Replace the clicked card's button row (block_id act_<fp>) with a resolution line,
-    leaving every other card's buttons live. Also refreshes the 'N open' footer."""
+def resolve_card_blocks(blocks, act_block_id, status_md):
+    """Replace the clicked card's button row (the actions block whose block_id ==
+    `act_block_id`) with a resolution line, leaving every other card's buttons live.
+    Also refreshes the leading 'N open' count in the footer (block_id 'footer_open'),
+    keeping whatever per-card-type suffix that footer carries. Shared by ticketize
+    (act_<fp>) and the doc-sync discovery (dscact_<id>) / findings (dsfact_<key>) cards."""
     new = []
     for b in (blocks or []):
-        if b.get("block_id") == f"act_{fp}":
-            new.append({"type": "context", "block_id": f"done_{fp}",
+        if b.get("block_id") == act_block_id:
+            new.append({"type": "context", "block_id": f"done_{act_block_id}",
                         "elements": [{"type": "mrkdwn", "text": status_md}]})
         else:
             new.append(b)
     remaining = sum(1 for b in new if b.get("type") == "actions")
     for b in new:
         if b.get("block_id") == "footer_open":
-            b["elements"][0]["text"] = f"{remaining} open · created tickets land in the active sprint"
+            cur = b["elements"][0]["text"]
+            b["elements"][0]["text"] = re.sub(r"^\d+\s+open", f"{remaining} open", cur)
     return new
 
 
@@ -166,14 +170,15 @@ def fetch_message_blocks(client, channel, ts):
     return None
 
 
-def update_card(client, channel, ts, fp, status_md, blocks=None):
-    """In-place message edit: resolve the clicked card. Best-effort — never raises."""
+def update_card(client, channel, ts, act_block_id, status_md, blocks=None):
+    """In-place message edit: resolve the clicked card (its actions block_id == act_block_id).
+    Best-effort — never raises. Shared by ticketize + doc-sync discovery/findings cards."""
     blocks = blocks if blocks is not None else fetch_message_blocks(client, channel, ts)
     if not blocks:
         return
     try:
-        client.chat_update(channel=channel, ts=ts, text="Ticket candidates (updated)",
-                           blocks=resolve_card_blocks(blocks, fp, status_md))
+        client.chat_update(channel=channel, ts=ts, text="(updated)",
+                           blocks=resolve_card_blocks(blocks, act_block_id, status_md))
     except Exception as e:
         print(f"card update failed: {e}", file=sys.stderr)
 
@@ -270,7 +275,6 @@ def do_post(date):
 # ---------- doc-sync discovery cards ----------
 DOCSYNC_CFG = os.path.join(ROOT, "work-context/config/doc_sync.yaml")
 DOCSYNC_INVENTORY = os.path.join(ROOT, "work-context/config/doc_sync_inventory.yaml")
-DOCSYNC_DISCOVERED = os.path.join(ROOT, "work-context/state/doc_sync_discovered.json")
 DOCSYNC_STATE = os.path.join(ROOT, "work-context/derive/doc_sync_state.py")
 DOCSYNC_APPLY = os.path.join(ROOT, "bin/doc_sync_apply.py")
 def _docsync_findings_path(run_id):
@@ -283,19 +287,32 @@ def load_docsync_cfg():
     return yaml.safe_load(open(DOCSYNC_CFG))
 
 
-def _docsync_discovered():
-    """This run's NEW discovered docs: [{id, title, author, repo}]."""
-    if not os.path.exists(DOCSYNC_DISCOVERED):
-        return None
-    d = json.load(open(DOCSYNC_DISCOVERED))
-    return d.get("candidates", d) if isinstance(d, dict) else d
+def _docsync_pending():
+    """Every doc still awaiting a decision — the inventory's full `needs_confirm` bucket,
+    not just this run's new finds. Mirrors ticketize's all_open_candidates: an ignored
+    discovery keeps re-appearing each sweep until Approve (→monitor) or Reject (→excluded)
+    clears it out of needs_confirm. Each entry: {id, title, author, repo, webUrl}."""
+    import yaml
+    inv = yaml.safe_load(open(DOCSYNC_INVENTORY)) or {}
+    try:                                   # host from sources.yaml via the apply helper — no hardcoded org
+        import doc_sync_apply as dsa
+        base = f"https://{dsa.host()}/wiki/pages/viewpage.action?pageId="
+    except Exception:
+        base = ""
+    out = []
+    for e in (inv.get("needs_confirm") or []):
+        pid = str(e.get("id"))
+        out.append({"id": pid, "title": e.get("title", "(untitled)"),
+                    "author": e.get("author"), "repo": e.get("repo", "?"),
+                    "webUrl": (base + pid) if base else ""})
+    return out
 
 
 def build_docsync_blocks(run_id, docs):
     blocks = [
-        {"type": "header", "text": {"type": "plain_text", "text": f"🔎 Newly-discovered docs — {run_id}"}},
+        {"type": "header", "text": {"type": "plain_text", "text": f"🔎 Docs awaiting review — {run_id}"}},
         {"type": "context", "elements": [{"type": "mrkdwn",
-            "text": "Team-authored design docs I found. *Approve* → I add it to the monitored set (next sweep checks it). *Reject* → I drop it to excluded. (only you can act)"}]},
+            "text": "Team-authored design docs still awaiting your call (new + carried over from earlier sweeps). *Approve* → I add it to the monitored set (next sweep checks it). *Reject* → I drop it to excluded. (only you can act)"}]},
         {"type": "divider"},
     ]
     for c in docs:
@@ -313,8 +330,8 @@ def build_docsync_blocks(run_id, docs):
              "action_id": f"dsc:{run_id}:{pid}:reject", "value": pid},
         ]})
         blocks.append({"type": "divider"})
-    blocks.append({"type": "context", "elements": [
-        {"type": "mrkdwn", "text": f"{len(docs)} discovered · Approve promotes to the monitor list · Reject excludes it"}]})
+    blocks.append({"type": "context", "block_id": "footer_open", "elements": [
+        {"type": "mrkdwn", "text": f"{len(docs)} open · Approve → monitor list · Reject → excluded"}]})
     return blocks
 
 
@@ -324,11 +341,11 @@ def do_post_docsync(run_id):
     ch = cfg["slack"]["channel_id"]
     if not ch:
         print("no doc_sync channel_id configured — skipping", file=sys.stderr); sys.exit(1)
-    docs = _docsync_discovered()
+    docs = _docsync_pending()
     client = WebClient(token=secret("relay_slack_bot_token"))
     if not docs:
-        print("posted: no newly-discovered docs this run"); return
-    r = client.chat_postMessage(channel=ch, text=f"{len(docs)} newly-discovered docs — {run_id}",
+        print("posted: no docs awaiting review (needs_confirm is empty)"); return
+    r = client.chat_postMessage(channel=ch, text=f"{len(docs)} docs awaiting review — {run_id}",
                                 blocks=build_docsync_blocks(run_id, docs))
     print(f"posted {len(docs)} discovery cards to {ch} ts={r['ts']}")
 
@@ -369,8 +386,8 @@ def build_findings_blocks(run_id, findings):
              "action_id": f"dsf:{run_id}:{k}:reject", "value": k},
         ]})
         blocks.append({"type": "divider"})
-    blocks.append({"type": "context", "elements": [
-        {"type": "mrkdwn", "text": f"{len(findings)} findings · Approve posts a live Confluence inline comment"}]})
+    blocks.append({"type": "context", "block_id": "footer_open", "elements": [
+        {"type": "mrkdwn", "text": f"{len(findings)} open · Approve posts a live Confluence inline comment"}]})
     return blocks
 
 
@@ -388,9 +405,17 @@ def do_post_findings(run_id):
     if not actionable:
         client.chat_postMessage(channel=ch, text=f"Doc-sync {run_id}: no new drift findings to action. ✅")
         print("posted: none-actionable"); return
-    r = client.chat_postMessage(channel=ch, text=f"Doc-sync drift findings — {run_id} ({len(actionable)})",
-                                blocks=build_findings_blocks(run_id, actionable))
-    print(f"posted {len(actionable)} finding cards to {ch} ts={r['ts']}")
+    # Slack caps a message at 50 blocks; each finding is 3 blocks (section+actions+divider)
+    # plus ~4 framing blocks, so chunk at 15 findings/message to stay under the limit.
+    CHUNK = 15
+    chunks = [actionable[i:i + CHUNK] for i in range(0, len(actionable), CHUNK)]
+    for n, chunk in enumerate(chunks, 1):
+        suffix = f" [{n}/{len(chunks)}]" if len(chunks) > 1 else ""
+        r = client.chat_postMessage(
+            channel=ch,
+            text=f"Doc-sync drift findings — {run_id} ({len(actionable)}){suffix}",
+            blocks=build_findings_blocks(run_id, chunk))
+    print(f"posted {len(actionable)} finding cards to {ch} in {len(chunks)} message(s)")
 
 
 # ---------- user-group (subteam) discovery cards ----------
@@ -538,7 +563,7 @@ def run_listener():
         suggested_dev = (c.get("suggested_assignee") or "").split(" (")[0]
         asg_hint = (f"Default = {cand_assignee or 'unassigned'}."
                     + (f" Suggested delegate: {suggested_dev}." if suggested_dev else "")
-                    + " A people.yaml canonical handle (e.g. dheeraj-kumar); blank keeps the default.")
+                    + " A people.yaml canonical handle (e.g. jane-doe); blank keeps the default.")
         client.views_open(trigger_id=body["trigger_id"], view={
             "type": "modal", "callback_id": "tkz_apply",
             "private_metadata": json.dumps({"date": date, "fp": fp, "label": label,
@@ -559,7 +584,7 @@ def run_listener():
                  "label": {"type": "plain_text", "text": "Assignee"},
                  "element": {"type": "plain_text_input", "action_id": "assignee_val",
                              "initial_value": cand_assignee,
-                             "placeholder": {"type": "plain_text", "text": "canonical handle e.g. dheeraj-kumar"}},
+                             "placeholder": {"type": "plain_text", "text": "canonical handle e.g. jane-doe"}},
                  "hint": {"type": "plain_text", "text": asg_hint}},
             ],
         })
@@ -577,7 +602,7 @@ def run_listener():
         client.chat_postMessage(channel=m["channel"], thread_ts=m["msg_ts"],
                                 text=f"{'✅' if ok else '⚠️'} *{m['label']}* approved — {note}")
         if ok and mode == "live":
-            update_card(client, m["channel"], m["msg_ts"], m["fp"],
+            update_card(client, m["channel"], m["msg_ts"], f"act_{m['fp']}",
                         f"✅ *{m['label']}* approved — {note}")
 
     @app.action(re.compile(r"^tkz:.*:reject:"))
@@ -590,7 +615,7 @@ def run_listener():
         client.chat_postMessage(channel=body["channel"]["id"], thread_ts=body["message"]["ts"],
                                 text=f"🗑️ *{label}* rejected — {note}")
         if ok and mode == "live":
-            update_card(client, body["channel"]["id"], body["message"]["ts"], fp,
+            update_card(client, body["channel"]["id"], body["message"]["ts"], f"act_{fp}",
                         f"🗑️ *{label}* rejected", blocks=body["message"]["blocks"])
 
     # ---- doc-sync discovery: Approve → monitor, Reject → excluded ----
@@ -615,6 +640,9 @@ def run_listener():
         ok, note = docsync_apply(pid, "approve", run_id)
         client.chat_postMessage(channel=body["channel"]["id"], thread_ts=body["message"]["ts"],
                                 text=f"{'✅' if ok else '⚠️'} `{pid}` promoted to *monitor* — {note}")
+        if ok and mode == "live":
+            update_card(client, body["channel"]["id"], body["message"]["ts"], f"dscact_{pid}",
+                        f"✅ `{pid}` → *monitor*", blocks=body["message"]["blocks"])
 
     @app.action(re.compile(r"^dsc:.*:reject$"))
     def on_docsync_reject(ack, body, client, action):
@@ -625,6 +653,9 @@ def run_listener():
         ok, note = docsync_apply(pid, "reject", run_id)
         client.chat_postMessage(channel=body["channel"]["id"], thread_ts=body["message"]["ts"],
                                 text=f"{'🗑️' if ok else '⚠️'} `{pid}` moved to *excluded* — {note}")
+        if ok and mode == "live":
+            update_card(client, body["channel"]["id"], body["message"]["ts"], f"dscact_{pid}",
+                        f"🗑️ `{pid}` → *excluded*", blocks=body["message"]["blocks"])
 
     # ---- doc-sync drift findings: Approve → post Confluence inline comment, Reject → drop ----
     def findings_apply(run_id, key, decision):
@@ -646,6 +677,9 @@ def run_listener():
         ok, note = findings_apply(run_id, key, "approve")
         client.chat_postMessage(channel=body["channel"]["id"], thread_ts=body["message"]["ts"],
                                 text=f"{'✅ commented' if ok else '⚠️'} — {note}")
+        if ok and mode == "live":
+            update_card(client, body["channel"]["id"], body["message"]["ts"], f"dsfact_{key[:20]}",
+                        f"✅ comment posted — {note}", blocks=body["message"]["blocks"])
 
     @app.action(re.compile(r"^dsf:.*:reject$"))
     def on_finding_reject(ack, body, client, action):
@@ -656,6 +690,9 @@ def run_listener():
         ok, note = findings_apply(run_id, key, "reject")
         client.chat_postMessage(channel=body["channel"]["id"], thread_ts=body["message"]["ts"],
                                 text=f"{'🗑️ dropped' if ok else '⚠️'} — {note}")
+        if ok and mode == "live":
+            update_card(client, body["channel"]["id"], body["message"]["ts"], f"dsfact_{key[:20]}",
+                        f"🗑️ dropped — {note}", blocks=body["message"]["blocks"])
 
     # ---- user-group discovery: Manager → owner_member, Team → ingest filter, Reject → skiplist ----
     UGD_FLAG = {"manager": "--apply-manager", "team": "--apply-team", "reject": "--skip"}

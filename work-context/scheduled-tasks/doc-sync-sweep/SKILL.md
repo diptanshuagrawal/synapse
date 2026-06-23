@@ -9,14 +9,25 @@ to the doc-sweep channel (config slack.channel_id).
 
 Working dir: __REPO__
 
-## RUN-ONCE GATE (idempotent — this MONTHLY routine retries every 30 min on days 1–3 until it succeeds once this month)
-Before doing ANY work, run this and obey it:
+## RUN-ONCE GATE (idempotent — this MONTHLY routine retries every 30 min on days 1–3)
+TWO markers gate this routine so the Chrome diagram pass is REQUIRED-by-default without spamming the channel:
+- `last_routine_docsync_sweep_posted.date`  — the text-sweep PREVIEW + cards were delivered this month (posted once).
+- `last_routine_docsync_sweep_success.date` — FULLY done: the diagram pass also actually RAN (browser present), or there were zero `diagram_pending` docs.
 
-    MARK=__REPO__/work-context/state/last_routine_docsync_sweep_success.date
+Before doing ANY work, run this and obey the printed MODE:
+
+    SUCCESS=__REPO__/work-context/state/last_routine_docsync_sweep_success.date
+    POSTED=__REPO__/work-context/state/last_routine_docsync_sweep_posted.date
     MONTH=$(TZ=Asia/Kolkata date +%Y-%m)
-    if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$MONTH" ]; then echo "GATE: doc-sync-sweep already succeeded this month ($MONTH) — idle"; else echo "GATE: doc-sync-sweep not done this month — proceed"; fi
+    if [ -f "$SUCCESS" ] && [ "$(cat "$SUCCESS")" = "$MONTH" ]; then echo "GATE: fully done this month ($MONTH) — idle"; \
+    elif [ -f "$POSTED" ] && [ "$(cat "$POSTED")" = "$MONTH" ]; then echo "GATE: text sweep already posted ($MONTH) — DIAGRAM-ONLY mode (only the Chrome pass is outstanding)"; \
+    else echo "GATE: not posted this month — FULL run"; fi
 
-If it prints "already succeeded this month" → STOP NOW: discover nothing, sweep nothing, post nothing; end the run. Only proceed to the steps below if it prints "not done this month".
+- **"fully done this month"** → STOP NOW: discover nothing, sweep nothing, post nothing; end the run.
+- **"DIAGRAM-ONLY mode"** → the text sweep already posted this month; the ONLY outstanding work is the mandatory diagram pass. Do NOT re-run discovery or the text sweep and do NOT re-post the preview. Go straight to Phase 1.5 (STEP 1, Chrome pass) on the docs recorded in `state/doc_sync_diagram_pending_<MONTH>.json`:
+    - **Browser connected** → read the diagrams, diff vs code, post a "[doc-sync sweep — diagram pass]" follow-up to the doc-sweep channel + Relay finding cards for any new sequence drift, then stamp SUCCESS (see RECORD SUCCESS).
+    - **No browser** → IDLE this fire (post nothing), so a later fire with a browser completes it. STOP.
+- **"FULL run"** → proceed to the steps below (discovery + text sweep + attempt diagrams + post preview + cards).
 
 STEP 0 — Resolve a yaml-capable python:
   PY=$(for p in /opt/homebrew/bin/python3 python3 /usr/local/bin/python3; do "$p" -c 'import yaml' 2>/dev/null && { echo "$p"; break; }; done)
@@ -36,13 +47,18 @@ Target id comes from `work-context/config/doc_sync.yaml` slack.channel_id.
 - Per doc: fetch page, gather code truth (graph + migrations + source), run the five
   drift checks + DIRECTION GATE, keep BACKWARD-drift findings only. Text-only here;
   ZenUML/image diagrams → mark `diagram_pending` for Phase 1.5.
-- Phase 1.5 CHROME DIAGRAM PASS (attempt EVERY run, degrade gracefully): `list_connected_browsers`.
+- Phase 1.5 CHROME DIAGRAM PASS (REQUIRED every run — this is the DEFAULT, not optional):
+  `list_connected_browsers`. ALWAYS attempt it. Persist the `diagram_pending` page list to
+  `state/doc_sync_diagram_pending_<MONTH>.json` (so a later DIAGRAM-ONLY fire can complete it).
   If a Confluence-signed-in work browser is connected, read each `diagram_pending` doc's
   ZenUML/image diagram visually (navigate → expand → screenshot/zoom → transcribe top-to-bottom)
   and diff steps + table/field names against code; append high-confidence BACKWARD sequence-drift
-  to candidates. **If NO browser is connected (typical headless cron fire), SKIP the visual read** —
-  emit "diagram source not machine-readable — Chrome pass skipped (no work browser this run);
-  verify manually" per pending doc and record `diagram_pass: skipped_no_browser`. NEVER fabricate steps.
+  to candidates; record `diagram_pass: done`. **If NO browser is connected, the diagram pass is
+  INCOMPLETE — not a clean skip.** Emit the loud "⚠️ DIAGRAMS NOT READ this run — Chrome pass needs
+  a Confluence-signed-in browser; will retry until one is connected" note per pending doc, record
+  `diagram_pass: pending_no_browser`, and DO NOT stamp the SUCCESS marker (only POSTED) — the run
+  retries in DIAGRAM-ONLY mode on later fires until a browser is available. NEVER fabricate diagram
+  steps and NEVER pre-judge a diagram as drift-incapable to skip it.
 - Build candidates → `$PY work-context/derive/doc_sync_state.py filter-new --file …` (dedup gate).
 - Because --dry-run: DO NOT call createConfluenceInlineComment. STILL post the rendered preview
   (prefixed "[doc-sync sweep PREVIEW]") to the doc-sweep channel via slack_send_message,
@@ -73,9 +89,17 @@ diagram steps. Comments reach Confluence ONLY via a human Approve on a Relay fin
 (filter-new) catches reworded re-finds (exact key + fuzzy same-page identifier match; soft
 matches flagged on the card), so approving won't double-post.
 
-## RECORD SUCCESS (final step — gates the days-1–3 retry)
-ONLY after the PREVIEW post is CONFIRMED delivered to the doc-sweep channel (the would-post summary + discovery cards, or a clean "no drift" line) — stamp the marker with the year-month so the rest of this month's fires idle:
+## RECORD SUCCESS (final step — gates the days-1–3 retry; TWO markers)
+1. **POSTED** — the moment the PREVIEW post is CONFIRMED delivered to the doc-sweep channel (the would-post summary + discovery cards, or a clean "no drift" line), stamp:
+
+    TZ=Asia/Kolkata date +%Y-%m > __REPO__/work-context/state/last_routine_docsync_sweep_posted.date
+
+   This prevents the text sweep from re-posting on later fires. Stamp it for a clean "no drift / nothing to preview" run too.
+
+2. **SUCCESS** — stamp ONLY when the mandatory diagram pass is genuinely satisfied this month, i.e. `diagram_pass: done` (a browser was connected and the diagrams were read) OR there were zero `diagram_pending` docs:
 
     TZ=Asia/Kolkata date +%Y-%m > __REPO__/work-context/state/last_routine_docsync_sweep_success.date
 
-A clean "no drift / nothing to preview" run counts as success — stamp it. If discovery/sweep errored or the channel post could not be delivered, do NOT stamp: leave the marker so the next 30-min fire (today or day 2/3) retries.
+   **Do NOT stamp SUCCESS if `diagram_pass: pending_no_browser`** — leave it unstamped so subsequent fires retry in DIAGRAM-ONLY mode until a Confluence browser is connected and the diagrams are actually read. (In DIAGRAM-ONLY mode, stamp SUCCESS once the diagram follow-up is delivered.)
+
+If discovery/sweep errored or the channel post could not be delivered, stamp NEITHER marker so the next 30-min fire retries the whole thing.
