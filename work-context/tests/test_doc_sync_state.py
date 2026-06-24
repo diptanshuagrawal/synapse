@@ -116,3 +116,43 @@ def test_render_digest_lists_open_findings_and_resolve_guidance(tmp_path, monkey
     out = capsys.readouterr().out
     assert "drift in section A" in out                 # the open finding is listed
     assert "Please resolve each comment" in out        # the reworded resolve guidance
+
+
+# ── _fuzzy_dup / cmd_filter_new --allow-resolved-reflag (the reflag fix) ──────
+
+def test_fuzzy_dup_ignores_other_pages():
+    cand = {"page_id": "p1", "finding_title": "drift in widget_count", "anchor": "widget_count"}
+    rows = [{"page_id": "p2", "finding_title": "drift in widget_count", "anchor": "widget_count",
+             "resolution_status": "open", "comment_id": "c9"}]
+    assert ds._fuzzy_dup(cand, rows) == (None, None)   # different page → never a dup
+
+
+def test_filter_new_allow_resolved_reflag_survives_fuzzy(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr(ds, "DB_PATH", str(tmp_path / "doc_sync.db"))
+    # A finding whose ONLY prior is 'resolved' (shares a snake_case identifier so the
+    # fuzzy stage would otherwise hard-drop it). With --allow-resolved-reflag it must
+    # survive BOTH the exact-key skip AND the fuzzy stage (the bug: it was silently
+    # dropped because _fuzzy_dup matched its own resolved row).
+    fk = ds._finding_key("p", "trd", "widget_count drift")
+    cols = ("comment_id", "finding_key", "page_id", "page_title", "page_url",
+            "comment_url", "owner_account", "severity", "check_type",
+            "finding_title", "anchor", "resolution_status")
+    with ds._conn() as c:
+        c.execute(f"INSERT INTO doc_sync_comments ({','.join(cols)}) "
+                  f"VALUES ({','.join('?' * len(cols))})",
+                  ("c1", fk, "p", "TRD", "purl", "curl", "acc1", "major", "trd",
+                   "widget_count rounding drift", "widget_count drift", "resolved"))
+    cand = [{"page_id": "p", "check_type": "trd", "anchor": "widget_count drift",
+             "finding_title": "widget_count rounding drift"}]
+    cf = tmp_path / "cands.json"
+    cf.write_text(json.dumps(cand))
+
+    def run(reflag):
+        outp = tmp_path / f"out_{reflag}.json"
+        ds.cmd_filter_new(argparse.Namespace(file=str(cf), out=str(outp),
+                                             allow_resolved_reflag=reflag))
+        return json.load(open(outp))["summary"]
+
+    assert run(False)["new"] == 0   # default: a resolved prior suppresses the re-find
+    assert run(True)["new"] == 1    # reflag: the re-find survives the fuzzy stage too
