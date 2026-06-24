@@ -1,16 +1,37 @@
 #!/usr/bin/env bash
 # Project housekeeping: prune old backups, verdicts, handoffs, logs, .DS_Store.
 # Default: dry-run. Pass --apply to actually delete.
+#
+# Modes:
+#   (no arg)   dry-run prune — list what --apply would delete
+#   --apply    apply the deterministic prune (steps 1-7)
+#   --scan     emit FURTHER cleanup candidates as JSON (no deletion); the Claude
+#              classification layer + Slack Approve/Reject act on these. See
+#              derive/housekeeping_scan.py and scheduled-tasks/housekeeping-review.
 
 set -euo pipefail
 
-MODE="dry-run"
-if [[ "${1:-}" == "--apply" ]]; then
-  MODE="apply"
-fi
-
 ROOT="${CONTEXT_ROOT:-$HOME/context}"
 WC="$ROOT/work-context"
+
+MODE="dry-run"
+case "${1:-}" in
+  --apply) MODE="apply" ;;
+  --scan)  MODE="scan" ;;
+esac
+
+# --scan: deterministic candidate emitter, no deletion. Runs the python scanner
+# (facts only) and exits; classification + action happen downstream.
+if [[ "$MODE" == "scan" ]]; then
+  if [[ -x "$WC/.venv/bin/python" ]]; then
+    (cd "$WC" && CONTEXT_ROOT="$ROOT" "$WC/.venv/bin/python" -m derive.housekeeping_scan \
+      --out "$WC/state/housekeeping_candidates.json")
+    exit $?
+  else
+    echo "SKIP: .venv/bin/python not found — cannot run housekeeping_scan" >&2
+    exit 1
+  fi
+fi
 
 # Thresholds in days
 DAYS_BAK=60

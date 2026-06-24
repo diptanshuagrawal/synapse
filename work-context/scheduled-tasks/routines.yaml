@@ -119,3 +119,18 @@ routines:
     # auto-merged, never auto-team. Re-runs the validators + refreshes cached state so cron-status
     # reflects clean. Slack drift/orphan + pipeline-coverage WARNs are REPORTED only (not auto-fixable).
     # NO Anthropic API (scripts strip auth; identity judgment happens in-chat).
+
+  - id: housekeeping-review
+    cron: "0,30 6-13 * * 1"      # Mondays, every 30 min 06:00–13:30 IST (retry until 1 success/WEEK; SKILL.md run-once gate, week-stamp)
+    enabled: true
+    needs: [rollup_channel]       # posts Approve/Reject cleanup cards to #rollup (__ROLLUP_CHANNEL__); Relay bot uses ~/.secrets/relay_slack.env
+    permissions: [Bash]
+    # OWNS the project prune now (the com.example.housekeeping launchd job is disabled): STEP 1
+    # runs bin/housekeeping.sh --apply (the deterministic prune — old backups/verdicts/handoffs/
+    # logs/.DS_Store + stale-MPIM, UNCHANGED). STEP 2 runs --scan → state/housekeeping_candidates.json
+    # (further cleanup candidates as FACTS, no deletion). STEP 3 classifies each in-chat (per
+    # .claude/shared/housekeeping-classify.md) → state/housekeeping_verdicts.json → renders via
+    # derive/housekeeping_render.py → posts Approve/Reject cards to #rollup. SUGGEST-ONLY: the only
+    # unattended deletes are the STEP-1 prune; every further suggestion needs an owner Approve click
+    # (Relay → bin/housekeeping_apply.py, git-safe — never deletes a tracked file). NO Anthropic API.
+    # NOTE: Relay app (@relaybot) must be a member of #rollup for the cards to post.
