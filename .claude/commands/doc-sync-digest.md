@@ -12,7 +12,7 @@ doc-sync comment, updates state, and posts a per-developer "here's what's still 
 roundup to Slack. It posts NOTHING to Confluence — read-only there.
 
 **Options:**
-- `--target channel|dm` — Slack destination. Default `channel` = #cbs-transactions-internal
+- `--target channel|dm` — Slack destination. Default `channel` = the team channel
   (`slack.digest_channel_id`); `dm` = owner DM (`slack.dm_user_id`, test only).
 - `--dry-run` — refresh status + print the digest, but don't post to Slack.
 
@@ -23,7 +23,7 @@ cd $HOME/context/work-context
 ```
 
 - `config/doc_sync.yaml` — Slack target + cc. `slack.digest_channel_id` =
-  #cbs-transactions-internal (default channel target); `slack.dm_user_id` = DM fallback.
+  the team channel (default channel target); `slack.dm_user_id` = DM fallback.
 - `config/people.yaml` — owner canonical → slack_id (the renderer does this).
 - `derive/doc_sync_state.py` — state + renderer. cloudId `YOUR_CONFLUENCE_CLOUD_ID`.
 
@@ -66,7 +66,7 @@ The renderer groups the remaining OPEN comments per developer (most-open first) 
 comment links. If nothing is open, it emits a clean "no pending reviews 🎉" line.
 
 Post the rendered message to the Slack target (`slack_send_message`, `<@slack_id>`
-mentions) — `slack.digest_channel_id` (#cbs-transactions-internal) for `--target channel`,
+mentions) — `slack.digest_channel_id` (the team channel) for `--target channel`,
 `slack.dm_user_id` for `--target dm`. Skip the post on `--dry-run` (print instead).
 
 ## Phase 3 — Chat reply
@@ -80,7 +80,7 @@ the Slack message link.
 - Track only OUR comment_ids (the state table). NEVER count arbitrary page comments —
   pages carry unrelated review threads that must not pollute the per-dev count.
 - Owner/slack ids from config — never hardcode.
-- Default `--target channel` → #cbs-transactions-internal (`slack.digest_channel_id`).
+- Default `--target channel` → the team channel (`slack.digest_channel_id`).
   Use `--target dm` only for testing.
 
 ## Anti-patterns (refuse)
