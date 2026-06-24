@@ -1,6 +1,6 @@
 ---
 name: ingest-autofix
-description: Daily from 16:00 IST (retries every 30 min until it succeeds once) — resolves the ingest validators' "unmapped actor" attribution warnings by looking each actor up in Atlassian and adding a people.yaml mapping. Tiered-auto: the safe class (one org-domain human → org, clear bot/service → external) is applied automatically; the risky class (merge-into-existing-person, possible teammate, ambiguous) is parked for owner review. Posts a run-summary to #rollup.
+description: Daily at 16:00 IST, best-effort (single run, no retries) — resolves the ingest validators' "unmapped actor" attribution warnings by looking each actor up in Atlassian and adding a people.yaml mapping. Tiered-auto: the safe class (one org-domain human → org, clear bot/service → external) is applied automatically; the risky class (merge-into-existing-person, possible teammate, ambiguous) is parked for owner review. Posts a run-summary to #rollup.
 ---
 
 Resolve ingest attribution warnings and post a run-summary to Slack.
@@ -17,21 +17,16 @@ config/people.yaml is gitignored (real names/emails never reach the public repo)
 it is leak-safe. #rollup is the owner's internal channel — real names are fine there (standup
 posts them too).
 
-## RUN-ONCE GATE (idempotent — this routine retries every 30 min until it succeeds once today)
-Before ANY work, run this and obey it:
-
-    MARK=__REPO__/work-context/state/last_routine_ingest_autofix_success.date
-    TODAY=$(TZ=Asia/Kolkata date +%F)
-    if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$TODAY" ]; then echo "GATE: ingest-autofix already succeeded today ($TODAY) — idle"; else echo "GATE: not done today — proceed"; fi
-
-If it prints "already succeeded today" → STOP NOW: do nothing, end the run. Only proceed if it prints "not done today".
+This is a BEST-EFFORT routine: it fires once per day at 16:00 IST and does a single pass.
+There is no run-once gate and no retry — if a step fails, report it in the run output and move
+on; the next scheduled run is tomorrow.
 
 ## STEP 1 — Detect every unmapped actor
     cd __REPO__/work-context && .venv/bin/python derive/unmapped_actors.py --json
 
 Parse the JSON: `by_source.{github,jira,confluence}` each a list of `{actor, count, samples}`.
 - If `n_unmapped_total == 0`: there is nothing to resolve. SKIP to STEP 5 (gather report-only
-  warnings), post a "nothing to fix" summary in STEP 6, then stamp success. Do NOT run apply.
+  warnings), post a "nothing to fix" summary in STEP 6. Do NOT run apply.
 - Otherwise continue.
 
 ## STEP 2 — Resolve identities (this chat session does the judgment — NO script calls an LLM/API)
@@ -126,22 +121,10 @@ Use the slack send-message tool with that channel ID. It renders STANDARD markdo
 - If `n_unmapped_total` was 0 and nothing parked: a single line
   "All ingest actors already scoped — nothing to fix.".
 If the post can't be delivered (bot not in #rollup, channel archived): DO NOT silently fail —
-report the error in this run's output and do NOT stamp success (next fire retries). The bot
-must be invited to #rollup (__ROLLUP_CHANNEL__).
+report the error in this run's output. The bot must be invited to #rollup (__ROLLUP_CHANNEL__).
 
 CRITICAL: this run IS a fresh chat session — the identity judgment (STEP 2) happens HERE, in
 chat. NEVER call the Anthropic API from a script and NEVER let a script classify. Scripts
 strip auth. The only writes are: people.yaml appends (STEP 3), the cached validate JSON
 (STEP 4), the two state JSON files, and the Slack post. Everything else is read-only
 (events.db, Atlassian lookups, config).
-
-## RECORD SUCCESS (final step — gates the 30-min retry)
-ONLY after this run is CONFIRMED complete — detection ran AND apply ran (or there was nothing
-to apply) AND the re-validate step finished AND the summary landed in #rollup — stamp the
-marker so the rest of today's fires idle:
-
-    TZ=Asia/Kolkata date +%F > __REPO__/work-context/state/last_routine_ingest_autofix_success.date
-
-A "nothing to fix" run counts as success — stamp it. If detection/apply/validate errored or
-the summary could not be delivered, do NOT stamp: leave the marker so the next 30-min fire
-retries.
