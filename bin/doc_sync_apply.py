@@ -4,7 +4,7 @@
 The Relay bot (relay_bot.py) calls this when the owner clicks a drift-finding button in
 #doc-sweep. It is NETWORK-capable (unlike the chat/MCP path): it posts the inline Confluence
 comment via the Confluence Cloud REST API using the Atlassian API token, then records the
-result in doc_sync.db. This is the LCS-sweep equivalent of bin/ticketize_apply.py.
+result in doc_sync.db. This is the doc-sweep equivalent of bin/ticketize_apply.py.
 
   --finding-file <path> --key <finding_key> --decision approve|reject [--run-id <id>]
 
@@ -36,10 +36,13 @@ def auth():
 
 
 def host():
+    # Config-driven (work-context/config/sources.yaml is the source of truth);
+    # the fallback is a sanitized placeholder — no real org host in this tracked,
+    # public-mirrored file. Mirrors derive/sources_config.atlassian_host()'s default.
     try:
-        return _yaml(SOURCES_CFG).get("atlassian", {}).get("host", "slicepay.atlassian.net")
+        return _yaml(SOURCES_CFG).get("atlassian", {}).get("host", "your-org.atlassian.net")
     except Exception:
-        return "slicepay.atlassian.net"
+        return "your-org.atlassian.net"
 
 
 def api(method, path, a, body=None):
@@ -60,6 +63,20 @@ def owner_name(canonical):
     except Exception:
         pass
     return canonical or ""
+
+
+def owner_display():
+    """Owner's display name, resolved from config (sources.yaml org.owner_email →
+    matching people.yaml entry) — no hardcoded identity in this public-mirrored file."""
+    try:
+        email = (_yaml(SOURCES_CFG).get("org", {}) or {}).get("owner_email")
+        if email:
+            for p in _yaml(PEOPLE).get("people", []):
+                if p.get("email") == email:
+                    return p.get("name") or p.get("canonical") or ""
+    except Exception:
+        pass
+    return ""
 
 
 def clean_anchor(anchor):
@@ -149,10 +166,8 @@ def main():
 
     cfg = _yaml(DOCSYNC_CFG)
     run_id = args.run_id or data.get("run_id") if isinstance(data, dict) else args.run_id
-    cc_name = owner_name(None) or "owner"
     cc_acc = (cfg.get("slack", {}) or {}).get("cc_account_id")
-    if cc_acc:
-        cc_name = owner_name("diptanshu") or "Diptanshu"
+    cc_name = (owner_display() if cc_acc else "") or "owner"
 
     if args.decision == "reject":
         record(f, f"reject:{args.key}", "", "rejected", run_id)
