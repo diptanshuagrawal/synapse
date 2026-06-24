@@ -86,6 +86,15 @@ PENDING_REPLY_DRAIN_CAP = 40     # max budget-starved bot parents whose replies 
 PENDING_REPLY_MAX_ATTEMPTS = 5   # abandon a queued parent after this many failed drain attempts (broken replies endpoint)
 BOOTSTRAP_LOOKBACK_DAYS = 365    # if channel has null cursor, start fetching from now-N days
 ACTIVE_THREAD_DAYS = 90          # re-drain threads with a reply in the last N days (catches late replies to old parents)
+# Pre-standup sweep (--threads-sweep) tuning. WIDER than steady-state: it must catch a
+# late reply on ANY channel the team actively uses (incl. busy cross-team channels like
+# cbs-public), not just team_involved/oncall (validated miss 2026-06-24).
+SWEEP_ROSTER_DAYS = 14          # sweep any channel a roster member posted in over the last N days
+                                # (aligned with the active-thread window: the missing reply itself
+                                # isn't in the DB yet, so the channel is detected via the member's
+                                # PRIOR activity — 3d was too tight, missed cbs-public's 5-day gap)
+SWEEP_ACTIVE_DAYS = 14          # re-walk threads with known activity in the last N days
+SWEEP_CAP = 200                 # higher per-channel cap (once-daily bounded pass) so busy channels don't starve
 
 
 # Team-involvement check (for ingest_mode: team_involved channels) — moved
@@ -414,17 +423,21 @@ def fetch_threads_capped(
     keep_bot_messages: bool,
     name_resolver,
     subteams_cache: dict[str, str],
+    cap: int = STALE_CAP,
 ) -> tuple[int, int, list[str], bool]:
     """Returns (replies, bot_skipped, errors, hit_cap).
 
-    Caps at STALE_CAP parents; remainder deferred to next fire.
+    Caps at `cap` parents (default STALE_CAP per steady-state fire); the pre-standup
+    sweep passes a higher cap so an old-but-recently-active thread on a BUSY channel
+    isn't starved past the cap (validated 2026-06-24: a late reply on a 9-Jun-rooted
+    #cbs-public thread was ranked below the 50-cap and never re-walked).
     """
     conn = sqlite3.connect(DB_PATH)
     total = 0
     bot_skipped = 0
     errors: list[str] = []
-    truncated = parents[:STALE_CAP]
-    hit_cap = len(parents) > STALE_CAP
+    truncated = parents[:cap]
+    hit_cap = len(parents) > cap
     try:
         for parent_ts in truncated:
             try:
@@ -831,28 +844,50 @@ def write_checked_marks(checked_ids: list[str]) -> None:
 # ── Main ────────────────────────────────────────────────────────────────
 
 
+def channels_with_recent_roster_activity(team_slack_ids: set[str], days: int = SWEEP_ROSTER_DAYS) -> set[str]:
+    """channel_ids where a ROSTER member authored a message in the last `days` — the set the
+    team actually works in (incl. busy cross-team channels like cbs-public). Used to widen the
+    pre-standup sweep beyond team_involved/oncall so late replies there aren't missed."""
+    if not team_slack_ids:
+        return set()
+    from datetime import datetime, timedelta, timezone
+    cutoff = (datetime.now(tz=timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds").replace("+00:00", "Z")
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        ph = ",".join("?" * len(team_slack_ids))
+        rows = conn.execute(
+            f"SELECT DISTINCT channel_id FROM events WHERE source='slack' AND channel_id IS NOT NULL "
+            f"AND ts >= ? AND actor IN ({ph})", (cutoff, *team_slack_ids)).fetchall()
+        return {r[0] for r in rows if r[0]}
+    finally:
+        conn.close()
+
+
 def sweep_channel_threads(client, ch, dry_run, users_cache, name_resolver, subteams_cache) -> dict:
     """PRE-STANDUP SWEEP — re-walk recently-active threads with the 24h drain cooldown
     BYPASSED, so a previous-evening late reply (on a thread whose root has scrolled below
     the channel cursor) lands BEFORE the 06:00 digest. Slack's own ingest only fires
-    12:00–23:00, and the cooldown would otherwise hold the re-walk past standup time
-    (validated miss 2026-06-23: a direct @owner reply on an old thread wasn't ingested until
-    ~12:30 the next day). Scoped by the caller to team_involved + oncall channels."""
+    12:00–23:00, and the cooldown would otherwise hold the re-walk past standup time.
+    Uses a wider active window (SWEEP_ACTIVE_DAYS) + a higher cap (SWEEP_CAP) than steady
+    state so a late reply on a busy cross-team channel isn't starved (validated miss
+    2026-06-24: a 23-Jun #cbs-public reply on a 9-Jun root, ranked below the 50-cap)."""
     cid = ch["id"]
     keep_bot = str(ch.get("keep_bot_messages", "false")).lower() == "true"
     if (ch.get("class") or "") == "oncall":
         keep_bot = True  # the incident bot's ack/resolve replies ARE the on-call signal
-    parents = active_thread_parents(cid, ACTIVE_THREAD_DAYS, ignore_cooldown=True)
+    parents = active_thread_parents(cid, SWEEP_ACTIVE_DAYS, ignore_cooldown=True)
     if not parents:
         return {"id": cid, "swept": 0, "replies_inserted": 0, "errors": []}
-    repl, _bot, errs, _cap = fetch_threads_capped(
+    repl, _bot, errs, hit_cap = fetch_threads_capped(
         client, cid, parents, dry_run, users_cache, keep_bot, name_resolver, subteams_cache,
+        cap=SWEEP_CAP,
     )
     if not dry_run and repl > 0:
         from subprocess import run
         run([".venv/bin/python", "derive/build_thread_summary.py", "--channel", cid],
             cwd=str(_PKG_ROOT), check=False, capture_output=True)
-    return {"id": cid, "swept": min(len(parents), STALE_CAP), "replies_inserted": repl, "errors": errs}
+    return {"id": cid, "swept": min(len(parents), SWEEP_CAP), "replies_inserted": repl,
+            "hit_cap": hit_cap, "errors": errs}
 
 
 def main() -> int:
@@ -891,13 +926,6 @@ def main() -> int:
     else:
         channels = _load_channels_yaml()
 
-    # Pre-standup sweep scopes to the channels where on-call/team late replies matter
-    # (team_involved + oncall) — avoids re-walking every thread in the workspace.
-    if args.threads_sweep:
-        channels = [c for c in channels
-                    if str(c.get("ingest_mode", "")).lower() == "team_involved"
-                    or (c.get("class") or "") == "oncall"]
-
     # Caches once for entire fire
     t0 = time.monotonic()
     print(f"[users] hydrating users.list cache...", flush=True)
@@ -912,13 +940,24 @@ def main() -> int:
     team_subteam_ids = load_team_subteam_ids()
     print(f"[team] {len(team_subteam_ids)} team subteam-ids loaded (from team_subteams.yaml)")
 
+    # Pre-standup sweep scope = team_involved + oncall + ANY channel a roster member posted
+    # in over the last SWEEP_ROSTER_DAYS (catches busy cross-team channels like cbs-public
+    # where the team does real threaded work — validated miss 2026-06-24). Needs team_slack_ids,
+    # so it runs AFTER the roster load.
+    if args.threads_sweep:
+        roster_chans = channels_with_recent_roster_activity(team_slack_ids)
+        channels = [c for c in channels
+                    if str(c.get("ingest_mode", "")).lower() == "team_involved"
+                    or (c.get("class") or "") == "oncall"
+                    or c.get("id") in roster_chans]
+
     log.info("Slack ingest starting. channels=%d dry_run=%s", len(channels), args.dry_run)
     print(f"\ningesting {len(channels)} channel(s)...\n")
     summaries: list[dict] = []
     any_success = False
     checked_ids: list[str] = []
     if args.threads_sweep:
-        print(f"[threads-sweep] cooldown-bypassed re-walk over {len(channels)} team/oncall channel(s)...")
+        print(f"[threads-sweep] cooldown-bypassed re-walk over {len(channels)} team/oncall/roster-active channel(s)...")
     for ch in channels:
         cname = ch.get("name", ch["id"])
         t = time.monotonic()
