@@ -27,11 +27,12 @@ Usage:
     python -m derive.slack_discover_usergroups --json-out state/last_slack_discover_usergroups.json
 
     # apply (owner-driven, explicit IDs) — append to config/team_subteams.yaml
-    python -m derive.slack_discover_usergroups --apply-manager S03JJHDKG2X S0A00JJ0ZQ9
-    python -m derive.slack_discover_usergroups --apply-team    S07LR1N6XN2 S0A1N5GPFLP
+    # (pass the real subteam ids; placeholders shown here)
+    python -m derive.slack_discover_usergroups --apply-manager <subteam-id> [<subteam-id> ...]
+    python -m derive.slack_discover_usergroups --apply-team    <subteam-id> [<subteam-id> ...]
 
     # silence noise so it stops re-surfacing (e.g. org-wide @engineering)
-    python -m derive.slack_discover_usergroups --skip SHJCDS60N
+    python -m derive.slack_discover_usergroups --skip <subteam-id>
 
 Append-only: existing rows + their inline comments are never rewritten. Already
 -configured and skiplisted groups are excluded from proposals.
