@@ -2446,6 +2446,55 @@ def _build_index_v3() -> str:
 INDEX_V3_HTML = _build_index_v3()
 
 
+# ── v4: v3 console split into Status / Insights tabs ──────────────────────────
+# Pure transform of INDEX_V3_HTML. The always-on glance (appbar + verdict +
+# cadence + KPIs) stays pinned; the long scroll below is split into two focused
+# views — Status (source lanes, routines, signal chart, clusters, logs) and
+# Insights (the analytics deck, promoted out of the bottom of the page). Every
+# lane, viz, the cluster pack and logs are preserved, just reorganised.
+_V4_TABS = """<nav class="vtabs" id="vtabs">
+  <button class="vtab on" data-v="vStatus">Status</button>
+  <button class="vtab" data-v="vInsights">Insights</button>
+</nav>"""
+_V4_CSS = """
+.vtabs{display:flex;gap:4px;margin:20px 0 2px;border-bottom:1px solid var(--line-faint);}
+.vtab{background:none;border:0;padding:9px 16px;font:600 13px var(--sans);color:var(--muted);cursor:pointer;position:relative;}
+.vtab:hover{color:var(--text);}
+.vtab.on{color:var(--accent);}
+.vtab.on::after{content:"";position:absolute;left:14px;right:14px;bottom:-1px;height:2px;background:var(--accent);border-radius:2px;}
+.vpanel{display:none;} .vpanel.vpanel-on{display:block;}
+"""
+_V4_JS = """<script>
+(function(){var t=document.getElementById('vtabs');if(!t)return;
+ t.addEventListener('click',function(e){var b=e.target.closest('.vtab');if(!b)return;
+  document.querySelectorAll('.vtab').forEach(function(x){x.classList.toggle('on',x===b);});
+  document.querySelectorAll('.vpanel').forEach(function(p){p.classList.toggle('vpanel-on',p.id===b.dataset.v);});
+  window.scrollTo({top:0,behavior:'auto'});});})();
+</script>"""
+
+
+def _build_index_v4() -> str:
+    """v3 visuals + a Status/Insights tab split. Falls back to v3 on any miss."""
+    html = INDEX_V3_HTML
+    html = html.replace("<title>ingest console · v3</title>", "<title>ingest console · v4</title>")
+    html = html.replace("</style>", _V4_CSS + "</style>", 1)
+    html = html.replace(
+        '<div class="kpis" id="kpis"></div>\n\n<div class="sec"><span class="dot"></span><h2>Sources &amp; pipelines</h2>',
+        '<div class="kpis" id="kpis"></div>\n' + _V4_TABS
+        + '\n<div id="vStatus" class="vpanel vpanel-on">\n<div class="sec"><span class="dot"></span><h2>Sources &amp; pipelines</h2>')
+    html = html.replace(
+        '<div class="sec"><span class="dot"></span><h2>Insights</h2>',
+        '</div><!--/vStatus-->\n<div id="vInsights" class="vpanel">\n<div class="sec"><span class="dot"></span><h2>Insights</h2>')
+    html = html.replace(
+        '<div class="insights" id="insights"><div class="panel span2" style="text-align:center;color:var(--muted)">loading insights…</div></div>',
+        '<div class="insights" id="insights"><div class="panel span2" style="text-align:center;color:var(--muted)">loading insights…</div></div>\n</div><!--/vInsights-->')
+    html = html.replace("</body>", _V4_JS + "\n</body>", 1)
+    return html
+
+
+INDEX_V4_HTML = _build_index_v4()
+
+
 # Standalone full-list view for every Slack channel (linked from the SLACK
 # lane's per-channel detail "view all" link). Reuses /api/slack-channels, which
 # already returns the complete list — only the lane render caps at 40.
@@ -3304,6 +3353,8 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         if path == "/" or path == "/index.html" or path == "/v3":
             self._send_html(INDEX_V3_HTML)   # v3 is the default
+        elif path == "/v4":
+            self._send_html(INDEX_V4_HTML)
         elif path == "/v2":
             self._send_html(INDEX_V2_HTML)
         elif path == "/v1":
