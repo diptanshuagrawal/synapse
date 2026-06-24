@@ -81,3 +81,39 @@ def test_channel_label():
     assert rl._channel_label("#already", None) == "#already"
     assert rl._channel_label(None, "C0X") == "#C0X"
     assert rl._channel_label("x" * 40, None).endswith("…")
+
+
+# ── _thread_root_ts (slack id → thread root) ─────────────────────────────────
+
+def test_thread_root_ts_reply_id_uses_encoded_root():
+    # 4-part reply id: slack:<cid>:<root_ts>:<reply_ts> → the root_ts.
+    assert ld._thread_root_ts("slack:C0X:1700000000.0001:1700000050.0009", None) \
+        == "1700000000.0001"
+
+
+def test_thread_root_ts_root_with_thread_col():
+    # 3-part root id + a thread_ts column → the column wins over own ts.
+    assert ld._thread_root_ts("slack:C0X:1700000000.0001", "1699999999.0000") \
+        == "1699999999.0000"
+
+
+def test_thread_root_ts_root_without_thread_col_is_own_ts():
+    # 3-part root id, no thread_ts → it is itself a root → own ts.
+    assert ld._thread_root_ts("slack:C0X:1700000000.0001", None) == "1700000000.0001"
+
+
+# ── LEAVE_PLAN_PROMPT (leave-plan thread detector) ───────────────────────────
+
+@pytest.mark.parametrize("text", [
+    "please share your leave plan for July",
+    "Leave Plan thread",
+    "drop your leave calendar here",
+    "leaveplan",
+])
+def test_leave_plan_prompt_matches(text):
+    assert ld.LEAVE_PLAN_PROMPT.search(text)
+
+
+@pytest.mark.parametrize("text", ["on leave today", "I'm off tomorrow", "plan the sprint"])
+def test_leave_plan_prompt_rejects_plain_leave(text):
+    assert not ld.LEAVE_PLAN_PROMPT.search(text)
