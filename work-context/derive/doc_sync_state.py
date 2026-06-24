@@ -327,6 +327,12 @@ def cmd_filter_new(args):
     suppress = {}
     for r in rows:
         suppress.setdefault(r["finding_key"], set()).add(r["resolution_status"])
+    # When re-flagging resolved drift, a resolved prior must not fuzzy-drop the re-find:
+    # it already passed the exact-key reflag exception (step 1), so exclude resolved rows
+    # from the fuzzy candidate set — otherwise _fuzzy_dup hard-matches the finding against
+    # its own resolved row and silently drops it, defeating --allow-resolved-reflag.
+    fuzzy_rows = ([r for r in rows if r["resolution_status"] != "resolved"]
+                  if args.allow_resolved_reflag else rows)
     new, skipped = [], []
     for cand in cands:
         fk = cand.get("finding_key") or _finding_key(
@@ -341,7 +347,7 @@ def cmd_filter_new(args):
                             "dup_kind": "exact"})
             continue
         # 2) fuzzy match against same-page rows (reworded re-finds the exact key misses)
-        kind, match = _fuzzy_dup(cand, rows)
+        kind, match = _fuzzy_dup(cand, fuzzy_rows)
         if kind == "hard":
             skipped.append({"finding_key": fk, "page_id": cand.get("page_id"),
                             "anchor": cand.get("anchor"),
