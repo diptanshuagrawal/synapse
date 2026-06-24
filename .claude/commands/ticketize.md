@@ -146,8 +146,11 @@ change/PR, status `Change Approved` / `Implementation Reviewed` / `Released`). I
 **E. Owner-directed ask (net-new work asked of YOU, the manager).**
 The owner is dropped from the roster everywhere else; ask-scanning is the ONE exception —
 stakeholders pile net-new work onto the manager too. Scan the gather's
-`OWNER FOCUS → OWNER @-asks` block (direct `<@owner>` + owner-subteam pings, already
-emitted — no gather change). **Action-item bar:** propose any ask that hands the
+`OWNER FOCUS → OWNER @-asks` block (direct `<@owner>` + owner-subteam pings). Each row is
+tagged `ask` (explicit ask phrasing) or `maybe` (owner @-mentioned, no ask words). **Classify
+the `maybe` rows too — never skip them on the tag alone:** a real ask phrased as a statement
+("we need to plan this", "this wasn't done — we have to do it", "who is the DRI for X") lands
+in `maybe`, and that is exactly the class the old keyword filter silently dropped. **Action-item bar:** propose any ask that hands the
 owner/team a **concrete action item** — a deliverable or task with a clear thing-to-do
 and (usually) an owner + ETA — *regardless of flavour*: build, fix, investigation, **or**
 an operational / compliance / security / CI / infra-rollout / audit / onboarding task.
@@ -206,7 +209,13 @@ For each kept gap, pre-fill all fields so approval is one edit:
   raw Slack quote).
 - **type** — `Task` (default) | `Bug` (a defect/failure) | `Sub-task` (clearly under a
   parent epic). Never `Epic`, never `CMR` (CMRs are ops, raised by their own flow).
-- **reporter** — the roster member whose stream surfaced the gap (always set this).
+- **reporter** — the person whose stream surfaced the gap (always set this). **NEVER invent a
+  name.** Resolve the `from=`/author slack ID deterministically: the gather already renders it
+  as `from=ID(Name)` (from `people.yaml`) — copy that name verbatim. If the gather shows a bare
+  ID with no `(Name)` (person not in `people.yaml`), use the `<@ID|name>` label from the source
+  message body; if neither resolves, keep the **raw `<@ID>`/handle** — do NOT guess a human name
+  from the ID. A confabulated reporter once shipped to a real ticket (a bare `from=<id>` org
+  stakeholder was assigned a wrong, invented human name); this rule + the gather resolver close it.
 - **assignee** — the OWNER of the work, which is NOT automatically the reporter:
   - class-A adhoc *work* (they authored the PR/commit/effort) → assignee = that member.
   - class-C CMR-no-ticket → assignee = the CMR's assignee.
@@ -234,7 +243,13 @@ For each kept gap, pre-fill all fields so approval is one edit:
   `release-no-cmr` (D) | `owner-ask` (E). Drives rendering (§1f), placement, and the APPLY action.
 - **links_cmr** — for class C: the CMR key to link (`relates to`) on create. For D:
   the release evidence (PR/ticket) the missing CMR should cover.
-- **evidence** — the PR URL and/or Slack thread permalink the gap came from.
+- **evidence** — the PR URL and/or Slack thread permalink the gap came from. **It must be the
+  ACTUAL source of this gap** — the same thread/PR the `reporter`, `summary` and `why` describe.
+  Cross-check before writing: the evidence thread's root/author should match the `reporter`, and
+  its content should match the `summary`. Never paste a link from a different thread. (2026-06-24:
+  a candidate carried an evidence link to an unrelated "lien security" thread while its summary
+  claimed a "CRM static-token" ask — pure mis-grounding; it was dropped on verification.) If you
+  cannot point to one concrete matching artifact, DROP the candidate — do not ship a guessed link.
 - **desc** — the **dev-facing ticket body**, authored as a `desc: |` block scalar (see
   §1f). This is what becomes the Jira description on APPLY (manual or bot-click), so it
   MUST be a complete, self-contained spec a dev can pick up cold — NOT the maker `why`
@@ -243,7 +258,17 @@ For each kept gap, pre-fill all fields so approval is one edit:
   (a `- [ ] ` checklist of concrete actions pulled from the evidence; note anything
   already in flight to verify-not-redo) · **References** (every Slack thread permalink,
   PR/commit URL, CMR key, doc/tracker link from the evidence — the dev must reach the
-  source without asking) · **Acceptance criteria** (the observable done-state). Use
+  source without asking) · **Acceptance criteria** (the observable done-state).
+  **Write the body for the END-PERFORMER, not the manager — class-E owner-asks ESPECIALLY.**
+  The ticket describes the hands-on work the eventual **assignee** (the dev / DRI) will do.
+  When the originating ask is a coordination / delegation verb aimed at the owner — "tag the
+  DRI", "assign someone", "nominate", "raise it to your team", "initiate", "get your team to…"
+  — that manager step is NOT the work and is usually already done by the time the ticket lands.
+  Do NOT transcribe it as a Requirement. **Reframe to the underlying deliverable the assignee
+  must produce**, e.g. ask "please tag a DRI for VAPT" → ticket "Drive the VAPT engagement to
+  closure for our services" (confirm scope, hand over what testers need, own remediation).
+  Strip every EM-layer verb and owner reference ("you", owner name, "the team") from
+  Context / Requirements / Acceptance — those are owner-facing and belong only in `why`. Use
   `[label](url)` or bare URLs (both render clickable); resolve `<@U…>`/`<!subteam^…>`
   to plain names where it helps. The apply renderer (`bin/ticketize_apply.py`) supports
   `##`/`###` headings, `- `/`* ` bullets, `- [ ]`/`- [x]` checkboxes, `---` rules,
@@ -515,6 +540,9 @@ reply — acceptable because your reply is the gate, but enable it deliberately,
   / audit / onboarding), incl. all-EM broadcasts that assign a task with a deadline; drop
   only approvals / reviews / status pings / admin / true FYIs, and anything in-flight work
   already covers. Default assignee = owner, editable to a suggested dev.
+- Ticket body is for the END-PERFORMER, never the manager: reframe coordination/delegation
+  asks ("tag the DRI", "raise to your team", "initiate") into the assignee's actual deliverable;
+  strip EM verbs + owner refs from the desc (they live only in `why`). (§1e)
 - On-call is exempt: drop every candidate assigned to the current on-call — their work
   is pre-tracked by the standing 5-SP oncall placeholder ticket.
 - Reporter ≠ assignee. The member who surfaced a reported defect is the reporter; never

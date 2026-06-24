@@ -53,6 +53,39 @@ def load_roster():
     return out
 
 
+def load_people_names():
+    """Full slack_id -> display name across ALL scopes (roster / org / external) from
+    people.yaml — so any actor ID renders as a real name and is NEVER guessed downstream.
+    (Born 2026-06-24: a DETECT pass confabulated a reporter's human name for a bare
+    `from=<id>` it couldn't resolve, and that guess shipped to a Jira ticket. Resolving the
+    ID in the gather removes the guess at the source.)"""
+    import yaml
+    try:
+        with open(PEOPLE) as fh:
+            d = yaml.safe_load(fh)
+    except Exception:
+        return {}
+    people = d.get("people", d)
+    out = {}
+    for p in (people if isinstance(people, list) else people.values()):
+        if isinstance(p, dict) and p.get("slack_id"):
+            out[p["slack_id"]] = p.get("name") or p.get("canonical") or p["slack_id"]
+    return out
+
+
+def actor_label(actor, sl_names, body=""):
+    """Render an actor slack_id as `ID(Name)`. Resolution order: people.yaml, then the
+    Slack `<@ID|name>` label embedded in the message body. Unknown -> raw ID, NEVER an
+    invented name. Downstream skills must use THIS name, not guess one from the ID."""
+    if not actor:
+        return actor or "?"
+    nm = sl_names.get(actor)
+    if not nm:
+        m = re.search(rf"<@{re.escape(actor)}\|([^>]+)>", body or "")
+        nm = m.group(1) if m else None
+    return f"{actor}({nm})" if nm else actor
+
+
 def owner_subteams():
     """Map of Slack subteam ping-token -> tier for subteams the OWNER belongs to
     (rows flagged `owner_member: true` in config/team_subteams.yaml). tier ∈
@@ -478,6 +511,7 @@ def main():
     chname = load_channel_names()
     # Roster slack_id -> canonical (thread-root author display, §2.3).
     sl2canon_all = {roster[k].get("slack_id"): k for k in roster if roster[k].get("slack_id")}
+    sl_names = load_people_names()  # full id->name (all scopes) so no `from=` ID is ever guessed downstream
     roster_slids = set(sl2canon_all)
     # Root-message context for every thread a ROSTER member replied in this window
     # (§2.3 — render needs the root to say WHAT was resolved, not just the reply).
@@ -682,7 +716,7 @@ def main():
         out.append(f"-- SLACK open @-asks (unanswered, 2d->window-end) ({len(asks)}) --")
         for ts, ch, thr, actor, body, subj in asks[-6:]:
             snip = re.sub(r"\s+", " ", body or "")[:120]
-            out.append(f"  [{ts[:16]}] ch={ch} thr={thr} from={actor} link={slack_link(subj)} :: {snip}")
+            out.append(f"  [{ts[:16]}] ch={ch} thr={thr} from={actor_label(actor, sl_names, body)} link={slack_link(subj)} :: {snip}")
 
         # ON-CALL OPS (§6) — only for the on-call member. Delegated to gather_oncall_ops:
         # bot-tracked incidents (org-wide, via the @oncall handle + oncall bot) + db-oncall
@@ -711,7 +745,7 @@ def main():
         out.append(f"-- THREADS engaged (substantive in-window replies; root context; heaviest first) ({len(mem_threads)}) --")
         for (ch, thr), reps in ranked[:12]:
             ractor, rbody = roots.get(f"slack:{ch}:{thr}", (None, ""))
-            rauthor = sl2canon_all.get(ractor, ractor or "?")
+            rauthor = sl2canon_all.get(ractor) or actor_label(ractor, sl_names, rbody)
             role = "RESOLVED" if any(RESOLVE_RE.search(b) for b in reps) else "involved"
             tags = ("RESOLVED" if role == "RESOLVED" else "involved")
             if len(reps) >= 3:
@@ -761,7 +795,16 @@ def main():
             continue
         if thr and thr in o_answered:
             continue
-        if NOISE_RE.search(b) or not ASK_RE.search(b):
+        # Drop HARD non-asks only — system noise + pure acks. A leave notice that merely
+        # cc's the owner is not an ask, UNLESS it also carries ask phrasing ("on leave, can
+        # you cover X?"). Everything else SURVIVES: the ask/not-ask call belongs to the
+        # consuming skill's model (standup triages, ticketize §1e Class-E classifies), not to
+        # a brittle keyword list — a real ask phrased as a statement ("we need to plan this",
+        # "this wasn't done, we have to do it") matches no ASK_RE word yet IS net-new work.
+        if NOISE_RE.search(b) or TRIVIAL_RE.match(b):
+            continue
+        ask = bool(ASK_RE.search(b))  # confidence HINT for ranking + the ask/maybe tag — NOT a gate
+        if LEAVE_RE.search(b) and not ask:
             continue
         # direct <@owner> OR a managerial-group ping = owner's own reply; a DEV-group ping
         # (no managerial/direct) = route-to-dev. Managerial wins when both are pinged.
@@ -769,7 +812,7 @@ def main():
             how = "direct" if direct else "subteam-mgr"
         else:
             how = "subteam-dev"
-        o_asks.append((ts, ch, thr, actor, b, subj, how))
+        o_asks.append((ts, ch, thr, actor, b, subj, how, ask))
     # Collapse re-pings of the SAME thread to the latest (count preserved in o_ping) so
     # the queue isn't cluttered by every reminder copy — re-sort by ts for display.
     _seen = {}
@@ -777,11 +820,27 @@ def main():
         ts, ch, thr = row[0], row[1], row[2]
         _seen[(ch, thr) if thr else (ch, ts)] = row
     o_asks = sorted(_seen.values(), key=lambda r: r[0])
-    out.append(f"-- OWNER @-asks (your reply pending = direct/subteam-mgr; subteam-dev = route to a dev; {OWNER_ASK_LOOKBACK_DAYS}d->window-end) ({len(o_asks)}) --")
-    for ts, ch, thr, actor, body, subj, how in o_asks[-15:]:
+    # Confidence-tiered display so a REAL ask is never truncated by the cap. Rows with
+    # explicit ask phrasing (`ask`) or an escalating re-ping are ALWAYS shown; the un-phrased
+    # `maybe` tail (owner @-mentioned, no ask words — the consuming skill must classify) is
+    # capped to the most recent. The old flat `[-15:]` silently dropped real asks once a busy
+    # window held >15 (validated: 18 ask-phrased owner mentions in a single 5d window).
+    def _hot(r):
+        return r[7] or (r[2] and o_ping[(r[1], r[2])] >= 2)
+    likely = [r for r in o_asks if _hot(r)]
+    maybe = [r for r in o_asks if not _hot(r)]
+    MAYBE_CAP = 12
+    shown = likely + maybe[-MAYBE_CAP:]
+    hidden = len(maybe) - min(len(maybe), MAYBE_CAP)
+    hnote = f"; +{hidden} older maybe hidden" if hidden else ""
+    out.append(f"-- OWNER @-asks (reply pending = direct/subteam-mgr; subteam-dev = route to a dev; "
+               f"{OWNER_ASK_LOOKBACK_DAYS}d->window-end) ({len(o_asks)} = {len(likely)} ask / {len(maybe)} maybe{hnote}) --")
+    out.append("   tag `ask`=explicit ask phrasing · `maybe`=owner @-mentioned, no ask words → "
+               "CLASSIFY each (real action-item vs FYI / cc / status / approval); never assume from the tag alone")
+    for ts, ch, thr, actor, body, subj, how, ask in sorted(shown, key=lambda r: r[0]):
         snip = re.sub(r"\s+", " ", body or "")[:160]
         esc = f" escalating×{o_ping[(ch, thr)]}" if thr and o_ping[(ch, thr)] >= 2 else ""
-        out.append(f"  [{ts[:16]}] via={how}{esc} ch={ch} thr={thr} from={actor} link={slack_link(subj)} :: {snip}")
+        out.append(f"  [{ts[:16]}] via={how} {'ask' if ask else 'maybe'}{esc} ch={ch} thr={thr} from={actor_label(actor, sl_names, body)} link={slack_link(subj)} :: {snip}")
 
     # (A2) Confluence @-mentions of the owner (modern mentions store ri:account-id=<acct>;
     # legacy ri:userkey mentions can't be matched without the owner's userkey and are
@@ -837,7 +896,7 @@ def main():
     out.append(f"-- DAY SIGNALS: release/deploy slack callouts ({len(rel_msgs)}) --")
     for actor, ts, ch, thr, body, subj in rel_msgs[:8]:
         snip = re.sub(r"\s+", " ", body or "")[:140]
-        out.append(f"  [{hhmm(ts)}] by={actor} ch={ch} link={slack_link(subj)} :: {snip}")
+        out.append(f"  [{hhmm(ts)}] by={actor_label(actor, sl_names, body)} ch={ch} link={slack_link(subj)} :: {snip}")
 
     print("\n".join(out))
 
