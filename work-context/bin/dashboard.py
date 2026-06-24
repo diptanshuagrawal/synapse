@@ -3416,12 +3416,12 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         path = u.path
         q = parse_qs(u.query)
-        if path == "/" or path == "/index.html" or path == "/v3":
-            self._send_html(INDEX_V3_HTML)   # v3 is the default
+        if path == "/" or path == "/index.html" or path == "/v5":
+            self._send_html(INDEX_V5_HTML)   # v5 (exception-first) is the default
+        elif path == "/v3":
+            self._send_html(INDEX_V3_HTML)
         elif path == "/v4":
             self._send_html(INDEX_V4_HTML)
-        elif path == "/v5":
-            self._send_html(INDEX_V5_HTML)
         elif path == "/v2":
             self._send_html(INDEX_V2_HTML)
         elif path == "/v1":
