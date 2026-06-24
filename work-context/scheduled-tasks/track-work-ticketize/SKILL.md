@@ -20,6 +20,18 @@ STEP 0 — Resolve a yaml-capable python (the interactive/cron shell may pick a 
   PY=$(for p in /opt/homebrew/bin/python3 python3 /usr/local/bin/python3; do "$p" -c 'import yaml' 2>/dev/null && { echo "$p"; break; }; done)
 Use $PY for every python call.
 
+STEP 0.5 — Shared pre-gather slack thread sweep (freshness; best-effort, once/day):
+Ticketize gathers from events.db, so yesterday's late thread-replies must be ingested
+first (same need as /standup — both fire ~06:00–06:15). The sweep is gated by a dated
+marker: whichever of standup / ticketize runs FIRST sweeps + stamps; the other skips
+(events.db is the shared cache). So ticketize is NOT silently dependent on standup having
+run. Just call the shared script before the gather:
+
+    bash __REPO__/bin/threads_sweep_once.sh
+
+Best-effort: it always exits 0 and never blocks DETECT; stamps the marker only on a clean
+sweep, so a failed sweep is retried next fire.
+
 STEP 1 — Target window (previous WORKING day, IST):
 - Mon → last Friday; Tue–Fri → yesterday. (Sat/Sun never fire — cron is Mon–Fri.)
 - Call the resolved date <date> (YYYY-MM-DD).
