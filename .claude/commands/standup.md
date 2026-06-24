@@ -456,7 +456,7 @@ first:
     - `via=subteam-mgr` — a ping of a **managerial** user-group the owner belongs to
       (tech-managers, cbs-ems, cbs-tech-leads, incident-commanders…). These are the owner's
       own asks — keep them here.
-    - `via=subteam-dev` — a ping of the **dev-level team handle** (cbs-transaction-accounting-devs).
+    - `via=subteam-dev` — a ping of the **dev-level team handle**.
       These are usually NOT the owner's personal reply — they go in the separate **To route /
       delegate** bucket below, not here.
   So for THIS bucket keep only `direct` + `subteam-mgr` that are real asks of *him* (decision,

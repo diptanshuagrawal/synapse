@@ -3,7 +3,7 @@ name: leave-plan-reminder
 description: 1st of every even month (Feb/Apr/Jun/Aug/Oct/Dec) at 10:00 IST — posts a team leave-plan reminder to the leave-plan channel asking the subteam to update their leave plan for the NEXT two months.
 ---
 
-Post the recurring team leave-plan reminder to the Slack channel #cbs-transaction-internal
+Post the recurring team leave-plan reminder to the leave-plan Slack channel
 (channel_id: `__LEAVE_PLAN_CHANNEL__`) using the Slack MCP `slack_send_message`.
 
 Working dir: __REPO__
@@ -22,7 +22,7 @@ text, keep the literal subteam token verbatim so Slack renders the group ping):
 STEP 3 — Confirm it posted and output the returned message link.
 
 HARD RULES:
-- Target is the real channel `__LEAVE_PLAN_CHANNEL__` (#cbs-transaction-internal) — this is LIVE and
+- Target is the real channel `__LEAVE_PLAN_CHANNEL__` — this is LIVE and
   pings the subteam. Post exactly once.
 - Do NOT add anything beyond the single line above. No greetings, no signature.
 - Keep the raw `<!subteam^__LEAVE_PLAN_SUBTEAM__>` mention verbatim so Slack renders the group ping.
