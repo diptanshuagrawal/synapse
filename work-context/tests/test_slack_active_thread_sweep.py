@@ -158,3 +158,30 @@ def test_sweep_channel_threads_pulls_late_reply(app_db, patch_config, monkeypatc
         assert n == 1, "sweep should have landed the late reply"
     finally:
         conn.close()
+
+
+# ── widened sweep scope: roster-active channels (incl. busy cross-team) ──
+
+def test_channels_with_recent_roster_activity(app_db, db_conn):
+    recent = _iso(dt.timedelta(days=-2))
+    old = "2026-01-01T00:00:00Z"
+    _insert(db_conn, id="slack:C0RECENT:1", event_type="thread_reply", ts=recent,
+            channel_id="C0RECENT", actor="U0MEMBER")        # roster, in window → include
+    _insert(db_conn, id="slack:C0OLD:1", event_type="thread_reply", ts=old,
+            channel_id="C0OLD", actor="U0MEMBER")           # roster, too old → exclude
+    _insert(db_conn, id="slack:C0OTHER:1", event_type="thread_reply", ts=recent,
+            channel_id="C0OTHER", actor="U0OTHER")          # not roster → exclude
+    chans = app.channels_with_recent_roster_activity({"U0MEMBER"}, days=14)
+    assert "C0RECENT" in chans
+    assert "C0OLD" not in chans
+    assert "C0OTHER" not in chans
+    assert app.channels_with_recent_roster_activity(set(), days=14) == set()
+
+
+def test_fetch_threads_capped_respects_cap(app_db):
+    # cap truncates the parent list (sweep passes a higher cap so busy channels don't starve)
+    client = _FakeClient(replies={})
+    _repl, _bot, _err, hit = app.fetch_threads_capped(
+        client, "C0X", ["a", "b", "c"], dry_run=True, users_cache={},
+        keep_bot_messages=False, name_resolver=None, subteams_cache={}, cap=2)
+    assert hit is True                                       # 3 parents > cap 2 → capped
