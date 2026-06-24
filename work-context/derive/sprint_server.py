@@ -73,7 +73,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": str(e)}).encode())
             return
         if self.path in ("/", ""):
-            self.path = "/sprint-planner.html"
+            self.path = "/sprint-planner-v2.html"   # restructured workspace is the default
         return super().do_GET()
 
     def do_POST(self):
