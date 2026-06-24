@@ -33,6 +33,43 @@ def _root():
     return subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip()
 
 
+def _config_values(root):
+    """Scalar identity values configured in the REAL gitignored config/sources.yaml
+    (email domain, host, project keys, repos, team names/title, channel ids,
+    workspace, handles). Parsed with plain regex (no PyYAML — this hook runs under
+    bare system python); values only, never keys or comment prose. Used by `audit`
+    to flag any identity value the denylist does not yet cover, so a human curates
+    a precise (word-boundaried) pattern. NOT auto-promoted to patterns: blanket
+    blocking over-reaches badly (generic tokens like a 'slice' handle-prefix match
+    English prose / JS .slice(); the MCP-server uuid lives in tracked settings.json).
+    """
+    fp = os.path.join(root, "work-context", "config", "sources.yaml")
+    if not os.path.exists(fp):
+        return []
+    vals, seen = [], set()
+    for raw in open(fp, encoding="utf-8", errors="replace"):
+        line = raw.rstrip("\n")
+        m = re.match(r"^\s*[\w.\-]+:\s*(.*)$", line)        # key: value
+        if m:
+            rhs = m.group(1)
+        elif re.match(r"^\s*-\s+", line):                   # - list item
+            rhs = re.sub(r"^\s*-\s+", "", line)
+        else:
+            continue
+        quoted = re.findall(r'"([^"]+)"|\'([^\']+)\'', rhs)
+        if quoted:
+            found = [a or b for a, b in quoted]
+        else:
+            bare = rhs.split(" #", 1)[0].strip().strip("[]")  # drop inline comment / flow brackets
+            found = [bare] if bare and not bare.startswith("#") else []
+        for v in found:
+            v = v.strip()
+            if len(v) >= 4 and v not in seen:
+                seen.add(v)
+                vals.append(v)
+    return vals
+
+
 def _load_patterns(root):
     # Two tiers:
     #   HARD = real org tokens (.publish-denylist.txt). A match is ALWAYS a leak —
@@ -152,15 +189,39 @@ def cmd_range(root, rx, new, base):
     return _report(content_hits, name_hits)
 
 
+def cmd_audit(root, rx):
+    """Drift check: list real config identity values NOT covered by any denylist
+    pattern. These are the candidates that could slip into a tracked file undetected
+    (how a newly-added team display name slipped past). Informational — prints a
+    suggested entry and exits 0 so it can run in a routine without blocking; a human
+    adds a precise pattern to .publish-denylist.txt.
+    """
+    uncovered = []
+    for v in _config_values(root):
+        if not any(r.search(v) for _p, r, _h in rx):
+            uncovered.append(v)
+    if uncovered:
+        print("leak-gate audit: config identity NOT covered by the denylist "
+              "(add a precise, word-boundaried pattern to .publish-denylist.txt):",
+              file=sys.stderr)
+        for v in uncovered:
+            print(f"   uncovered: {v!r}   e.g.  \\b{re.escape(v)}\\b", file=sys.stderr)
+    else:
+        print("leak-gate audit: all config identity values are covered.", file=sys.stderr)
+    return 0
+
+
 def main():
     if len(sys.argv) < 2:
-        print("usage: leak_scan.py staged | range <new> [<base>]", file=sys.stderr)
+        print("usage: leak_scan.py staged | range <new> [<base>] | audit", file=sys.stderr)
         return 2
     root = _root()
     rx = _load_patterns(root)
+    mode = sys.argv[1]
+    if mode == "audit":
+        return cmd_audit(root, rx)
     if not rx:
         return 0  # no patterns -> nothing to enforce
-    mode = sys.argv[1]
     if mode == "staged":
         return cmd_staged(root, rx)
     if mode == "range":
