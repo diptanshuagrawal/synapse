@@ -2495,6 +2495,71 @@ def _build_index_v4() -> str:
 INDEX_V4_HTML = _build_index_v4()
 
 
+# ── v5: exception-first health view ───────────────────────────────────────────
+# Builds on v4 (tabs). Adds a compact health grid at the top of Status — one chip
+# per source, problems first, colour = state — and COLLAPSES healthy lane cards to
+# just their header so anomalies are the only thing drawing detail. Click a chip
+# (or a collapsed card's header) to drill in. Reads the rendered `data-state` on
+# each `.lane`, so it needs no new data — every field survives in the drill-down.
+_V5_CSS = """
+.healthgrid{display:flex;flex-wrap:wrap;gap:7px;margin:14px 0 16px;}
+.hchip{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line-faint);background:var(--panel);
+  border-radius:999px;padding:6px 13px;font:600 11.5px var(--sans);color:var(--muted);cursor:pointer;transition:border-color .12s,color .12s,opacity .12s;}
+.hchip:hover{border-color:var(--muted);color:var(--text);opacity:1;}
+.hchip .hd{width:8px;height:8px;border-radius:50%;background:var(--green);flex:none;}
+.hchip b{font:500 10px var(--mono);text-transform:uppercase;opacity:.6;}
+.hchip.warn{color:var(--yellow);border-color:var(--warn-line);} .hchip.warn .hd{background:var(--yellow);}
+.hchip.fail{color:var(--red);border-color:var(--bad-line);} .hchip.fail .hd{background:var(--red);}
+.hchip.ok{opacity:.58;}
+#lanes .lane .chd{cursor:pointer;}
+#lanes .lane.collapsed > *:not(.spine):not(.chd){display:none!important;}
+"""
+_V5_RENDERHEALTH = """function _laneName(l){var n=l.querySelector('.nm');if(!n)return '';
+  return (n.childNodes[0]?n.childNodes[0].textContent:n.textContent).trim();}
+function renderHealth(){
+  var lanes=[].slice.call(document.querySelectorAll('#lanes .lane'));
+  var rank={fail:0,warn:1,ok:2};
+  var chips=lanes.map(function(l){return {st:(l.getAttribute('data-state')||'ok'),nm:_laneName(l),
+    ic:((l.querySelector('.ic')||{}).textContent||'')};})
+    .sort(function(a,b){return (rank[a.st]==null?2:rank[a.st])-(rank[b.st]==null?2:rank[b.st]);});
+  var hg=document.getElementById('healthgrid');
+  if(hg)hg.innerHTML=chips.map(function(c){return '<button class="hchip '+c.st+'" data-nm="'+c.nm+
+    '"><span class="hd"></span><b>'+c.ic+'</b> '+c.nm+'</button>';}).join('');
+  lanes.forEach(function(l){l.classList.toggle('collapsed',(l.getAttribute('data-state')||'ok')==='ok');});
+}
+"""
+_V5_CLICK_JS = """<script>
+document.addEventListener('click',function(e){
+  var chip=e.target.closest&&e.target.closest('.hchip');
+  if(chip){var nm=chip.getAttribute('data-nm');
+    var lane=[].slice.call(document.querySelectorAll('#lanes .lane')).filter(function(l){return _laneName(l)===nm;})[0];
+    if(lane){lane.classList.remove('collapsed');lane.scrollIntoView({behavior:'smooth',block:'center'});
+      lane.style.transition='box-shadow .2s';lane.style.boxShadow='0 0 0 2px var(--accent)';
+      setTimeout(function(){lane.style.boxShadow='';},1100);}
+    return;}
+  var chd=e.target.closest&&e.target.closest('#lanes .lane .chd');
+  if(chd){var l=chd.closest('.lane');if(l)l.classList.toggle('collapsed');}
+});
+</script>"""
+
+
+def _build_index_v5() -> str:
+    """v4 + exception-first health grid & collapsed healthy lanes."""
+    html = INDEX_V4_HTML
+    html = html.replace("<title>ingest console · v4</title>", "<title>ingest console · v5</title>")
+    html = html.replace("</style>", _V5_CSS + "</style>", 1)
+    html = html.replace('<div class="grid" id="lanes"></div>',
+                        '<div class="healthgrid" id="healthgrid"></div>\n<div class="grid" id="lanes"></div>')
+    html = html.replace('function renderVerdict(s){', _V5_RENDERHEALTH + 'function renderVerdict(s){')
+    html = html.replace('renderVerdict(s); renderKpis(s, slack, leaves); renderCadence();',
+                        'renderVerdict(s); renderKpis(s, slack, leaves); renderCadence(); renderHealth();')
+    html = html.replace("</body>", _V5_CLICK_JS + "\n</body>", 1)
+    return html
+
+
+INDEX_V5_HTML = _build_index_v5()
+
+
 # Standalone full-list view for every Slack channel (linked from the SLACK
 # lane's per-channel detail "view all" link). Reuses /api/slack-channels, which
 # already returns the complete list — only the lane render caps at 40.
@@ -3355,6 +3420,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html(INDEX_V3_HTML)   # v3 is the default
         elif path == "/v4":
             self._send_html(INDEX_V4_HTML)
+        elif path == "/v5":
+            self._send_html(INDEX_V5_HTML)
         elif path == "/v2":
             self._send_html(INDEX_V2_HTML)
         elif path == "/v1":
