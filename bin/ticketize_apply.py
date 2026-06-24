@@ -81,7 +81,7 @@ def find_candidate(date, fp):
 def accountid_for(token):
     """Resolve a free-text person token to a Jira accountId, leniently. Matches (case-
     insensitive) against canonical, name, slack_id, github, email, the email local-part,
-    and any aliases — so 'sumit', 'Sumit Kumar', 'sumit.k', or the slack/github handle all
+    and any aliases — so 'alice', 'Alice Example', 'alice.e', or the slack/github handle all
     resolve, not just the exact canonical. Returns the jira_id or None."""
     t = (token or "").strip().lower()
     if not t:
@@ -106,6 +106,15 @@ def accountid_for(token):
     return hits[0].get("jira_id") if len(hits) == 1 else None
 
 
+def _looks_like_account_id(s):
+    """A Jira Cloud accountId is opaque and NEVER contains whitespace (e.g. a 24-hex id,
+    or a 'digits:uuid' form). A human name typed into the modal ('Alice Example') is
+    not one (a name typed into the modal has spaces). The old length-only `len(s) >= 16`
+    check wrongly swallowed full names and shipped them to Jira as a bogus accountId, so
+    require an id SHAPE (no whitespace) instead."""
+    return bool(re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z:_-]{15,}", (s or "").strip()))
+
+
 def resolve_assignee(override, cand):
     """Resolve the assignee to a Jira accountId. The approver override (from the Slack
     modal) wins over the candidate default. Returns (accountId_or_None, warning_or_None).
@@ -118,7 +127,7 @@ def resolve_assignee(override, cand):
         acct = accountid_for(ov)
         if acct:
             return acct, None
-        if ":" in ov or len(ov) >= 16:        # already looks like a raw accountId
+        if _looks_like_account_id(ov):        # already looks like a raw accountId
             return ov, None
         return None, f"couldn't resolve assignee '{ov}' — left UNASSIGNED, set it manually"
     cd = (cand or "").strip()
@@ -126,7 +135,7 @@ def resolve_assignee(override, cand):
         acct = accountid_for(cd)
         if acct:
             return acct, None
-        if ":" in cd or len(cd) >= 16:
+        if _looks_like_account_id(cd):
             return cd, None
         return None, f"candidate assignee '{cd}' didn't resolve — left UNASSIGNED"
     return None, None
