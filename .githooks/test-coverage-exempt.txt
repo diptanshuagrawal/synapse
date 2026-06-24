@@ -5,6 +5,7 @@
 # had no test when the gate was introduced (grandfathered).
 work-context/bin/_codegraph_status.py
 work-context/bin/_routines.py
+work-context/bin/_v3_insights.py
 work-context/bin/backfill-confluence-titles.py
 work-context/bin/backfill-jira-epics.py
 work-context/bin/build_embedding_graphml.py

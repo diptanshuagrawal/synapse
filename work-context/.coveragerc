@@ -28,6 +28,7 @@ omit =
     bin/migrate-*.py
     # UI / status dashboards (rendered output, not logic)
     bin/dashboard.py
+    bin/_v3_insights.py
     bin/cron-status.sh
     bin/_codegraph_status.py
     # shard/debug dumps
