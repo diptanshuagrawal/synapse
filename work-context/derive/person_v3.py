@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -165,12 +166,90 @@ def _workstreams(conn, aliases: list[str], since: str, until: str,
     return out
 
 
+# A message body line confirming the on-call member ACK'd/RESOLVED an incident
+# (posted by the oncall bot, mentioning the member). Phrase-anchored so a member
+# merely listed in a daily-stats report isn't miscounted as a response.
+_ONCALL_CONFIRM_MARKERS = ("acknowledged the issue", "resolved the issue",
+                           "marked the issue as resolved")
+# Slack user/subteam id shape — used to pick the member's @-mention token out of
+# the alias bundle (which also holds github / email / jira ids).
+_SLACK_ID_RE = re.compile(r"^[UW][A-Z0-9]{5,}$")
+
+
+def _oncall_ops_subjects(conn, aliases: list[str], since_b: str, until: str) -> set[str]:
+    """Distinct slack threads where the member was INVOLVED in on-call work over
+    [since_b, until). Three additive signals, mirroring the shared on-call
+    detection (derive/oncall_signals) so this coarse baseline role agrees with the
+    detailed incident census instead of lagging it:
+
+      1. the member STARTED a thread in an incident-response channel
+         (thread_started-by-actor — the original, narrow signal);
+      2. the member replied in a thread whose body pings an @oncall HANDLE token,
+         in ANY channel — on-call work reaches plain domain channels via the
+         handle ping, not only oncall-named channels;
+      3. the oncall bot posted an ACK/RESOLVE confirmation mentioning the member
+         in a class:oncall channel — incidents are rooted by the bot/reporter, so
+         the responder ACKs/RESOLVES them and never `thread_started` them.
+
+    Returns a SET so the signals union without double-counting. Light SQL,
+    actor/channel/subject-indexed; fail-soft on absent config (empty → no ops).
+    Channels are matched on the indexed `channel_id` column (length-agnostic —
+    the old substr(subject,7,11) silently missed sub-11-char channel ids)."""
+    from derive.retro_census import _load_incident_channels
+    from derive.oncall_signals import oncall_channel_ids, oncall_handle_tokens
+
+    if not aliases:
+        return set()
+    ph = ",".join("?" * len(aliases))
+    subjects: set[str] = set()
+
+    # 1. member STARTED a thread in an incident-response channel.
+    inc_ch, _ = _load_incident_channels()
+    if inc_ch:
+        cph = ",".join("?" * len(inc_ch))
+        rows = conn.execute(
+            f"SELECT DISTINCT subject FROM events WHERE source='slack' "
+            f"AND event_type='thread_started' AND actor IN ({ph}) "
+            f"AND ts BETWEEN ? AND ? AND channel_id IN ({cph})",
+            (*aliases, since_b, until, *inc_ch)).fetchall()
+        subjects.update(r[0] for r in rows)
+
+    # 2. member replied in a thread that pages an @oncall HANDLE (any channel).
+    toks = oncall_handle_tokens()
+    if toks:
+        like = " OR ".join("x.body LIKE ?" for _ in toks)
+        rows = conn.execute(
+            f"SELECT DISTINCT e.subject FROM events e WHERE e.source='slack' "
+            f"AND e.actor IN ({ph}) AND e.ts BETWEEN ? AND ? "
+            f"AND EXISTS (SELECT 1 FROM events x WHERE x.subject=e.subject "
+            f"  AND x.source='slack' AND ({like}))",
+            (*aliases, since_b, until, *[f"%{t}%" for t in toks])).fetchall()
+        subjects.update(r[0] for r in rows)
+
+    # 3. oncall bot ACK/RESOLVE confirmation mentioning the member, in a
+    #    class:oncall channel (member ACKs/RESOLVES, never roots the incident).
+    oncall_ch = oncall_channel_ids()
+    mentions = [f"%<@{a}%" for a in aliases if _SLACK_ID_RE.match(a or "")]
+    if oncall_ch and mentions:
+        cph = ",".join("?" * len(oncall_ch))
+        mclause = " OR ".join("body LIKE ?" for _ in mentions)
+        kclause = " OR ".join("body LIKE ?" for _ in _ONCALL_CONFIRM_MARKERS)
+        rows = conn.execute(
+            f"SELECT DISTINCT subject FROM events WHERE source='slack' "
+            f"AND channel_id IN ({cph}) AND ts BETWEEN ? AND ? "
+            f"AND ({mclause}) AND ({kclause})",
+            (*oncall_ch, since_b, until, *mentions,
+             *[f"%{m}%" for m in _ONCALL_CONFIRM_MARKERS])).fetchall()
+        subjects.update(r[0] for r in rows)
+
+    return subjects
+
+
 def _baseline_role(conn, aliases: list[str], until: str, days: int = 120) -> tuple[str, str]:
     """Stable role over a trailing window (default 120d) — author-scoped, light
     SQL (no full census). Distinguishes 'normally feature, this month design-
     heavy' from a genuine platform engineer."""
     from datetime import datetime, timedelta
-    from derive.retro_census import _load_incident_channels
     u = datetime.fromisoformat(until.replace("Z", "+00:00"))
     since_b = (u - timedelta(days=days)).isoformat()
     ph = ",".join("?" * len(aliases))
@@ -182,14 +261,10 @@ def _baseline_role(conn, aliases: list[str], until: str, days: int = 120) -> tup
         f"AND ((source='confluence' AND event_type IN ('page_created','page_updated')) "
         f"  OR (source='jira' AND issue_type IN ('Epic','CMR') AND event_type='issue_created'))",
         (*aliases, since_b, until)).fetchone()[0]
-    inc_ch, _ = _load_incident_channels()
-    ops = 0
-    if inc_ch:
-        cph = ",".join("?" * len(inc_ch))
-        ops = conn.execute(
-            f"SELECT COUNT(DISTINCT subject) FROM events WHERE event_type='thread_started' "
-            f"AND actor IN ({ph}) AND ts BETWEEN ? AND ? AND substr(subject,7,11) IN ({cph})",
-            (*aliases, since_b, until, *inc_ch)).fetchone()[0]
+    # ops = on-call INVOLVEMENT (not just thread-started-by-actor): bot-acked
+    # incidents + @oncall-handle replies in domain channels also count, so a
+    # heavy-oncall engineer is labeled 'ops', not mislabeled 'mixed'.
+    ops = len(_oncall_ops_subjects(conn, aliases, since_b, until))
     scores = {"feature": feat, "platform": plat, "ops": ops}
     top = max(scores, key=scores.get)
     if scores[top] == 0:
