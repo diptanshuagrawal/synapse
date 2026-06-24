@@ -1878,6 +1878,15 @@ function renderKpis(s, slack, leaves){
 async function refresh() {"""
 
 
+# ── STACKED TRANSFORMS — read before editing INDEX_HTML ───────────────────────
+# v2..v5 are NOT separate templates: each is a chain of `.replace()` calls over the
+# version below it (v2/v3 ← INDEX_HTML, v4 ← v3, v5 ← v4). The anchors are literal
+# fragments of v1's header / laneFor / lanes-grid / insights / bootstrap strings.
+# Editing any of those strings in INDEX_HTML SILENTLY breaks the downstream anchors —
+# the `.replace()` no-ops and the builder falls back to the un-transformed markup
+# (tabs / health grid / verdict just vanish, no error). After any INDEX_HTML edit,
+# rebuild and confirm the markers exist: vtabs / vStatus / vInsights / healthgrid /
+# renderHealth in INDEX_V5_HTML (and renderVerdict/renderCadence in v3).
 def _build_index_v2() -> str:
     """Modern re-skin of INDEX_HTML with identical render JS (see note above)."""
     import re as _re
