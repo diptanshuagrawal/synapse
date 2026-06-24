@@ -104,3 +104,18 @@ routines:
     # intent → delegates to /retro → writes management/retros/<since>-to-<until>.md. STEP 3 posts the
     # Highs/Lows to __DEV_UPDATES_CHANNEL__ as the owner (5000-char split at the Highs/Lows boundary).
     # NO Anthropic API anywhere (OpenAI = embeddings only; /ask + /retro synthesise in-chat).
+
+  - id: ingest-autofix
+    cron: "0,30 16-23 * * *"      # daily, every 30 min 16:00–23:30 IST (retry until 1 success/day; SKILL.md run-once gate)
+    enabled: true
+    needs: [rollup_channel]        # posts a run-summary to #rollup (__ROLLUP_CHANNEL__), like rollup-classify
+    permissions: [Bash]
+    # Resolves the github/jira/confluence validators' "unmapped actor" attribution WARNs:
+    # derive/unmapped_actors.py lists every unscoped actor → chat resolves each via the Atlassian
+    # lookup MCP → TIERED-AUTO write to config/people.yaml (gitignored, leak-safe). SAFE class
+    # auto-applies (one org-domain human → scope:org via derive/people_autofix_apply.py append-only;
+    # clear bot/service → scope:external); RISKY class (alias-merge into existing person, possible
+    # teammate, ambiguous) is PARKED in state/ingest_autofix_pending.json for owner review — never
+    # auto-merged, never auto-team. Re-runs the validators + refreshes cached state so cron-status
+    # reflects clean. Slack drift/orphan + pipeline-coverage WARNs are REPORTED only (not auto-fixable).
+    # NO Anthropic API (scripts strip auth; identity judgment happens in-chat).
