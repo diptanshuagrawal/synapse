@@ -381,7 +381,7 @@ fixed clock every 30 min inside the work window, not on a rolling timer. See
 | `confluence-ingest` | every 30 min, 12:05–22:35 | gated → one success/day |
 | `leaves`            | daily 04:00 | — |
 | `slack-discover`    | Wed + Fri 13:00 | — |
-| `housekeeping`      | Sun 03:00 | — |
+| `housekeeping-review` | weekly Mon (routine) | gated → one success/week (prune + classify→#rollup) |
 
 Idle-gated agents still fire every 30 min but exit early once the day's success
 file is stamped — so each source lands at most one full ingest per day.

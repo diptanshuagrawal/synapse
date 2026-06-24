@@ -16,8 +16,13 @@ Consumers: /ticketize and /doc-sync-sweep. Roles:
                            per pending discovered user-group to the channel in that JSON
                            (slack.usergroup_discover_channel). Buttons: Manager → owner_member,
                            Team → ingest filter, Reject → skiplist. Owner-gated, RELAY_APPLY_MODE-gated.
-  (no args)              : run the Socket Mode listener — handle tkz:, dsc:, dsf: and ugd: button
-                           clicks (owner-only), apply the decision, and update the message.
+  --post-housekeeping <run-id>: read state/housekeeping_suggestions_<run-id>.json (written by the
+                           Claude classification layer) and post one Approve/Reject card per
+                           cleanup suggestion to the #rollup channel (sources.yaml rollup_channel).
+                           Approve → bin/housekeeping_apply.py git-safe delete/truncate; Reject →
+                           recorded so it's never re-proposed. Owner-gated, RELAY_APPLY_MODE-gated.
+  (no args)              : run the Socket Mode listener — handle tkz:, dsc:, dsf:, ugd: and hk:
+                           button clicks (owner-only), apply the decision, and update the message.
 
 Config: work-context/config/ticketize.yaml (channel_id, owner_slack_id, fallback_epic, …).
 Tokens: ~/.secrets/relay_slack_bot_token (xoxb), ~/.secrets/relay_slack_app_token (xapp).
@@ -267,9 +272,18 @@ def do_post(date):
                 c["epic_title"] = ta.epic_title(base, auth, ke)
     except Exception as e:
         print(f"epic-title enrich skipped: {e}", file=sys.stderr)
-    r = client.chat_postMessage(channel=ch, text=f"Ticket candidates — {date} ({len(opens)} open)",
-                                blocks=build_blocks(date, opens))
-    print(f"posted {len(opens)} candidates to {ch} ts={r['ts']}")
+    # Slack caps a message at 50 blocks; ~3 blocks/candidate + framing → chunk at 15
+    # (mirrors do_post_findings). In-place resolution edits whichever chunk message the
+    # clicked button lives in, using the ts Slack sends in the interaction payload — so
+    # splitting across messages does not break the act_<fp> → card mapping.
+    CHUNK = 15
+    chunks = [opens[i:i + CHUNK] for i in range(0, len(opens), CHUNK)]
+    for n, chunk in enumerate(chunks, 1):
+        suffix = f" [{n}/{len(chunks)}]" if len(chunks) > 1 else ""
+        client.chat_postMessage(
+            channel=ch, text=f"Ticket candidates — {date} ({len(opens)} open){suffix}",
+            blocks=build_blocks(date, chunk))
+    print(f"posted {len(opens)} candidates to {ch} in {len(chunks)} message(s)")
 
 
 # ---------- doc-sync discovery cards ----------
@@ -516,6 +530,109 @@ def do_post_usergroups(run_id):
     print(f"posted {len(pending)} user-group cards to {ch} ts={r['ts']}")
 
 
+# ---------- housekeeping suggestion cards ----------
+SOURCES_CFG = os.path.join(ROOT, "work-context/config/sources.yaml")
+HK_APPLY = os.path.join(ROOT, "bin/housekeeping_apply.py")
+HK_CAT_EMOJI = {"db_backup": "💾", "log": "📜", "pycache": "🐍", "cache": "♻️", "derived_stale": "📊",
+                "state_orphan": "🗂️", "preview_bloat": "🖼️", "untracked_large": "📦",
+                "worktree": "🌳", "large_file": "🐘"}
+HK_RISK_DOT = {"low": "🟢", "medium": "🟡", "high": "🔴"}
+
+
+def _hk_suggestions_path(run_id):
+    return os.path.join(ROOT, f"work-context/state/housekeeping_suggestions_{run_id}.json")
+
+
+def rollup_channel():
+    """#rollup channel id — env ROLLUP_CHANNEL wins, else config/sources.yaml slack.rollup_channel."""
+    if os.environ.get("ROLLUP_CHANNEL"):
+        return os.environ["ROLLUP_CHANNEL"]
+    try:
+        import yaml
+        cfg = yaml.safe_load(open(SOURCES_CFG)) or {}
+        return (cfg.get("slack") or {}).get("rollup_channel", "")
+    except Exception:
+        return ""
+
+
+def _hk_suggestions(run_id):
+    p = _hk_suggestions_path(run_id)
+    if not os.path.exists(p):
+        return None
+    d = json.load(open(p))
+    return d.get("suggestions", d) if isinstance(d, dict) else d
+
+
+def build_housekeeping_blocks(run_id, sugs):
+    total = human_bytes(sum(int(s.get("size_bytes") or 0) for s in sugs))
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": f"🧹 Housekeeping suggestions — {run_id}"}},
+        {"type": "context", "elements": [{"type": "mrkdwn",
+            "text": f"Regenerable artifacts I judged safe to clean (*{total}* reclaimable). "
+                    "*Approve* → I delete/truncate it. *Reject* → I skip it (won't re-propose). "
+                    "Only git-ignored/untracked files are ever touched. (only you can act)"}]},
+        {"type": "divider"},
+    ]
+    for s in sugs:
+        cat = s.get("category", "")
+        emoji = HK_CAT_EMOJI.get(cat, "🧹")
+        dot = HK_RISK_DOT.get(s.get("risk", "low"), "🟢")
+        age = s.get("age_days")
+        age_md = f" · {age}d old" if isinstance(age, int) and age >= 0 else ""
+        verb = {"truncate": "truncate", "worktree_remove": "remove worktree"}.get(s.get("action"), "delete")
+        lines = [f"{emoji} *`{s.get('path','?')}`*",
+                 f"{dot} {s.get('size_h','?')}{age_md} · _{cat}_ · git: `{s.get('git','?')}`"]
+        if s.get("reason"):
+            lines.append(f"💡 {s['reason']}")
+        key = s.get("key", "")
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}})
+        blocks.append({"type": "actions", "block_id": f"hkact_{key}", "elements": [
+            {"type": "button", "style": "primary", "text": {"type": "plain_text", "text": f"✓ Approve ({verb})"},
+             "action_id": f"hk:{run_id}:{key}:approve", "value": key},
+            {"type": "button", "style": "danger", "text": {"type": "plain_text", "text": "✕ Reject"},
+             "action_id": f"hk:{run_id}:{key}:reject", "value": key},
+        ]})
+        blocks.append({"type": "divider"})
+    blocks.append({"type": "context", "block_id": "footer_open", "elements": [
+        {"type": "mrkdwn", "text": f"{len(sugs)} open · Approve reclaims space · only ignored/untracked artifacts are deletable"}]})
+    return blocks
+
+
+def human_bytes(b):
+    for unit, scale in (("G", 1 << 30), ("M", 1 << 20), ("K", 1 << 10)):
+        if b >= scale:
+            return f"{b / scale:.1f}{unit}"
+    return f"{b}B"
+
+
+def do_post_housekeeping(run_id):
+    from slack_sdk import WebClient
+    ch = rollup_channel()
+    if not ch:
+        print("no rollup_channel configured (sources.yaml slack.rollup_channel / $ROLLUP_CHANNEL) — skipping",
+              file=sys.stderr)
+        sys.exit(1)
+    sugs = _hk_suggestions(run_id)
+    if sugs is None:
+        print(f"no housekeeping suggestions file for {run_id}", file=sys.stderr)
+        sys.exit(1)
+    client = WebClient(token=secret("relay_slack_bot_token"))
+    if not sugs:
+        client.chat_postMessage(channel=ch, text=f"Housekeeping {run_id}: nothing further to clean. ✅")
+        print("posted: none-actionable")
+        return
+    # Slack caps a message at 50 blocks; each suggestion is 3 blocks + ~4 framing → chunk at 15.
+    CHUNK = 15
+    chunks = [sugs[i:i + CHUNK] for i in range(0, len(sugs), CHUNK)]
+    for n, chunk in enumerate(chunks, 1):
+        suffix = f" [{n}/{len(chunks)}]" if len(chunks) > 1 else ""
+        client.chat_postMessage(
+            channel=ch,
+            text=f"Housekeeping suggestions — {run_id} ({len(sugs)}){suffix}",
+            blocks=build_housekeeping_blocks(run_id, chunk))
+    print(f"posted {len(sugs)} housekeeping cards to {ch} in {len(chunks)} message(s)")
+
+
 # ---------- listener ----------
 def run_listener():
     from slack_bolt import App
@@ -731,6 +848,42 @@ def run_listener():
     app.action(re.compile(r"^ugd:.*:team$"))(_on_ugd("team", "👥", "team (ingest filter)"))
     app.action(re.compile(r"^ugd:.*:reject$"))(_on_ugd("reject", "🗑️", "rejected (skiplisted)"))
 
+    # ---- housekeeping: Approve → git-safe delete/truncate, Reject → skip (won't re-propose) ----
+    def hk_apply(run_id, key, decision):
+        if mode != "live":
+            verb = "delete/truncate" if decision == "approve" else "skip"
+            return True, f"🧪 dry — would {verb} {key}; set RELAY_APPLY_MODE=live to action"
+        cmd = [sys.executable, HK_APPLY, "--run-id", run_id, "--key", key, "--decision", decision]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        out = (res.stdout.strip() or res.stderr.strip() or "")
+        return res.returncode == 0, (out.splitlines()[-1] if out else "")
+
+    @app.action(re.compile(r"^hk:.*:approve$"))
+    def on_hk_approve(ack, body, client, action):
+        ack()
+        if not is_owner(body, client):
+            return
+        _, run_id, key, verb = action["action_id"].split(":", 3)
+        ok, note = hk_apply(run_id, key, "approve")
+        client.chat_postMessage(channel=body["channel"]["id"], thread_ts=body["message"]["ts"],
+                                text=f"{'✅ cleaned' if ok else '⚠️'} — {note}")
+        if ok and mode == "live":
+            update_card(client, body["channel"]["id"], body["message"]["ts"], f"hkact_{key}",
+                        f"✅ cleaned — {note}", blocks=body["message"]["blocks"])
+
+    @app.action(re.compile(r"^hk:.*:reject$"))
+    def on_hk_reject(ack, body, client, action):
+        ack()
+        if not is_owner(body, client):
+            return
+        _, run_id, key, verb = action["action_id"].split(":", 3)
+        ok, note = hk_apply(run_id, key, "reject")
+        client.chat_postMessage(channel=body["channel"]["id"], thread_ts=body["message"]["ts"],
+                                text=f"{'🗑️ skipped' if ok else '⚠️'} — {note}")
+        if ok and mode == "live":
+            update_card(client, body["channel"]["id"], body["message"]["ts"], f"hkact_{key}",
+                        f"🗑️ skipped — {note}", blocks=body["message"]["blocks"])
+
     print(f"relay_bot listening (apply mode = {mode}) …")
     SocketModeHandler(app, secret("relay_slack_app_token")).start()
 
@@ -744,6 +897,8 @@ def main():
         do_post_findings(sys.argv[2])
     elif len(sys.argv) >= 3 and sys.argv[1] == "--post-usergroups":
         do_post_usergroups(sys.argv[2])
+    elif len(sys.argv) >= 3 and sys.argv[1] == "--post-housekeeping":
+        do_post_housekeeping(sys.argv[2])
     elif len(sys.argv) == 1 or sys.argv[1] == "--listen":
         run_listener()
     else:

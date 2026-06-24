@@ -1902,6 +1902,20 @@ def parse_housekeeping():
         except Exception:
             pass
 
+    # Routine fallback: the prune now runs INSIDE the housekeeping-review routine
+    # (the launchd plist is disabled), so reflect the weekly-Monday cadence when no
+    # plist is present. The log + success marker still drive the "last run" pill.
+    if not plist_p.exists():
+        sched_label = "weekly Mon (routine: housekeeping-review)"
+        days_ahead = (0 - now.weekday()) % 7
+        target = now.replace(hour=6, minute=0, second=0, microsecond=0)
+        if days_ahead == 0 and now.hour >= 14:
+            days_ahead = 7
+        target = target + timedelta(days=days_ahead)
+        total_h = int((target - now).total_seconds()) // 3600
+        d, h = total_h // 24, total_h % 24
+        next_fire = f"~{d}d {h}h" if d else f"~{h}h"
+
     last_info: dict = {}
     if HOUSE_LOG.exists():
         try:
@@ -1937,6 +1951,18 @@ def parse_housekeeping():
         except Exception:
             pass
 
+    # Pending cleanup suggestions from the newest classification run — these are the
+    # Approve/Reject cards posted to #rollup by the housekeeping-review routine.
+    try:
+        sdir = ROOT / "work-context" / "state"
+        sfiles = sorted(sdir.glob("housekeeping_suggestions_*.json"),
+                        key=lambda p: p.stat().st_mtime, reverse=True)
+        if sfiles:
+            sd = json.loads(sfiles[0].read_text())
+            last_info["suggestions"] = len(sd.get("suggestions", []))
+    except Exception:
+        pass
+
     return sched_label, next_fire, last_info
 
 
@@ -1962,7 +1988,7 @@ else:
 
 print(f"  {BOLD}{'HOUSEKEEPING':<13}{RESET}  {hk_pill}  {DIM}next {hk_next}{RESET}")
 print(kv("schedule", hk_sched))
-print(kv("policy",   "weekly · prune old bak/verdicts/handoffs/logs + .DS_Store"))
+print(kv("policy",   "weekly · prune bak/verdicts/handoffs/logs + classify further cleanup → #rollup"))
 if hk_last.get("date"):
     files_part = f"{hk_last['files']} files" if "files" in hk_last else "?"
     bytes_part = hk_last.get("bytes", "?")
@@ -1983,6 +2009,10 @@ elif hk_last.get("mtime"):
              f"{DIM}(no summary block in log){RESET}"))
 else:
     print(kv("last run", f"{DIM}none recorded{RESET}"))
+if hk_last.get("suggestions") is not None:
+    n = hk_last["suggestions"]
+    col = GREEN if n == 0 else YELLOW
+    print(kv("suggestions", f"{col}{n}{RESET} {DIM}cleanup card(s) → #rollup (Approve/Reject){RESET}"))
 print(rule())
 print()
 

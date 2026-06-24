@@ -626,9 +626,14 @@ Wed+Fri 13:00 IST via `com.example.slack-discover`. Runs `slack_discover_channel
 
 Steady state: discover auto-applies, ingest auto-bootstraps, pruner cleans stale MPIMs weekly — full closed loop, no manual touch.
 
-### 5.28 `bin/housekeeping.sh` step 7 — MPIM pruner cron hook
+### 5.28 `housekeeping-review` routine — prune + classification layer
 
-Mon 03:00 IST via `com.example.housekeeping`. Step 7 runs `python -m derive.slack_prune_stale_mpims --apply` (30-day quiet threshold; events.db rows preserved). Dry-run (`--apply` omitted) is the wrapper default; pass-through `--apply` only when the launchagent fires.
+Weekly (Mondays) via the **`housekeeping-review` Claude routine** (`scheduled-tasks/housekeeping-review/SKILL.md`), which now OWNS the prune (the `com.example.housekeeping` launchd job is disabled). Two phases, deterministic-action + chat-judgement split:
+
+1. **Prune (deterministic, unchanged).** `bin/housekeeping.sh --apply` runs steps 1–7 — old `events.db` backups (>60d) / verdicts / handoffs / derived-verdicts (keep `latest.json`) / logs (truncate >60d) / `.DS_Store`, plus **step 7** = `python -m derive.slack_prune_stale_mpims --apply` (30-day quiet threshold; events.db rows preserved). Output `tee`'d to `logs/housekeeping.log` so the cron-status HOUSEKEEPING lane stays fed. Dry-run (`--apply` omitted) is still the wrapper default.
+2. **Classify + suggest.** `bin/housekeeping.sh --scan` (→ `derive/housekeeping_scan.py`) emits **facts only** about further cleanup candidates to `state/housekeeping_candidates.json` (db backups, oversized logs, `__pycache__`, stale `derived/`/`state/`, preview bloat, large/untracked files, abandoned worktrees — each tagged with size/age/git-status, never deleted). The routine session judges each per `.claude/shared/housekeeping-classify.md` → `state/housekeeping_verdicts.json`, then `derive/housekeeping_render.py` deterministically writes the Relay payload (`state/housekeeping_suggestions_<run-id>.json`) + the human report (`derived/housekeeping-suggestions.md`) and `bin/relay_bot.py --post-housekeeping <run-id>` posts Approve/Reject cards to **#rollup**.
+
+**Suggest-only + git-safe.** The only unattended deletes are the step-1 prune. Every further suggestion is gated on an owner **Approve** click → `bin/housekeeping_apply.py` (via the live Relay LaunchAgent), which re-validates before acting: path inside the repo, **never a git-tracked file**, never `.git`/the live `events.db`/the repo root; idempotent (a target already gone = success). **Reject** records the key in `state/housekeeping_rejected.json` so it's never re-proposed. The on-demand `/housekeeping-review` command runs the same pipeline. No script calls an LLM (facts in scripts, judgement in chat).
 
 ### 5.29 Embedding + topic-cluster pipeline
 
@@ -800,7 +805,7 @@ LaunchAgents (sources of truth in `launchagents/*.plist`, installed by `bin/inst
 | slack | `com.example.slack-ingest.plist` | hourly `:00`, 12h–22h | none — fires every slot (volume justifies; idempotent upsert dedups); hourly so a ~30–40min sweep completes before next fire (was :00/:30, overlap-killed) |
 | slack-discover | `com.example.slack-discover.plist` | **Wed + Fri 13:00** (`--auto-mode --top 500 --apply --json-out`) | — wrapper writes pre-apply yaml snapshot to `state/slack_channels.yaml.bak.<ts>` (LRU-4) before mutating; auto-applies `auto_full` + `auto_team_involved` rows |
 | leaves | `com.example.leaves.plist` | **daily 04:00** | `state/last_leaves_success.date` — Phase 1 (regex dump + render of already-classified rows). Phase 2 chat-classify owner-invoked via `/leaves`. |
-| housekeeping | `com.example.housekeeping.plist` | weekly **Mon 03:00** | n/a — step 7 runs MPIM pruner (`slack_prune_stale_mpims.py --apply`, 30d quiet; events.db preserved). |
+| housekeeping | `com.example.housekeeping.plist` **(disabled)** | — superseded by the `housekeeping-review` Claude routine (weekly Mon), which runs the same `housekeeping.sh --apply` prune (incl. step-7 MPIM pruner) AND adds the scan→classify→Approve/Reject layer (§5.28). |
 | codegraph | `com.example.codegraph.plist` | **daily 18:00** (`bin/run-codegraph.sh`) | `state/last_codegraph_success.date` — git ff-if-clean + full `code-review-graph build` for service-a + service-c (~90s, no LLM). Distinct from the hook-driven `code-review-graph update` for the *work-context* graph. Feeds `/ask` code-logic queries. Per-run log: `state/codegraph_<date>.log`. |
 | rollup | **(not installed)** | manual via `/rollup` | — |
 

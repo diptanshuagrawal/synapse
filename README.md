@@ -285,7 +285,7 @@ Installs macOS LaunchAgents (see `bin/install-agents.sh::SERVICES`). Survive sle
 | `slack-discover` | Wed + Fri 13:00 | auto-discovers new team channels |
 | `leaves` | daily 04:00 | regex prefilter + render (chat steps manual) |
 | `codegraph` | daily 18:00 | git fetch + full code-graph rebuild (feeds `/ask` code-logic) |
-| `housekeeping` | Sun 03:00 | log rotation / cache cleanup |
+| `housekeeping-review` | weekly Mon (Claude routine) | deterministic prune **+** a classification layer that scans for further cleanup candidates and posts Approve/Reject cards to #rollup (suggest-only; git-safe apply) |
 | rollup | **manual** (no LaunchAgent) | invoke `/rollup` in chat |
 
 **Retry policy (idle-gated agents):** fires every 30 min; checks gate file (YYYY-MM-DD local time). If today's date present → exits immediately. First success writes today's date → idles rest of day. Auth/network failure → auto-retries next fire. `slack-ingest` has no gate and ingests on every fire.
