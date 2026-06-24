@@ -91,7 +91,7 @@ set +e
 # Post the approve/reject card to Slack (Manager / Team / Reject per group).
 # relay_bot needs slack_sdk/slack_bolt — pick a python that has them. Skips
 # cleanly if nothing pending or no channel configured. Owner clicks are handled
-# by the always-on relay-bot listener (com.diptanshu.relay-bot).
+# by the always-on relay-bot listener (launchd service).
 RELAY_PY="$(for p in /opt/homebrew/bin/python3 python3 "$ROOT/.venv/bin/python"; do
     "$p" -c 'import slack_sdk' 2>/dev/null && { echo "$p"; break; }; done)"
 if [[ -n "$RELAY_PY" ]]; then
