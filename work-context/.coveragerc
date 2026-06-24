@@ -29,6 +29,8 @@ omit =
     # UI / status dashboards (rendered output, not logic)
     bin/dashboard.py
     bin/_v3_insights.py
+    bin/_sprint_v2.py
+    bin/_sprint_v2_skin.py
     bin/cron-status.sh
     bin/_codegraph_status.py
     # shard/debug dumps

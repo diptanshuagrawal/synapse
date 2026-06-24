@@ -79,6 +79,10 @@ def home_team() -> str:
 def coowner_team() -> str:
     return _get("teams.coowner", default="payments-team")
 
+def team_title() -> str:
+    """Human display name for the team (page titles / mastheads)."""
+    return _get("teams.title", default="Your Team")
+
 def slack_workspace() -> str:
     return _get("slack.workspace", env="SLACK_WORKSPACE", default="example")
 

@@ -24,6 +24,7 @@ github:
 teams:
   home: "home-team"
   coowner: "payments-team"
+  title: "Your Team"          # human display name (page titles / mastheads)
 slack:
   workspace: "example"
   mom_channels: ["C0EXAMPLE"]
