@@ -78,3 +78,16 @@ def test_adf_text_flattens_nested_nodes():
     assert ce._adf_text(node) == "Title\na b\n"
     assert ce._adf_text("") == ""
     assert ce._adf_text({"text": "bare"}) == "bare"
+
+
+def test_snap_to_sprint_start_tuesday_end_to_wednesday():
+    # current sprint ends Tue Jul 7 → upcoming sprint starts Wed Jul 8.
+    assert ce._snap_to_sprint_start(dt.date(2026, 7, 7)) == dt.date(2026, 7, 8)
+
+
+def test_snap_to_sprint_start_already_wednesday_is_noop():
+    assert ce._snap_to_sprint_start(dt.date(2026, 7, 8)) == dt.date(2026, 7, 8)
+
+
+def test_snap_to_sprint_start_monday_advances_to_wednesday():
+    assert ce._snap_to_sprint_start(dt.date(2026, 7, 6)) == dt.date(2026, 7, 8)

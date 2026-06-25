@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Launch the local sprint-planner server — sibling of bin/dashboard.py.
+#
+#   bin/sprint-planner            # serves on http://127.0.0.1:8787/
+#   bin/sprint-planner 9100       # custom port
+#   open http://127.0.0.1:8787/
+#
+# The OpsGenie key loads automatically from ~/.secrets/opsgenie_api_key
+# (file-based, same as the Atlassian creds) via derive/capacity_engine.py —
+# nothing to export.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # work-context/
+PORT="${1:-8787}"
+
+exec "$ROOT/.venv/bin/python" "$ROOT/derive/sprint_server.py" "$PORT"
