@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Launch the local cron-status dashboard — wraps bin/dashboard.py.
+#
+#   bin/dashboard              # serves on http://127.0.0.1:8765/
+#   bin/dashboard --port 9000  # custom port
+#   open http://127.0.0.1:8765
+#
+# Runs under the project venv so stdlib + yaml/sklearn deps resolve.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # work-context/
+
+exec "$ROOT/.venv/bin/python" "$ROOT/bin/dashboard.py" "$@"

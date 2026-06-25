@@ -73,7 +73,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": str(e)}).encode())
             return
         if self.path in ("/", ""):
-            self.path = "/sprint-planner-v2.html"   # restructured workspace is the default
+            self.path = "/sprint-planner-v2.html"   # 4-tab workspace (bin/_sprint_v2.py) is the default
         return super().do_GET()
 
     def do_POST(self):
@@ -152,5 +152,5 @@ class Handler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8787
-    print(f"sprint planner: http://localhost:{port}/sprint-planner.html")
+    print(f"sprint planner: http://127.0.0.1:{port}/")
     HTTPServer(("127.0.0.1", port), Handler).serve_forever()

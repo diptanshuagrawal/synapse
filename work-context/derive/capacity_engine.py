@@ -115,6 +115,17 @@ def roster():
     return team
 
 
+def _snap_to_sprint_start(end):
+    """Map a current-sprint endDate to the upcoming sprint's start.
+
+    Jira's endDate is the current sprint's last day (a Tuesday, ~18:00 IST); the
+    upcoming sprint is Wednesday-anchored, so snap forward to that Wednesday
+    (no-op if `end` already lands on a Wednesday)."""
+    while end.weekday() != 2:   # Mon=0 … Wed=2
+        end += dt.timedelta(days=1)
+    return end
+
+
 def active_sprint():
     """Return (start_date, label, sprint_id) for the UPCOMING sprint (Wed-to-Wed)."""
     email, token = _secret("atlassian_email"), _secret("atlassian_token")
@@ -126,7 +137,7 @@ def active_sprint():
         data = json.load(urllib.request.urlopen(req, timeout=20))
         s = data["values"][0]
         end = dt.datetime.fromisoformat(s["endDate"].replace("Z", "+00:00")).date()
-        return end, s.get("name", ""), s.get("id")
+        return _snap_to_sprint_start(end), s.get("name", ""), s.get("id")
     except Exception as e:
         sys.stderr.write(f"[sprint] fallback: {e}\n")
         return dt.date(2026, 6, 24), "active sprint", None
@@ -163,7 +174,7 @@ def spillover(sprint_id, email2canon):
 
 
 def oncall_for(days):
-    key = os.environ.get("OPSGENIE_API_KEY")
+    key = os.environ.get("OPSGENIE_API_KEY") or _secret("opsgenie_api_key")
     out = {}
     if not key:
         return out
