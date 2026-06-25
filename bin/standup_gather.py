@@ -39,7 +39,7 @@ ASK_RE = re.compile(r"(\?|\bcan you\b|\bcould you\b|\bplease\b|\bpls\b|\bplz\b|\
 # §2.3 thread-engagement: drop pure acks (no signal); flag resolution language so a
 # teammate's thread the member actually unblocked is credited as work, not noise.
 TRIVIAL_RE = re.compile(r"^\W*(ack|ok(ay)?|k|thanks?|thank you|ty|noted|done|sure|yes|yep|yup|got it|cool|great|nice|\+1|👍|🙏|🙌)\W*$", re.I)
-RESOLVE_RE = re.compile(r"\b(fix(ed|ing)?|resolv|merg|deploy|releas|root[ -]?cause|patch|mitigat|reviewed|approv|clos(e|ed|ing)|use the|should use|will use|added|raised (a )?(pr|cmr)|handled|done with|root caused)\b", re.I)
+RESOLVE_RE = re.compile(r"\b(fix(ed|ing)?|resolv(e[drs]?|ing)?|merg(e[drs]?|ing)?|deploy(ed|ing)?|releas(e[drs]?|ing)?|root[ -]?cause[ds]?|patch(ed|ing)?|mitigat(e[drs]?|ion|ing)?|reviewed|approv(e[drs]?|ing)?|clos(e|ed|ing)|use the|should use|will use|added|raised (a )?(pr|cmr)|handled|done with|root caused|not our issue|not cbs|not an issue from|nos[s]?)\b", re.I)
 
 
 def load_roster():
@@ -356,7 +356,14 @@ def gather_oncall_ops(cur, sl, oncall_channels, oncall_tokens, chname, W0, W1, w
             root = cur.execute("SELECT body FROM events WHERE subject=? ORDER BY ts LIMIT 1",
                                (f"slack:{ch}:{thr}",)).fetchone()
             rs = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", (root[0] if root else "") or ""))[:120].strip()
-            out.append(f"  FOLLOWUP #{chname.get(ch, ch)} link={slack_permalink(ch, thr)} :: {rs}")
+            # Also fetch the member's latest reply so the model sees the resolution, not just
+            # the root problem. Without this, "not our issue" threads look like open blockers.
+            latest = cur.execute(
+                "SELECT body FROM events WHERE subject=? AND actor=? ORDER BY ts DESC LIMIT 1",
+                (f"slack:{ch}:{thr}", sl)).fetchone()
+            lr = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", (latest[0] if latest else "") or ""))[:120].strip()
+            reply_str = f" | member_reply: {lr}" if lr else ""
+            out.append(f"  FOLLOWUP #{chname.get(ch, ch)} link={slack_permalink(ch, thr)} :: {rs}{reply_str}")
 
     head = (f"-- ON-CALL OPS (on-call member; render one line per INCIDENT/FOLLOWUP via §6, "
             f"open each thread) cmrWorked={len(win_cmr_rows)} incidents={len(incidents)} "
@@ -742,8 +749,11 @@ def main():
         # team's channel) — both are creditable work the render must NOT collapse (validated
         # miss 2026-06-23: a 5-reply cross-team API-support thread in another team's channel dropped).
         ranked = sorted(mem_threads.items(), key=lambda kv: len(kv[1]), reverse=True)
-        out.append(f"-- THREADS engaged (substantive in-window replies; root context; heaviest first) ({len(mem_threads)}) --")
-        for (ch, thr), reps in ranked[:12]:
+        cap = 12
+        dropped = max(0, len(ranked) - cap)
+        drop_note = f"; {dropped} lower-ranked threads NOT shown — check SLACK authored for full list" if dropped else ""
+        out.append(f"-- THREADS engaged (substantive in-window replies; root context; heaviest first) ({len(mem_threads)}{drop_note}) --")
+        for (ch, thr), reps in ranked[:cap]:
             ractor, rbody = roots.get(f"slack:{ch}:{thr}", (None, ""))
             rauthor = sl2canon_all.get(ractor) or actor_label(ractor, sl_names, rbody)
             role = "RESOLVED" if any(RESOLVE_RE.search(b) for b in reps) else "involved"
