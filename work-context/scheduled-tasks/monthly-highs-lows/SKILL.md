@@ -83,7 +83,7 @@ Invoke the `/ask` skill — the SAME skill at `__REPO__/.claude/commands/ask.md`
 
 ---
 
-## STEP 3 — PUSH the highs/lows to the standup-updates channel (channel ID `__DEV_UPDATES_CHANNEL__`)
+## STEP 3 — PUSH the highs/lows to the standup-updates channel (channel ID `__STANDUP_CHANNEL__`)
 
 Read the retro file written in STEP 2, then post it as the OWNER (via the slack send-message tool — posts go out as the owner, not a bot; the owner must be a member of the channel).
 
