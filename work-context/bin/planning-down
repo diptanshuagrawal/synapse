@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Stop both planning servers: cron dashboard (8765) + sprint planner (8787).
+set -uo pipefail
+
+for port in 8765 8787; do
+  p=$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+  if [ -n "$p" ]; then
+    kill $p && echo "  stopped port $port (PID $p)"
+  else
+    echo "  nothing on $port"
+  fi
+done

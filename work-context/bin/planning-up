@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Start both planning servers in the background:
+#   cron dashboard   -> http://127.0.0.1:8765/
+#   sprint planner   -> http://127.0.0.1:8787/
+# Idempotent: skips a server that's already listening. Survives terminal close (nohup).
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # work-context/
+LOGS="$ROOT/logs"; mkdir -p "$LOGS"
+
+start() {  # name port launcher logfile
+  local name="$1" port="$2" cmd="$3" log="$4"
+  if lsof -nP -tiTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "  $name already running on $port"
+  else
+    nohup "$cmd" > "$log" 2>&1 &
+    echo "  $name started on $port  (log: $log)"
+  fi
+}
+
+start "dashboard"      8765 "$ROOT/bin/dashboard"      "$LOGS/dashboard.out.log"
+start "sprint-planner" 8787 "$ROOT/bin/sprint-planner" "$LOGS/sprint_server.out.log"
+
+echo
+echo "  dashboard      -> http://127.0.0.1:8765/"
+echo "  sprint planner -> http://127.0.0.1:8787/"
