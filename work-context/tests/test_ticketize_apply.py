@@ -74,3 +74,61 @@ def test_candidate_unresolvable_is_unassigned(monkeypatch):
     monkeypatch.setattr(ta, "accountid_for", lambda t: None)
     acct, warn = ta.resolve_assignee("", "Bob Carol")
     assert acct is None and warn
+
+
+# ── accountid_for first-name tie-break ───────────────────────────────────────
+# Two people can share a first name (a teammate + an org-wide namesake). A bare
+# first name must resolve to the single scope:team hit; if the tie can't be broken
+# that way it stays None so resolve_assignee fails loud instead of guessing.
+
+def _roster(monkeypatch, people):
+    monkeypatch.setattr(ta, "load_yaml", lambda p: {"people": people})
+
+
+def test_first_name_tiebreak_prefers_single_team_hit(monkeypatch):
+    _roster(monkeypatch, [
+        {"name": "Alice Example", "canonical": "alice-example", "scope": "team",
+         "jira_id": "acc-team"},
+        {"name": "Alice Other", "canonical": "alice-other", "scope": "org",
+         "jira_id": "acc-org"},
+    ])
+    assert ta.accountid_for("alice") == "acc-team"
+
+
+def test_first_name_ambiguous_without_team_hit_stays_none(monkeypatch):
+    _roster(monkeypatch, [
+        {"name": "Alice Example", "canonical": "alice-example", "scope": "org",
+         "jira_id": "acc-org-1"},
+        {"name": "Alice Other", "canonical": "alice-other", "scope": "org",
+         "jira_id": "acc-org-2"},
+    ])
+    assert ta.accountid_for("alice") is None
+
+
+def test_first_name_two_team_hits_stays_none(monkeypatch):
+    _roster(monkeypatch, [
+        {"name": "Alice Example", "canonical": "alice-example", "scope": "team",
+         "jira_id": "acc-team-1"},
+        {"name": "Alice Other", "canonical": "alice-other", "scope": "team",
+         "jira_id": "acc-team-2"},
+    ])
+    assert ta.accountid_for("alice") is None
+
+
+def test_first_name_unambiguous_still_resolves(monkeypatch):
+    _roster(monkeypatch, [
+        {"name": "Alice Example", "canonical": "alice-example", "scope": "org",
+         "jira_id": "acc-solo"},
+    ])
+    assert ta.accountid_for("alice") == "acc-solo"
+
+
+def test_exact_match_beats_tiebreak(monkeypatch):
+    # A full identifier (canonical) must short-circuit before the first-name pass.
+    _roster(monkeypatch, [
+        {"name": "Alice Example", "canonical": "alice-example", "scope": "team",
+         "jira_id": "acc-team"},
+        {"name": "Alice Other", "canonical": "alice-other", "scope": "org",
+         "jira_id": "acc-org"},
+    ])
+    assert ta.accountid_for("alice-other") == "acc-org"
