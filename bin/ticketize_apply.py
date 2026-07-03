@@ -98,11 +98,18 @@ def accountid_for(token):
         cands.update(str(a) for a in (al if isinstance(al, list) else [al]))
         if t in {c.strip().lower() for c in cands if c}:
             return p.get("jira_id")
-    # 2) first-name / canonical-prefix match — ONLY if it's unambiguous (one person)
+    # 2) first-name / canonical-prefix match — ONLY if it's unambiguous (one person).
+    # Tie-break: if several people share the first name, a single scope:team hit wins —
+    # tickets are assigned to the owner's devs, so an org-wide namesake must not block
+    # (or shadow) the teammate. Still ambiguous after that → None (fail loud upstream).
     def first_tokens(p):
         return {str(p.get("name") or "").strip().lower().split(" ")[0],
                 str(p.get("canonical") or "").strip().lower().split("-")[0]} - {""}
     hits = [p for p in people if t in first_tokens(p)]
+    if len(hits) > 1:
+        team = [p for p in hits if str(p.get("scope") or "").strip().lower() == "team"]
+        if len(team) == 1:
+            return team[0].get("jira_id")
     return hits[0].get("jira_id") if len(hits) == 1 else None
 
 
