@@ -7,10 +7,16 @@ picked up an alert, "false positive", escalations) — measured ~1,325 team
 replies across the 14 such channels.
 
 This runs ONCE A DAY (gated by the wrapper). For each no_threads channel it
-re-scans threads whose parent alert fired in the last LOOKBACK_DAYS, fetches
-the replies, and upserts ONLY the team-involved ones (author ∈ team OR body
-@-mentions a team member OR pings a team subteam). Bot-ack/status replies are
-dropped — keeps the signal, not the noise.
+scans LIVE channel history (Slack API) for thread parents whose alert fired in
+the last LOOKBACK_DAYS, fetches the replies, and upserts ONLY the team-involved
+ones (author ∈ team OR body @-mentions a team member OR pings a team subteam).
+When a thread has team replies, the parent alert is upserted too, so the thread
+root resolves in events.db for every downstream consumer (standup/ask/retro).
+Bot-ack/status replies are dropped — keeps the signal, not the noise.
+
+Parents MUST come from the Slack API, not events.db: full-mode ingest skips
+bot messages (keep_bot_messages=false on all no_threads channels), so alert
+parents never land in the DB — a DB-sourced parent query matches nothing.
 
 Cheap because: bounded to recent alert threads, runs 1×/day not 48×.
 
@@ -22,6 +28,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -52,23 +59,27 @@ def _no_threads_channels() -> list[tuple[str, str]]:
     return out
 
 
-def _recent_alert_parents(conn, channel_id: str, since_iso: str) -> list[str]:
-    """Slack-epoch parent_ts for thread_started alerts with replies in window.
+def _recent_alert_parents(client: SlackClient, channel_id: str,
+                          oldest_epoch: str) -> list[dict]:
+    """Thread parents (reply_count > 0) from live channel history since oldest.
 
-    Parent slack-ts is embedded in the row id: slack:<channel>:<parent_ts>.
+    Returns full API message dicts so the parent can be upserted alongside its
+    team replies. Includes human-authored parents too — idempotent upsert makes
+    re-adding already-ingested ones a no-op, and their replies are otherwise
+    just as invisible on no_threads channels.
     """
-    rows = conn.execute(
-        """SELECT id FROM events
-           WHERE source='slack' AND channel_id=? AND event_type='thread_started'
-             AND reply_count > 0 AND ts >= ?
-           ORDER BY ts DESC LIMIT ?""",
-        (channel_id, since_iso, PARENT_CAP),
-    ).fetchall()
     parents = []
-    for (eid,) in rows:
-        parts = eid.split(":")
-        if len(parts) >= 3:
-            parents.append(parts[2])
+    for msg in client.iter_history(channel_id, oldest=oldest_epoch):
+        ts = msg.get("ts")
+        if msg.get("thread_ts") and msg["thread_ts"] != ts:
+            continue  # a reply surfaced in history — not a parent
+        if not msg.get("reply_count"):
+            continue
+        parents.append(msg)
+        if len(parents) >= PARENT_CAP:
+            print(f"  [warn] {channel_id}: PARENT_CAP={PARENT_CAP} hit — "
+                  f"older threads in window not scanned", file=sys.stderr)
+            break
     return parents
 
 
@@ -103,15 +114,20 @@ def main() -> int:
     subteams_cache = client.build_subteams_cache()
 
     conn = get_db()
-    since_iso = (datetime.now(tz=timezone.utc) - timedelta(days=args.days)) \
-        .isoformat().replace("+00:00", "Z")
+    oldest_epoch = f"{(datetime.now(tz=timezone.utc) - timedelta(days=args.days)).timestamp():.6f}"
 
     grand_team = grand_scanned = grand_parents = 0
     for cid, name in channels:
-        parents = _recent_alert_parents(conn, cid, since_iso)
-        team_kept = scanned = 0
-        for pts in parents:
+        try:
+            parents = _recent_alert_parents(client, cid, oldest_epoch)
+        except RuntimeError as e:
+            print(f"  {name[:32]:32} history ERR {e}", file=sys.stderr)
+            continue
+        team_kept = scanned = inserted = 0
+        for pmsg in parents:
+            pts = pmsg.get("ts")
             try:
+                team_replies = []
                 for msg in client.iter_replies(cid, pts):
                     # iter_replies yields the parent first — skip it (ts == pts)
                     if msg.get("ts") == pts:
@@ -119,20 +135,39 @@ def main() -> int:
                     scanned += 1
                     author = msg.get("user") or msg.get("bot_id")
                     text = msg.get("text", "")
-                    if not is_team_involved(author, text, team_ids, team_subteam_ids):
-                        continue
-                    if args.dry_run:
-                        team_kept += 1
-                        continue
-                    pm = api_message_to_parsed(msg, users_cache, name_resolver, subteams_cache)
+                    if is_team_involved(author, text, team_ids, team_subteam_ids):
+                        team_replies.append(msg)
+                if not team_replies:
+                    continue
+                if args.dry_run:
+                    team_kept += len(team_replies)
+                    continue
+                # Parent first: the thread root must exist for subject
+                # resolution (root = MIN(ts) per slack:<ch>:<thread_ts>).
+                ppm = api_message_to_parsed(pmsg, users_cache, name_resolver,
+                                            subteams_cache)
+                if upsert_event(conn, ppm, cid, thread_parent_ts=None,
+                                slack_users_cache=users_cache) == "inserted":
+                    inserted += 1
+                for msg in team_replies:
+                    pm = api_message_to_parsed(msg, users_cache, name_resolver,
+                                               subteams_cache)
                     outcome = upsert_event(conn, pm, cid, thread_parent_ts=pts,
                                            slack_users_cache=users_cache)
                     if outcome in ("inserted", "updated"):
                         team_kept += 1
+                        inserted += 1
             except RuntimeError as e:
                 print(f"  {name[:32]:32} parent {pts} ERR {e}", file=sys.stderr)
         if not args.dry_run:
             conn.commit()
+            if inserted:
+                # Refresh thread_summary for the touched channel (cheap,
+                # idempotent) — mirrors the team_involved ingest path.
+                subprocess.run(
+                    [str(_REPO_ROOT / ".venv" / "bin" / "python"),
+                     "derive/build_thread_summary.py", "--channel", cid],
+                    cwd=str(_REPO_ROOT), check=False, capture_output=True)
         grand_team += team_kept
         grand_scanned += scanned
         grand_parents += len(parents)

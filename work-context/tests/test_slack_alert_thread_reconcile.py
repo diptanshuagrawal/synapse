@@ -25,17 +25,12 @@ def _recent(delta_min=-30):
     return iso, epoch
 
 
-def _insert_alert(conn, ch=CH):
-    iso, epoch = _recent()
-    conn.execute(
-        "INSERT INTO events (id,source,event_type,ts,raw_path,channel_id,reply_count) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (f"slack:{ch}:{epoch}", "slack", "thread_started", iso, "x", ch, 2))
-    conn.commit()
-    return epoch
+_PARENT_TS = "1782000000.000100"
 
 
 class _FakeClient:
+    """Alert parents come from LIVE history (bot parents never reach the DB)."""
+
     def __init__(self, *a, **k):
         pass
 
@@ -45,23 +40,28 @@ class _FakeClient:
     def build_subteams_cache(self):
         return {}
 
+    def iter_history(self, channel_id, oldest=None, limit=200):
+        # bot alert parent with replies → scanned
+        yield {"ts": _PARENT_TS, "bot_id": "B0ALERT", "text": "alert fired",
+               "reply_count": 2}
+        # parent without replies → skipped
+        yield {"ts": "1782000010.000000", "bot_id": "B0ALERT", "text": "quiet alert"}
+        # a reply surfaced in history → skipped (not a parent)
+        yield {"ts": "1782000050.000000", "thread_ts": _PARENT_TS, "user": MEMBER,
+               "text": "inline reply"}
+
     def iter_replies(self, channel_id, ts, limit=200):
-        yield {"ts": ts, "user": "U0BOT", "text": "alert fired"}          # parent → skipped
+        yield {"ts": ts, "bot_id": "B0ALERT", "text": "alert fired"}      # parent → skipped
         yield {"ts": "1782000050.000000", "thread_ts": ts, "user": MEMBER,
                "text": "I picked this up — false positive"}
 
 
-def test_recent_alert_parents_in_window(db_conn):
-    epoch = _insert_alert(db_conn)
-    since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=2)).isoformat().replace("+00:00", "Z")
-    assert mod._recent_alert_parents(db_conn, CH, since) == [epoch]
-    # outside the window → excluded
-    future = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1)).isoformat().replace("+00:00", "Z")
-    assert mod._recent_alert_parents(db_conn, CH, future) == []
+def test_recent_alert_parents_from_history():
+    parents = mod._recent_alert_parents(_FakeClient(), CH, "1781999999.000000")
+    assert [p["ts"] for p in parents] == [_PARENT_TS]
 
 
 def test_main_dry_run_keeps_team_reply(tmp_paths, db_conn, monkeypatch):
-    _insert_alert(db_conn)
     monkeypatch.setattr(mod, "SlackClient", _FakeClient)
     monkeypatch.setattr(mod, "load_team_slack_ids", lambda: {MEMBER: "x"})
     monkeypatch.setattr(mod, "load_team_subteam_ids", lambda: set())
@@ -70,6 +70,27 @@ def test_main_dry_run_keeps_team_reply(tmp_paths, db_conn, monkeypatch):
                         lambda author, text, ids, sub: author == MEMBER)
     monkeypatch.setattr(sys, "argv", ["prog", "--dry-run"])
     assert mod.main() == 0
+
+
+def test_main_live_upserts_parent_and_reply(tmp_paths, db_conn, monkeypatch):
+    # get_db's default path binds at import — patch the module ref or main()
+    # writes to the REAL events.db instead of the temp tree.
+    monkeypatch.setattr(mod, "get_db", lambda: db_conn)
+    monkeypatch.setattr(mod, "SlackClient", _FakeClient)
+    monkeypatch.setattr(mod, "load_team_slack_ids", lambda: {MEMBER: "x"})
+    monkeypatch.setattr(mod, "load_team_subteam_ids", lambda: set())
+    monkeypatch.setattr(mod, "_no_threads_channels", lambda: [(CH, "alert-chan")])
+    monkeypatch.setattr(mod, "is_team_involved",
+                        lambda author, text, ids, sub: author == MEMBER)
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(sys, "argv", ["prog"])
+    assert mod.main() == 0
+    rows = {r[0]: r[1] for r in db_conn.execute(
+        "SELECT id, event_type FROM events WHERE channel_id=?", (CH,))}
+    # thread root lands too, so slack:<ch>:<thread_ts> subjects resolve
+    assert rows[f"slack:{CH}:{_PARENT_TS}"] == "thread_started"
+    reply_rows = [t for t in rows.values() if t == "thread_reply"]
+    assert len(reply_rows) == 1
 
 
 def test_main_aborts_without_team_ids(monkeypatch):
