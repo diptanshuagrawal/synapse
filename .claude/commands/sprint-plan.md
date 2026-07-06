@@ -60,6 +60,15 @@ says "use your judgment"). A short clarifying round beats a confidently-wrong pl
      initiative's `epic` is PART of that initiative (don't double-count). Spillover
      outside any named track is extra committed work — place it on the person's days
      (label it), or flag it as a slip if their days are full.
+   - **Spillover projection — plan with `projSP`, not `sp`.** The dump projects each
+     spillover ticket to the new sprint's start: `projState` = `closes` (near-done —
+     the review pipeline finishes it before the sprint; shepherd-only, zero days),
+     `burns` (in-progress/to-do, partially burned by the person's remaining
+     current-sprint days; `projSP` is what's left), or `carries` (blocked; full SP
+     carries). `sp` is only the as-of-dump snapshot. If a comment contradicts the
+     projection ("X won't close this sprint"), the comment wins — say so in `signals`.
+     The projection ignores leave in the gap days before sprint start — sanity-check
+     against known leaves (e.g. someone on leave until the sprint starts burns nothing).
    - **Allocation order:** fixed initiatives first (priority order), converting
      `effortSP` to days as `round(SP / eff)`; continuous fills remaining days. If a
      person's committed work exceeds available days, place what fits and report the

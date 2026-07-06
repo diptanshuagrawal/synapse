@@ -1,6 +1,6 @@
 ---
 name: daily-leaves-classify
-description: Daily from 04:00 IST (retries every 30 min until it succeeds once) — run the full /leaves pipeline: dump, chat-classify, apply, render.
+description: Daily from 13:00 IST (retries every 30 min until it succeeds once) — waits for today's Slack ingest to land, then runs the full /leaves pipeline: dump, chat-classify, apply, render.
 ---
 
 Run the team-leave tracking pipeline end-to-end, including the LLM chat-classify step. This replaces the old leaves LaunchAgent (which only did the dump+render half and could not classify).
@@ -10,14 +10,20 @@ Always use the venv python: __REPO__/work-context/.venv/bin/python
 
 The canonical procedure lives in the `/leaves` skill — invoke it via the Skill tool and follow its phases. If for any reason the skill is unavailable, execute these steps manually:
 
-## RUN-ONCE GATE (idempotent — this routine retries every 30 min until it succeeds once today)
-Before doing ANY work, run this and obey it:
+## RUN-ONCE + SLACK-FRESHNESS GATE (idempotent — this routine retries every 30 min until it succeeds once today)
+The dump reads Slack messages out of events.db, so classifying before today's first
+Slack ingest success silently misses same-morning leave announcements (a "nothing to
+classify" run then stamps success and the day is lost). Idle until BOTH markers allow
+a run. Before doing ANY work, run this and obey it:
 
     MARK=__REPO__/work-context/state/last_routine_leaves_success.date
+    SLACK=__REPO__/work-context/state/last_slack_success.date
     TODAY=$(TZ=Asia/Kolkata date +%F)
-    if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$TODAY" ]; then echo "GATE: leaves already succeeded today ($TODAY) — idle"; else echo "GATE: leaves not done today — proceed"; fi
+    if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$TODAY" ]; then echo "GATE: leaves already succeeded today ($TODAY) — idle"; elif [ ! -f "$SLACK" ] || [ "$(cat "$SLACK")" != "$TODAY" ]; then echo "GATE: slack ingest has not succeeded today ($TODAY) — idle, retry next fire"; else echo "GATE: leaves not done today, slack fresh — proceed"; fi
 
-If it prints "already succeeded today" → STOP NOW: do not dump, classify, apply, or render anything; end the run. Only proceed if it prints "not done today".
+If it prints anything other than "proceed" → STOP NOW: do not dump, classify, apply, or
+render anything, and do NOT stamp the success marker (the slack-not-fresh idle must leave
+the marker untouched so a later fire retries after ingest lands); end the run.
 
 PHASE 1 — Refresh pending (idempotent):
   cd __REPO__/work-context && .venv/bin/python derive/leaves_dump.py

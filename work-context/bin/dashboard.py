@@ -3397,6 +3397,52 @@ LEAVES_HTML = _v3_reskin(LEAVES_HTML)
 LEAVES_V2_HTML = _v3_reskin(LEAVES_V2_HTML)
 
 
+# ── shared nav sidebar (mirrors derive/sprint_server.py) ──────────────────────
+# Planning pages live on the sprint server (port 8787); leaves is here on the dashboard.
+_SPRINT_BASE = "http://127.0.0.1:8787"
+
+
+def _inject_nav(html: str, path: str) -> str:
+    active = "leaves" if (path or "").startswith("/leaves") else ""
+    def a(href, key, label):
+        cls = ' class="active"' if key == active else ""
+        return f'<a href="{href}"{cls}>{label}</a>'
+    nav = f"""
+<style>
+  body{{padding-top:58px !important;}}   /* reserve a strip so the menu button never overlaps content */
+  #cnavBtn{{position:fixed;top:12px;left:14px;z-index:9998;width:38px;height:38px;border-radius:10px;
+    border:1px solid #e4e9f2;background:#fff;color:#15202e;font-size:18px;cursor:pointer;
+    box-shadow:0 1px 4px rgba(20,32,46,.2);display:flex;align-items:center;justify-content:center;}}
+  #cnavBtn:hover{{border-color:#3a55d9;}}
+  #cnavOv{{position:fixed;inset:0;background:rgba(10,15,20,.4);z-index:9998;opacity:0;pointer-events:none;transition:opacity .15s;}}
+  #cnav{{position:fixed;top:0;left:0;height:100%;width:250px;background:#fff;z-index:9999;
+    box-shadow:2px 0 16px rgba(0,0,0,.3);transform:translateX(-100%);transition:transform .18s ease;
+    font-family:-apple-system,system-ui,sans-serif;padding:18px 14px;}}
+  body.cnav-open #cnav{{transform:none;}} body.cnav-open #cnavOv{{opacity:1;pointer-events:auto;}}
+  #cnav .t{{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#5b6675;font-weight:700;margin:6px 8px 12px;}}
+  #cnav a{{display:block;text-decoration:none;color:#15202e;font-size:14px;font-weight:600;
+    padding:10px 12px;border-radius:10px;margin-bottom:4px;}}
+  #cnav a:hover{{background:#eef2f8;}} #cnav a.active{{background:rgba(58,85,217,.08);color:#2c41b8;}}
+</style>
+<button id="cnavBtn" title="Menu">&#9776;</button>
+<div id="cnavOv"></div>
+<nav id="cnav">
+  <div class="t">Planning</div>
+  {a(_SPRINT_BASE + '/sprint','sprint','🗓️ Sprint Planner')}
+  {a(_SPRINT_BASE + '/monthly','monthly','📆 Monthly Planner')}
+  {a('/leaves','leaves','🌴 Team Leaves')}
+</nav>
+<script>(function(){{
+  var b=document.getElementById('cnavBtn'),o=document.getElementById('cnavOv');
+  function close(){{document.body.classList.remove('cnav-open');}}
+  b.addEventListener('click',function(){{document.body.classList.toggle('cnav-open');}});
+  o.addEventListener('click',close);
+  document.addEventListener('keydown',function(e){{if(e.key==='Escape')close();}});
+}})();</script>
+</body>"""
+    return html.replace("</body>", nav, 1) if "</body>" in html else html + nav
+
+
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
@@ -3413,7 +3459,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _send_html(self, body: str) -> None:
-        b = body.encode()
+        b = _inject_nav(body, getattr(self, "path", "")).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(b)))

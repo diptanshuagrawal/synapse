@@ -39,10 +39,14 @@ routines:
     permissions: [Bash]
 
   - id: daily-leaves-classify
-    cron: "0,30 4-23 * * *"       # daily, every 30 min 04:00–23:30 IST (retry until 1 success/day; SKILL.md run-once gate)
+    cron: "0,30 13-23 * * *"      # daily, every 30 min 13:00–23:30 IST (retry until 1 success/day; SKILL.md run-once gate)
     enabled: true
     needs: []
     permissions: [Bash]
+    # Starts AFTER the slack-ingest window opens (12:00 IST) — the dump reads Slack events
+    # from events.db, so a pre-ingest run misses same-morning leave announcements (seen
+    # 2026-07-06). SKILL.md STEP-0 additionally idles until state/last_slack_success.date
+    # == today, so a late first ingest success just delays (never skips) the classify.
 
   - id: slack-ingest
     cron: "0,30 12-22 * * *"      # every 30 min, 12:00–22:30 IST
