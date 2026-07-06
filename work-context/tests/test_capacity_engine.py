@@ -91,3 +91,40 @@ def test_snap_to_sprint_start_already_wednesday_is_noop():
 
 def test_snap_to_sprint_start_monday_advances_to_wednesday():
     assert ce._snap_to_sprint_start(dt.date(2026, 7, 6)) == dt.date(2026, 7, 8)
+
+
+def test_month_bounds_regular_and_year_rollover():
+    assert ce._month_bounds(2026, 7) == (dt.date(2026, 7, 1), dt.date(2026, 7, 31))
+    assert ce._month_bounds(2026, 2) == (dt.date(2026, 2, 1), dt.date(2026, 2, 28))
+    assert ce._month_bounds(2026, 12) == (dt.date(2026, 12, 1), dt.date(2026, 12, 31))
+
+
+def test_oncall_by_week_probes_once_per_wednesday(monkeypatch):
+    # rota hands over each Wednesday → probe once per week-Wed, fill the Wed→Tue week.
+    calls = []
+    monkeypatch.setattr(ce, "_oncall_email_on",
+                        lambda d: (calls.append(d), f"p-{d.isoformat()}@x")[1])
+    days = [dt.date(2026, 7, d) for d in range(8, 16)]   # Wed Jul 8 .. Wed Jul 15
+    out = ce.oncall_by_week(days)
+    assert sorted(calls) == [dt.date(2026, 7, 8), dt.date(2026, 7, 15)]   # only Wednesdays probed
+    # Thu/Fri and following Mon/Tue all resolve to the Jul-8 Wednesday's person
+    for iso in ("2026-07-09", "2026-07-10", "2026-07-13", "2026-07-14"):
+        assert out[iso] == "p-2026-07-08@x"
+    assert out["2026-07-15"] == "p-2026-07-15@x"
+    assert "2026-07-11" not in out and "2026-07-12" not in out   # weekend skipped
+
+
+def test_budget_fields_from_base_derives_twelve_consecutive_ids():
+    # field IDs are config-driven; the helper maps Jan..Dec to consecutive IDs from a base
+    m = ce._budget_fields_from_base("customfield_500")
+    assert ce.BUDGET_MONTHS[0] == "Jan" and ce.BUDGET_MONTHS[-1] == "Dec"
+    assert len(m) == 12
+    assert m["Jan"] == "customfield_500"
+    assert m["Aug"] == "customfield_507"
+    assert m["Dec"] == "customfield_511"
+    assert [int(m[x].split("_")[1]) for x in ce.BUDGET_MONTHS] == list(range(500, 512))
+
+
+def test_budget_fields_from_base_handles_bad_input():
+    assert ce._budget_fields_from_base("") == {}
+    assert ce._budget_fields_from_base("nonsense") == {}

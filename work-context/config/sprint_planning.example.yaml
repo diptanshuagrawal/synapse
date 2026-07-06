@@ -9,3 +9,21 @@ exclude_canonical: []         # people.yaml canonical slugs to drop from capacit
 role_overrides: {}            # canonical -> SDE1 | SDE2 | SDE3
                               #   override people.yaml when a role is stale, e.g.
                               #   john-smith: SDE3
+
+# Monthly planner — org-initiatives (Jira Product Discovery) source + your pod filter.
+oint_project: OINT            # the org-initiatives project key
+oint_pod: "TEAM - Your Pod"   # exact "PODs" field value for your pod; the monthly
+                              #   planner defaults its initiative filter to this
+
+# Org-specific Jira field / issuetype / link IDs — find them via /rest/api/3/field
+# (search by field name). Instance-specific, so they live here (gitignored), not in code.
+jira_fields:
+  epic_issuetype_id: "10000"                       # Jira's Epic issuetype id (usually 10000)
+  initiative_link_type: "Polaris work item link"   # link type joining initiative ↔ board epic
+  pods: customfield_00000                          # multi-select "PODs" tag on initiatives
+  org_priority: customfield_00000                  # org priority select
+  eng_dri: customfield_00000                       # Engineering DRI (user)
+  prod_dri: customfield_00000                      # Product DRI (user)
+  impact: customfield_00000                        # impact/summary text
+  overall_budget: customfield_00000                # epic "Overall Budget" number
+  monthly_budget_base: customfield_00000           # "Jan Budget"; Feb..Dec must be consecutive IDs
