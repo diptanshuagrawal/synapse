@@ -11,6 +11,11 @@
 # Best-effort: NEVER blocks the calling routine (always exits 0). The marker is stamped
 # only on a clean sweep, so a failed sweep is retried by the other routine / next fire.
 #
+# --threads-sweep also runs the team-search safety net (search.messages from:<member>):
+# it recovers member replies to threads whose non-team root was dropped before any team
+# reply existed — the one class the cursor + reconcile paths can never re-fetch
+# (validated miss 2026-07-03 on a team_involved support channel).
+#
 # Self-locating (bin/ is at the repo root, alongside standup_gather.py) — no path
 # templating needed, so the same file works for every clone.
 set -uo pipefail

@@ -428,6 +428,34 @@ class SlackClient:
             if not cursor:
                 return
 
+    # ── search ──
+
+    def search_messages(
+        self,
+        query: str,
+        count: int = 100,
+        page: int = 1,
+        sort: str = "timestamp",
+        sort_dir: str = "desc",
+    ) -> dict:
+        """search.messages — requires the user token to carry `search:read`.
+
+        Tier-2 method (~20 req/min vs conversations.* tier-3); the shared
+        RateLimit bucket over-admits it, but _call's 429/Retry-After retry
+        absorbs that — callers make only a handful of search calls per fire.
+        Pagination is page-numbered (`page`/`paging.pages`), not cursor-based.
+        """
+        return self._call(
+            "search.messages",
+            {
+                "query": query,
+                "count": count,
+                "page": page,
+                "sort": sort,
+                "sort_dir": sort_dir,
+            },
+        )
+
 
 # ── JSON → ParsedMessage adapter ───────────────────────────────────────────
 
