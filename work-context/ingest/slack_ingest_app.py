@@ -18,6 +18,8 @@ Usage:
     python -m ingest.slack_ingest_app                  # all channels
     python -m ingest.slack_ingest_app service-c-public # one channel
     python -m ingest.slack_ingest_app --dry-run        # fetch+parse, no write
+    python -m ingest.slack_ingest_app --threads-sweep  # pre-standup late-reply sweep + search net
+    python -m ingest.slack_ingest_app --search-net     # team-search safety net only
 
 Exit codes:
     0  success (≥1 channel ingested OR all up-to-date)
@@ -33,6 +35,7 @@ import logging
 import sqlite3
 import sys
 import time
+import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -95,6 +98,18 @@ SWEEP_ROSTER_DAYS = 14          # sweep any channel a roster member posted in ov
                                 # PRIOR activity — 3d was too tight, missed cbs-public's 5-day gap)
 SWEEP_ACTIVE_DAYS = 14          # re-walk threads with known activity in the last N days
 SWEEP_CAP = 200                 # higher per-channel cap (once-daily bounded pass) so busy channels don't starve
+# Team-search safety net (runs with --threads-sweep, or standalone via --search-net).
+# Closes the LAST team_involved blind spot: a member's LATE reply to a thread whose
+# non-team root was scanned (and correctly dropped — no team involvement YET) before
+# the reply existed. The cursor has moved past the root, and every reconcile path
+# (Phase 2.4 queue, Phase 2.5 stale/active) only revisits parents already in events.db,
+# so that thread is otherwise permanently invisible (validated miss 2026-07-03:
+# a member's lien-flow investigation reply on a team_involved support channel).
+# search.messages `from:<member>` finds the reply regardless of what the cursor
+# did to its root.
+SEARCH_NET_LOOKBACK_DAYS = 7    # search window; late replies older than this are accepted drift
+SEARCH_NET_PAGE_CAP = 3         # search.messages pages (100 hits each) per member per fire
+SEARCH_NET_DRAIN_CAP = 50       # max missing-thread drains per fire (spillover logged + next fire)
 
 
 # Team-involvement check (for ingest_mode: team_involved channels) — moved
@@ -411,6 +426,204 @@ def reconcile_pending_reply_checks(
         out["queue_out"] = count_pending_reply_checks(conn, channel_id)
     finally:
         conn.close()
+    return out
+
+
+def _thread_root_from_match(match: dict) -> Optional[str]:
+    """Root ts for a search.messages hit.
+
+    A reply's permalink carries `?thread_ts=<root>`; a top-level message's
+    doesn't (the hit IS the root). Parsed from the permalink so no extra
+    API call is needed per hit.
+    """
+    ts = match.get("ts")
+    permalink = match.get("permalink") or ""
+    try:
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(permalink).query)
+        root = (q.get("thread_ts") or [None])[0]
+    except ValueError:
+        root = None
+    return root or ts
+
+
+def _drain_thread_if_team(
+    client: SlackClient,
+    conn: sqlite3.Connection,
+    channel_id: str,
+    root_ts: str,
+    dry_run: bool,
+    users_cache: dict[str, str],
+    keep_bot_messages: bool,
+    name_resolver,
+    subteams_cache: dict[str, str],
+    team_slack_ids: set[str],
+    team_subteam_ids: Optional[set[str]] = None,
+) -> tuple[int, int, bool]:
+    """Walk one thread via conversations.replies; upsert root + replies iff a
+    team member is involved. Same keep semantics as reconcile_pending_reply_checks
+    (root kept regardless of bot flag — it gives the replies meaning; bot replies
+    skipped unless keep_bot_messages). Returns (root_inserted, replies_inserted,
+    team_in_thread)."""
+    root_pm = None
+    replies: list = []
+    team_in_thread = False
+    for raw in client.iter_replies(channel_id, root_ts, limit=LIMIT):
+        rpm = api_message_to_parsed(
+            raw, users_cache, name_resolver=name_resolver,
+            subteams_cache=subteams_cache,
+        )
+        if raw.get("ts") == root_ts:
+            root_pm = rpm
+            if is_team_involved(rpm.actor_id, rpm.body, team_slack_ids, team_subteam_ids):
+                team_in_thread = True
+            continue
+        if rpm.is_bot and not keep_bot_messages:
+            continue
+        replies.append(rpm)
+        if is_team_involved(rpm.actor_id, rpm.body, team_slack_ids, team_subteam_ids):
+            team_in_thread = True
+
+    if not team_in_thread:
+        return 0, 0, False
+    if dry_run:
+        return (1 if root_pm is not None else 0), len(replies), True
+
+    root_inserted = replies_inserted = 0
+    if root_pm is not None:
+        root_inserted = upsert_messages(
+            conn, [root_pm], channel_id, thread_parent_ts=None,
+        ).inserted
+    if replies:
+        replies_inserted = upsert_messages(
+            conn, replies, channel_id, thread_parent_ts=root_ts,
+        ).inserted
+    # Clamp reply_count to what actually landed + stamp drain_attempted_at so
+    # the stale detector and the active-thread cooldown see this drain.
+    _clamp_parent_after_drain(conn, channel_id, root_ts)
+    return root_inserted, replies_inserted, True
+
+
+def search_net_recover_missed_threads(
+    client: SlackClient,
+    team_channels: list[dict],
+    team_slack_ids: set[str],
+    dry_run: bool,
+    users_cache: dict[str, str],
+    name_resolver,
+    subteams_cache: dict[str, str],
+    team_subteam_ids: Optional[set[str]] = None,
+) -> dict:
+    """Search-driven safety net over team_involved channels.
+
+    For each roster member, search.messages `from:<@uid> after:<N days ago>`
+    (newest-first). Any hit inside a team_involved channel whose thread —
+    root event OR the hit itself — is missing from events.db marks a thread
+    the cursor-bound pipeline lost; drain it whole (root + replies).
+
+    Why this exists: fetch_history_team_filtered correctly drops a non-team
+    root that has no team replies YET. The cursor then advances past it, and
+    every reconcile path only re-drains parents already stored — so a member's
+    LATE reply to that root was permanently unfetchable. Search keys on the
+    member, not the root, so it sees the reply no matter when it lands.
+
+    Idempotent: already-ingested threads are skipped by the events.db id
+    check; re-drains are upserts. Returns a counters dict.
+    """
+    out = {
+        "members_searched": 0, "hits_seen": 0, "hits_in_scope": 0,
+        "threads_checked": 0, "threads_missing": 0, "threads_drained": 0,
+        "threads_kept": 0, "root_inserted": 0, "replies_inserted": 0,
+        "drain_cap_dropped": 0, "errors": [],
+    }
+    chan_by_id = {c["id"]: c for c in team_channels if c.get("id")}
+    if not chan_by_id or not team_slack_ids:
+        return out
+
+    after = (
+        datetime.now(tz=timezone.utc) - timedelta(days=SEARCH_NET_LOOKBACK_DAYS)
+    ).date().isoformat()
+
+    # (channel_id, root_ts) → event-ids that must ALL exist in events.db for
+    # the thread to count as covered (the root + every in-scope hit under it).
+    threads: dict[tuple[str, str], set[str]] = {}
+    for uid in sorted(team_slack_ids):
+        out["members_searched"] += 1
+        page = 1
+        while page <= SEARCH_NET_PAGE_CAP:
+            try:
+                resp = client.search_messages(
+                    f"from:<@{uid}> after:{after}", count=100, page=page,
+                )
+            except Exception as e:
+                out["errors"].append(f"search {uid} p{page}: {e}")
+                break
+            msgs = resp.get("messages") or {}
+            for m in msgs.get("matches") or []:
+                out["hits_seen"] += 1
+                cid = (m.get("channel") or {}).get("id")
+                ts = m.get("ts")
+                if not cid or not ts or cid not in chan_by_id:
+                    continue
+                out["hits_in_scope"] += 1
+                root_ts = _thread_root_from_match(m)
+                ids = threads.setdefault((cid, root_ts), {f"slack:{cid}:{root_ts}"})
+                if ts != root_ts:
+                    ids.add(f"slack:{cid}:{root_ts}:{ts}")
+            paging = msgs.get("paging") or {}
+            if page >= int(paging.get("pages") or 1):
+                break
+            page += 1
+
+    out["threads_checked"] = len(threads)
+    if not threads:
+        return out
+
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    touched_channels: set[str] = set()
+    try:
+        missing: list[tuple[str, str]] = []
+        for (cid, root_ts), expected_ids in sorted(threads.items()):
+            id_list = sorted(expected_ids)
+            ph = ",".join("?" * len(id_list))
+            have = {
+                r[0] for r in conn.execute(
+                    f"SELECT id FROM events WHERE id IN ({ph})", id_list,
+                )
+            }
+            if have >= expected_ids:
+                continue
+            missing.append((cid, root_ts))
+        out["threads_missing"] = len(missing)
+        if len(missing) > SEARCH_NET_DRAIN_CAP:
+            out["drain_cap_dropped"] = len(missing) - SEARCH_NET_DRAIN_CAP
+            missing = missing[:SEARCH_NET_DRAIN_CAP]
+
+        for cid, root_ts in missing:
+            ch = chan_by_id[cid]
+            keep_bot = str(ch.get("keep_bot_messages", "false")).lower() == "true"
+            try:
+                r_ins, p_ins, kept = _drain_thread_if_team(
+                    client, conn, cid, root_ts, dry_run, users_cache, keep_bot,
+                    name_resolver, subteams_cache, team_slack_ids, team_subteam_ids,
+                )
+            except Exception as e:
+                out["errors"].append(f"drain {cid}:{root_ts}: {e}")
+                continue
+            out["threads_drained"] += 1
+            if kept:
+                out["threads_kept"] += 1
+                out["root_inserted"] += r_ins
+                out["replies_inserted"] += p_ins
+                if r_ins or p_ins:
+                    touched_channels.add(cid)
+    finally:
+        conn.close()
+
+    if not dry_run and touched_channels:
+        from subprocess import run
+        for cid in sorted(touched_channels):
+            run([".venv/bin/python", "derive/build_thread_summary.py", "--channel", cid],
+                cwd=str(_PKG_ROOT), check=False, capture_output=True)
     return out
 
 
@@ -896,7 +1109,13 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--threads-sweep", action="store_true",
                     help="pre-standup: re-walk recently-active threads (cooldown bypassed) on "
-                         "team_involved + oncall channels to pull late replies before the digest")
+                         "team_involved + oncall channels to pull late replies before the digest; "
+                         "also runs the team-search safety net (see --search-net)")
+    ap.add_argument("--search-net", action="store_true",
+                    help="run ONLY the team-search safety net: search.messages from:<member> "
+                         "over the last %d days, drain any hit-thread missing from events.db "
+                         "on team_involved channels (recovers late replies to roots the "
+                         "cursor dropped before any team reply existed)" % SEARCH_NET_LOOKBACK_DAYS)
     args = ap.parse_args()
 
     # Sentinel logging — parsed by bin/cron-status.sh (parse_runs).
@@ -950,6 +1169,8 @@ def main() -> int:
                     if str(c.get("ingest_mode", "")).lower() == "team_involved"
                     or (c.get("class") or "") == "oncall"
                     or c.get("id") in roster_chans]
+    elif args.search_net:
+        channels = []  # net-only run: skip the per-channel ingest loop entirely
 
     log.info("Slack ingest starting. channels=%d dry_run=%s", len(channels), args.dry_run)
     print(f"\ningesting {len(channels)} channel(s)...\n")
@@ -997,6 +1218,30 @@ def main() -> int:
                   f"({s['elapsed_s']}s)")
             any_success = True
 
+    # ── Team-search safety net (with --threads-sweep, or standalone --search-net) ──
+    # Always scoped to the FULL config's team_involved channels, independent of any
+    # sweep/single-channel narrowing above.
+    net = None
+    if args.threads_sweep or args.search_net:
+        team_channels = [c for c in _load_channels_yaml()
+                         if str(c.get("ingest_mode", "")).lower() == "team_involved"]
+        net = search_net_recover_missed_threads(
+            client, team_channels, team_slack_ids, args.dry_run,
+            users_cache, name_resolver, subteams_cache, team_subteam_ids,
+        )
+        print(f"\n[search-net] members={net['members_searched']} "
+              f"hits={net['hits_seen']}/{net['hits_in_scope']}-in-scope "
+              f"threads={net['threads_checked']} missing={net['threads_missing']} "
+              f"drained={net['threads_drained']} "
+              f"root+{net['root_inserted']} repl+{net['replies_inserted']}")
+        if net["drain_cap_dropped"]:
+            print(f"[search-net] CAP: {net['drain_cap_dropped']} missing thread(s) "
+                  f"deferred to next fire (drain cap {SEARCH_NET_DRAIN_CAP})")
+        for e in net["errors"]:
+            print(f"[search-net] ERR {e}")
+        if args.threads_sweep and (net["root_inserted"] or net["replies_inserted"]):
+            any_success = True
+
     if any_success and not args.dry_run:
         write_success_marker()
         print(f"\n[success] wrote {SUCCESS_PATH}")
@@ -1010,6 +1255,8 @@ def main() -> int:
                     + (s.get("replies_inserted", 0) or 0)
                     + (s.get("rec_late_inserts", 0) or 0)
                     for s in summaries)
+    if net:
+        total_new += (net["root_inserted"] or 0) + (net["replies_inserted"] or 0)
     total_edits = sum(s.get("rec_edits", 0) or 0 for s in summaries)
     total_dels = sum(s.get("rec_deletes", 0) or 0 for s in summaries)
     log.info("Done. source=slack total_new=%d total_dup=0 edits=%d deletes=%d",

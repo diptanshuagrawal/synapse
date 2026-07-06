@@ -124,3 +124,29 @@ def test_iter_history_paginates(monkeypatch):
     out = [m["ts"] for m in c.iter_history("C0X")]
     assert out == ["1", "2"]
     assert seen_cursors == [None, "c2"]   # 1st call no cursor, 2nd threads next_cursor
+
+
+# ── search_messages ──────────────────────────────────────────────────────────
+
+def test_search_messages_params(monkeypatch):
+    """search.messages: the query + page-numbered pagination params (NOT cursor)
+    must reach the API verbatim — the search-net safety net depends on `page`
+    to walk `paging.pages` (see ingest/slack_ingest_app.py)."""
+    c = _client(monkeypatch)
+    calls = []
+
+    def fake_call(method, params):
+        calls.append((method, params))
+        return {"ok": True, "messages": {"matches": [], "paging": {"page": 2, "pages": 2}}}
+
+    monkeypatch.setattr(c, "_call", fake_call)
+    out = c.search_messages("from:<@U0ALICE> after:2026-06-29", page=2)
+    assert out["messages"]["paging"]["page"] == 2
+
+    method, params = calls[0]
+    assert method == "search.messages"
+    assert params["query"] == "from:<@U0ALICE> after:2026-06-29"
+    assert params["page"] == 2
+    assert params["count"] == 100
+    assert params["sort"] == "timestamp" and params["sort_dir"] == "desc"
+    assert "cursor" not in params   # page-numbered API, not cursor-paginated
