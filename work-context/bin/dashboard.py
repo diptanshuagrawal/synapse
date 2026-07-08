@@ -3430,6 +3430,8 @@ def _inject_nav(html: str, path: str) -> str:
   <div class="t">Planning</div>
   {a(_SPRINT_BASE + '/sprint','sprint','🗓️ Sprint Planner')}
   {a(_SPRINT_BASE + '/monthly','monthly','📆 Monthly Planner')}
+  {a(_SPRINT_BASE + '/plan','plan','🧭 Plan (roadmap)')}
+  {a(_SPRINT_BASE + '/retro','retro','🔁 Retro')}
   {a('/leaves','leaves','🌴 Team Leaves')}
 </nav>
 <script>(function(){{
