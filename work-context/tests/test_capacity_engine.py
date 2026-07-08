@@ -128,3 +128,24 @@ def test_budget_fields_from_base_derives_twelve_consecutive_ids():
 def test_budget_fields_from_base_handles_bad_input():
     assert ce._budget_fields_from_base("") == {}
     assert ce._budget_fields_from_base("nonsense") == {}
+
+
+def test_parse_highs_lows_top_level_items_only():
+    md = """# Retro
+## Highs
+1. **Alpha shipped** — 99.9% success.
+    - detail sub-bullet ignored
+2. Bravo live.
+## Lows
+1. Charlie slipped to next month.
+- loose bullet ignored
+## Metrics
+1. not a high or low
+"""
+    highs, lows = ce._parse_highs_lows(md)
+    assert highs == ["Alpha shipped — 99.9% success.", "Bravo live."]
+    assert lows == ["Charlie slipped to next month."]
+
+
+def test_parse_highs_lows_empty():
+    assert ce._parse_highs_lows("no sections here") == ([], [])

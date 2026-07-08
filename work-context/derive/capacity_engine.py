@@ -33,6 +33,7 @@ INITIATIVE_PROD_DRI_FIELD = INITIATIVE_IMPACT_FIELD = INITIATIVE_LINK_TYPE = ""
 BUDGET_OVERALL_FIELD = ""
 EPIC_ISSUETYPE_ID = "10000"
 BUDGET_FIELDS = {}
+SP_FIELD = ""
 
 
 def _yaml(name):
@@ -74,8 +75,9 @@ def _load_cfg():
     # Org-specific Jira field / issuetype / link IDs (nothing hardcoded in code).
     global INITIATIVE_POD_FIELD, INITIATIVE_ORGPRI_FIELD, INITIATIVE_ENG_DRI_FIELD
     global INITIATIVE_PROD_DRI_FIELD, INITIATIVE_IMPACT_FIELD, INITIATIVE_LINK_TYPE
-    global EPIC_ISSUETYPE_ID, BUDGET_OVERALL_FIELD, BUDGET_FIELDS
+    global EPIC_ISSUETYPE_ID, BUDGET_OVERALL_FIELD, BUDGET_FIELDS, SP_FIELD
     jf = sp.get("jira_fields") or {}
+    SP_FIELD = jf.get("story_points", "")
     INITIATIVE_POD_FIELD = jf.get("pods", "")
     INITIATIVE_ORGPRI_FIELD = jf.get("org_priority", "")
     INITIATIVE_ENG_DRI_FIELD = jf.get("eng_dri", "")
@@ -690,6 +692,132 @@ def submit_budgets(epic_budgets, months, dry_run=True):
         except Exception as e:
             applied.append({"epic": k, "error": str(e), "ok": False})
     return {"dryRun": False, "diffs": diffs, "applied": applied}
+
+
+def retro_summary(months):
+    """Retro data for a set of calendar months (['YYYY-MM', ...]):
+    per epic, PLANNED SP (the epic's Budget fields for those months) vs ACTUAL SP
+    (story points of Done / Mobile-Release-Pending tickets resolved in the period,
+    rolled to their parent epic), plus the delta. Covers epics that had either
+    planned budget OR actual work in the window."""
+    import datetime as dt
+    yms = sorted(m for m in months if m)
+    if not yms:
+        return {"__error__": "no months selected"}
+
+    def _first(ym): y, m = map(int, ym.split("-")); return dt.date(y, m, 1)
+    def _last(ym):
+        y, m = map(int, ym.split("-"))
+        nxt = dt.date(y + 1, 1, 1) if m == 12 else dt.date(y, m + 1, 1)
+        return nxt - dt.timedelta(days=1)
+    start, end = _first(yms[0]).isoformat(), _last(yms[-1]).isoformat()
+    mnames = [BUDGET_MONTHS[int(ym.split("-")[1]) - 1] for ym in yms]
+
+    def _search(jql, fields):
+        out, tok, pages = [], None, 0
+        while True:
+            body = {"jql": jql, "fields": fields, "maxResults": 100}
+            if tok:
+                body["nextPageToken"] = tok
+            d = _jira("POST", "/rest/api/3/search/jql", body)
+            out += d.get("issues", [])
+            tok = d.get("nextPageToken")
+            pages += 1
+            if d.get("isLast") or not tok or pages > 50:
+                break
+        return out
+
+    try:
+        # ACTUAL: SP of resolved Done/MRP work items in the window, summed per parent epic
+        if not SP_FIELD:
+            return {"__error__": "jira_fields.story_points not set in sprint_planning.yaml"}
+        children = _search(
+            f'project = {JIRA_PROJECT} AND issuetype in (Story,Task,Bug) '
+            f'AND status in (Done,"Mobile Release Pending") '
+            f'AND resolved >= "{start}" AND resolved <= "{end}"',
+            ["parent", SP_FIELD])
+        actual = {}
+        for i in children:
+            f = i["fields"]
+            p = (f.get("parent") or {}).get("key")
+            if p:
+                actual[p] = actual.get(p, 0) + (f.get(SP_FIELD) or 0)
+        # PLANNED: epic monthly Budget fields (reuse epic_budgets)
+        eb = epic_budgets()
+        if "__error__" in eb:
+            return eb
+        bud = {e["key"]: e for e in eb["epics"]}
+        planned = {k: round(sum(bud[k]["budgets"].get(mn, 0) for mn in mnames), 1) for k in bud}
+
+        keys = set(actual) | {k for k, v in planned.items() if v > 0}
+        summ = {e["key"]: e.get("summary", "") for e in bud.values()}
+        missing = [k for k in keys if k not in summ]
+        for j in range(0, len(missing), 80):
+            for it in _search(f"key in ({','.join(missing[j:j+80])})", ["summary"]):
+                summ[it["key"]] = it["fields"].get("summary", "")
+
+        rows = []
+        for k in keys:
+            pl = round(planned.get(k, 0), 1)
+            ac = round(actual.get(k, 0), 1)
+            rows.append({"key": k, "url": f"https://{JIRA_HOST}/browse/{k}",
+                         "summary": summ.get(k, ""), "planned": pl, "actual": ac,
+                         "delta": round(pl - ac, 1)})
+        rows.sort(key=lambda r: -abs(r["delta"]))
+    except Exception as e:
+        sys.stderr.write(f"[retro_summary] {e}\n")
+        return {"__error__": str(e)}
+
+    return {"months": yms, "monthNames": mnames, "start": start, "end": end,
+            "epics": rows,
+            "totalPlanned": round(sum(r["planned"] for r in rows), 1),
+            "totalActual": round(sum(r["actual"] for r in rows), 1)}
+
+
+def retro_notes(months):
+    """Highs/Lows parsed from the routine-generated retro artifacts,
+    <repo>/management/retros/<since>-to-<until>.md (numbered '## Highs' / '## Lows'),
+    for the given calendar months. Picks the canonical monthly file per month (start
+    and end in the same month, no variant suffix) and reads only the top-level numbered
+    items (not the indented sub-bullets)."""
+    import glob
+    import re
+    base = os.path.join(os.path.dirname(ROOT), "management", "retros")   # repo-root/management/retros
+    canon = re.compile(r"^\d{4}-\d{2}-\d{2}-to-\d{4}-\d{2}-\d{2}\.md$")
+    highs, lows, srcs = [], [], []
+    for ym in sorted(set(m for m in months if m)):
+        cands = [p for p in glob.glob(os.path.join(base, f"{ym}-01-to-{ym}-*.md"))
+                 if canon.match(os.path.basename(p))]
+        if not cands:
+            continue
+        fp = max(cands)   # latest end-date in the month = the canonical monthly retro
+        srcs.append(os.path.basename(fp))
+        h, l = _parse_highs_lows(open(fp, encoding="utf-8", errors="replace").read())
+        highs += h
+        lows += l
+    return {"months": sorted(set(months)), "highs": highs, "lows": lows, "sources": srcs}
+
+
+def _parse_highs_lows(text):
+    """Pure parser: from a retro markdown body, return (highs, lows) — the top-level
+    numbered items under '## Highs' / '## Lows' (bold markers stripped; sub-bullets and
+    other sections ignored)."""
+    import re
+    highs, lows, sec = [], [], None
+    for line in text.splitlines():
+        s = line.strip()
+        if re.match(r"^##\s+highs", s, re.I):
+            sec = "h"; continue
+        if re.match(r"^##\s+lows", s, re.I):
+            sec = "l"; continue
+        if s.startswith("## "):
+            sec = None; continue
+        m = re.match(r"^\d+[.)]\s+(.*)", line)   # top-level numbered item only (not sub-bullets)
+        if sec and m:
+            item = m.group(1).replace("**", "").strip()
+            if item:
+                (highs if sec == "h" else lows).append(item)
+    return highs, lows
 
 
 def backlog_pool(cap=300):

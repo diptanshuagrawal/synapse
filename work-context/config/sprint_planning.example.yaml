@@ -27,3 +27,4 @@ jira_fields:
   impact: customfield_00000                        # impact/summary text
   overall_budget: customfield_00000                # epic "Overall Budget" number
   monthly_budget_base: customfield_00000           # "Jan Budget"; Feb..Dec must be consecutive IDs
+  story_points: customfield_00000                  # "Story Points" (actual SP burned, for retro)

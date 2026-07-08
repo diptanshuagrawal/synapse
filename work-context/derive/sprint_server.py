@@ -25,6 +25,8 @@ LEAVES_URL = "http://127.0.0.1:8765/leaves"
 def _inject_nav(html_bytes, clean_path):
     """Inject a hamburger slide-out sidebar (Sprint / Monthly / Leaves) into a page."""
     active = ("sprint" if "sprint-planner" in clean_path
+              else "plan" if "plan.html" in clean_path
+              else "retro" if "retro.html" in clean_path
               else "monthly" if "monthly" in clean_path else "")
     def a(href, key, label):
         cls = ' class="active"' if key == active else ""
@@ -52,6 +54,8 @@ def _inject_nav(html_bytes, clean_path):
   <div class="t">Planning</div>
   {a('/sprint','sprint','🗓️ Sprint Planner')}
   {a('/monthly','monthly','📆 Monthly Planner')}
+  {a('/plan','plan','🧭 Plan (roadmap)')}
+  {a('/retro','retro','🔁 Retro')}
   {a(LEAVES_URL,'leaves','🌴 Team Leaves')}
 </nav>
 <script>(function(){{
@@ -234,6 +238,49 @@ class Handler(SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": str(e)}).encode())
             return
+        if self.path.split("?")[0] == "/api/retro-notes":
+            from urllib.parse import urlparse, parse_qs
+            months = [m for m in parse_qs(urlparse(self.path).query).get("months", [""])[0].split(",") if m]
+            try:
+                body = json.dumps(capacity_engine.retro_notes(months)).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
+        if self.path.split("?")[0] == "/api/retro":
+            import hashlib
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            months = [m for m in q.get("months", [""])[0].split(",") if m]
+            fresh = q.get("fresh", ["0"])[0] == "1"
+            tag = hashlib.md5(",".join(sorted(months)).encode()).hexdigest()[:8] if months else "none"
+            cachef = os.path.join(DERIVED, f"retro-{tag}.json")
+            try:
+                if not fresh and os.path.exists(cachef):
+                    with open(cachef, "rb") as f:
+                        body = f.read()
+                else:
+                    body = json.dumps(capacity_engine.retro_summary(months)).encode()
+                    with open(cachef, "wb") as f:
+                        f.write(body)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
         if self.path.split("?")[0] == "/api/initiatives":
             import hashlib
             from urllib.parse import urlparse, parse_qs
@@ -267,6 +314,10 @@ class Handler(SimpleHTTPRequestHandler):
             self.path = "/sprint-planner-v2.html"      # 4-tab workspace (bin/_sprint_v2.py)
         elif self.path.split("?")[0] in ("/monthly", "/monthly/"):
             self.path = "/monthly.html"                # per-month capacity + planned budget view
+        elif self.path.split("?")[0] in ("/plan", "/plan/"):
+            self.path = "/plan.html"                   # roadmap sandbox (scratch; doesn't touch budgets)
+        elif self.path.split("?")[0] in ("/retro", "/retro/"):
+            self.path = "/retro.html"                  # retro: highs/lows + planned-vs-actual SP by epic
         # Serve our HTML pages with the nav sidebar injected and NO caching (so edits/JS
         # fixes always take effect on reload — stale-cache was causing "stuck" pages).
         clean = self.path.split("?")[0]
