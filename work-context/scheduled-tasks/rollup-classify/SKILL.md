@@ -13,10 +13,17 @@ CADENCE: weekday 15:00 IST. Lookback window = FULL 240 days (the rollup default)
 Before doing ANY work, run this and obey it:
 
     MARK=__REPO__/work-context/state/last_routine_rollup_success.date
+    LOCK=__REPO__/work-context/state/rollup_inprogress.lock
     TODAY=$(TZ=Asia/Kolkata date +%F)
-    if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$TODAY" ]; then echo "GATE: rollup already succeeded today ($TODAY) — idle"; else echo "GATE: rollup not done today — proceed"; fi
+    NOW=$(date +%s)
+    LOCKTS=$(cat "$LOCK" 2>/dev/null); LOCKTS=${LOCKTS:-0}
+    if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$TODAY" ]; then echo "GATE: rollup already succeeded today ($TODAY) — idle"
+    elif [ -f "$LOCK" ] && [ $((NOW - LOCKTS)) -lt 2700 ]; then echo "GATE: another rollup run is in progress (lock age <45min) — idle"
+    else echo "$NOW" > "$LOCK"; echo "GATE: rollup not done today — proceed"; fi
 
-If it prints "already succeeded today" → STOP NOW: do not dump, classify, apply, or post anything; end the run. Only proceed to the steps below if it prints "not done today".
+If it prints "already succeeded today" OR "another rollup run is in progress" → STOP NOW: do not dump, classify, apply, or post anything; end the run. Only proceed to the steps below if it prints "not done today — proceed".
+
+(The lock closes the same >30-min-run race validated on daily-standup 2026-07-13 — the marker is checked at start but stamped at end, so a run longer than 30 min overlaps the next cron fire and the deliverable posts twice. The lock is stamped at start; a crashed run's stale lock self-expires after 45 min so retries still happen.)
 
 STEP 1 — Phase 1 (keyword pass + dump):
   cd __REPO__/work-context && DAYS=240 derive/manual-rollup.sh dump
@@ -51,8 +58,9 @@ STEP 4 — Post a run-summary to Slack channel #rollup (channel ID __ROLLUP_CHAN
 Read-only on all data SOURCES (events.db reads, Jira, Confluence, gh). The ONLY writes are: the rollup apply (subject_summary + ownership cols + derived rebuild, which is the skill's job) and the Slack post.
 
 ## RECORD SUCCESS (final step — gates the 30-min retry)
-ONLY after this run is CONFIRMED complete — the apply finished (or there was nothing pending) AND the run-summary landed in #rollup — stamp the marker so the rest of today's fires idle:
+ONLY after this run is CONFIRMED complete — the apply finished (or there was nothing pending) AND the run-summary landed in #rollup — stamp the marker AND release the in-progress lock so the rest of today's fires idle:
 
     TZ=Asia/Kolkata date +%F > __REPO__/work-context/state/last_routine_rollup_success.date
+    rm -f __REPO__/work-context/state/rollup_inprogress.lock
 
-A "nothing pending" run counts as success — stamp it. If the dump/classify/apply errored or the summary could not be delivered, do NOT stamp: leave the marker so the next 30-min fire retries.
+A "nothing pending" run counts as success — stamp it. If the dump/classify/apply errored or the summary could not be delivered, do NOT stamp — but DO `rm -f` the lock so the next 30-min fire retries immediately (a crashed session that never reaches this step is covered by the lock's 45-min self-expiry).

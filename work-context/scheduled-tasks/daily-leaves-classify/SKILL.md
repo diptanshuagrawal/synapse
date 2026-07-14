@@ -18,12 +18,24 @@ a run. Before doing ANY work, run this and obey it:
 
     MARK=__REPO__/work-context/state/last_routine_leaves_success.date
     SLACK=__REPO__/work-context/state/last_slack_success.date
+    LOCK=__REPO__/work-context/state/leaves_inprogress.lock
     TODAY=$(TZ=Asia/Kolkata date +%F)
-    if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$TODAY" ]; then echo "GATE: leaves already succeeded today ($TODAY) — idle"; elif [ ! -f "$SLACK" ] || [ "$(cat "$SLACK")" != "$TODAY" ]; then echo "GATE: slack ingest has not succeeded today ($TODAY) — idle, retry next fire"; else echo "GATE: leaves not done today, slack fresh — proceed"; fi
+    NOW=$(date +%s)
+    LOCKTS=$(cat "$LOCK" 2>/dev/null); LOCKTS=${LOCKTS:-0}
+    if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$TODAY" ]; then echo "GATE: leaves already succeeded today ($TODAY) — idle"
+    elif [ ! -f "$SLACK" ] || [ "$(cat "$SLACK")" != "$TODAY" ]; then echo "GATE: slack ingest has not succeeded today ($TODAY) — idle, retry next fire"
+    elif [ -f "$LOCK" ] && [ $((NOW - LOCKTS)) -lt 2700 ]; then echo "GATE: another leaves run is in progress (lock age <45min) — idle"
+    else echo "$NOW" > "$LOCK"; echo "GATE: leaves not done today, slack fresh — proceed"; fi
 
 If it prints anything other than "proceed" → STOP NOW: do not dump, classify, apply, or
-render anything, and do NOT stamp the success marker (the slack-not-fresh idle must leave
-the marker untouched so a later fire retries after ingest lands); end the run.
+render anything, and do NOT stamp the success marker or touch the lock (the slack-not-fresh
+and lock-held idles must leave both untouched so a later fire retries after ingest lands /
+the running fire finishes); end the run.
+
+(The lock closes the same >30-min-run race validated on daily-standup 2026-07-13 — the marker
+is checked at start but stamped at end, so a run longer than 30 min overlaps the next cron
+fire and the deliverable posts twice. The lock is stamped at start; a crashed run's stale
+lock self-expires after 45 min so retries still happen.)
 
 PHASE 1 — Refresh pending (idempotent):
   cd __REPO__/work-context && .venv/bin/python derive/leaves_dump.py
@@ -52,8 +64,9 @@ PHASE 3 — Apply + render:
 Success criteria: apply reports "[validate] N accepted, 0 rejected" (or only low-confidence rejects), render writes derived/team-leaves.md and prints active/upcoming/recent/ambiguous counts. Report a one-line summary: how many events classified, true vs false, and any notable upcoming leaves.
 
 ## RECORD SUCCESS (final step — gates the 30-min retry)
-ONLY after the pipeline is CONFIRMED complete — apply + render finished, OR Phase 1 reported nothing pending — stamp the marker so the rest of today's fires idle:
+ONLY after the pipeline is CONFIRMED complete — apply + render finished, OR Phase 1 reported nothing pending — stamp the marker AND release the in-progress lock so the rest of today's fires idle:
 
     TZ=Asia/Kolkata date +%F > __REPO__/work-context/state/last_routine_leaves_success.date
+    rm -f __REPO__/work-context/state/leaves_inprogress.lock
 
-The early-STOP "nothing to classify" branch in Phase 1 counts as success — stamp it before stopping. If any phase errored, do NOT stamp: leave the marker so the next 30-min fire retries.
+The early-STOP "nothing to classify" branch in Phase 1 counts as success — stamp it before stopping. If any phase errored, do NOT stamp — but DO `rm -f` the lock so the next 30-min fire retries immediately (a crashed session that never reaches this step is covered by the lock's 45-min self-expiry).

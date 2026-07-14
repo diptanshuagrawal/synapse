@@ -11,10 +11,17 @@ Working dir: __REPO__/work-context. (STEP 0 resolves the python for the render +
 Before ANY work, run this and obey it:
 
     MARK=__REPO__/work-context/state/last_routine_housekeeping_review_success.week
+    LOCK=__REPO__/work-context/state/housekeeping_review_inprogress.lock
     WEEK=$(TZ=Asia/Kolkata date +%G-%V)
-    if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$WEEK" ]; then echo "GATE: housekeeping-review already succeeded this week ($WEEK) — idle"; else echo "GATE: not done this week — proceed"; fi
+    NOW=$(date +%s)
+    LOCKTS=$(cat "$LOCK" 2>/dev/null); LOCKTS=${LOCKTS:-0}
+    if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$WEEK" ]; then echo "GATE: housekeeping-review already succeeded this week ($WEEK) — idle"
+    elif [ -f "$LOCK" ] && [ $((NOW - LOCKTS)) -lt 2700 ]; then echo "GATE: another housekeeping-review run is in progress (lock age <45min) — idle"
+    else echo "$NOW" > "$LOCK"; echo "GATE: not done this week — proceed"; fi
 
-If it prints "already succeeded this week" → STOP NOW: do nothing, end the run. Only proceed if it prints "not done this week".
+If it prints "already succeeded this week" OR "another housekeeping-review run is in progress" → STOP NOW: do nothing, end the run. Only proceed if it prints "not done this week — proceed".
+
+(The lock closes the same >30-min-run race validated on daily-standup 2026-07-13 — the marker is checked at start but stamped at end, so a run longer than 30 min overlaps the next cron fire and the deliverable posts twice. The lock is stamped at start; a crashed run's stale lock self-expires after 45 min so retries still happen.)
 
 ## STEP 0 — resolve a python that can drive the Relay post
 The render + relay-post need `slack_sdk` + `yaml`, which live in the SYSTEM python3, NOT the
@@ -56,9 +63,11 @@ suggest-only — applied only on the owner's Approve click in Slack. Read-only o
 
 ## RECORD SUCCESS (final step — gates the 30-min retry)
 ONLY after the prune ran, the scan + render completed, and the Relay post landed (or correctly
-posted "nothing further to clean"), stamp the weekly marker:
+posted "nothing further to clean"), stamp the weekly marker AND release the in-progress lock:
 
     TZ=Asia/Kolkata date +%G-%V > __REPO__/work-context/state/last_routine_housekeeping_review_success.week
+    rm -f __REPO__/work-context/state/housekeeping_review_inprogress.lock
 
-A clean "nothing further" run counts as success — stamp it. If any leg failed, do NOT stamp:
-leave the marker so the next 30-min fire retries.
+A clean "nothing further" run counts as success — stamp it. If any leg failed, do NOT stamp —
+but DO `rm -f` the lock so the next 30-min fire retries immediately (a crashed session that
+never reaches this step is covered by the lock's 45-min self-expiry).

@@ -18,15 +18,22 @@ Before doing ANY work, run this and obey the printed MODE:
 
     SUCCESS=__REPO__/work-context/state/last_routine_docsync_sweep_success.date
     POSTED=__REPO__/work-context/state/last_routine_docsync_sweep_posted.date
+    LOCK=__REPO__/work-context/state/docsync_sweep_inprogress.lock
     MONTH=$(TZ=Asia/Kolkata date +%Y-%m)
+    NOW=$(date +%s)
+    LOCKTS=$(cat "$LOCK" 2>/dev/null); LOCKTS=${LOCKTS:-0}
     if [ -f "$SUCCESS" ] && [ "$(cat "$SUCCESS")" = "$MONTH" ]; then echo "GATE: fully done this month ($MONTH) — idle"; \
-    elif [ -f "$POSTED" ] && [ "$(cat "$POSTED")" = "$MONTH" ]; then echo "GATE: text sweep already posted ($MONTH) — DIAGRAM-ONLY mode (only the Chrome pass is outstanding)"; \
-    else echo "GATE: not posted this month — FULL run"; fi
+    elif [ -f "$LOCK" ] && [ $((NOW - LOCKTS)) -lt 2700 ]; then echo "GATE: another doc-sync-sweep run is in progress (lock age <45min) — idle"; \
+    elif [ -f "$POSTED" ] && [ "$(cat "$POSTED")" = "$MONTH" ]; then echo "$NOW" > "$LOCK"; echo "GATE: text sweep already posted ($MONTH) — DIAGRAM-ONLY mode (only the Chrome pass is outstanding)"; \
+    else echo "$NOW" > "$LOCK"; echo "GATE: not posted this month — FULL run"; fi
+
+(The lock closes the same >30-min-run race validated on daily-standup 2026-07-13 — the markers are checked at start but stamped at end, so a run longer than 30 min overlaps the next cron fire and the preview/cards post twice. The lock is stamped at start of BOTH proceed modes; a crashed run's stale lock self-expires after 45 min so retries still happen.)
 
 - **"fully done this month"** → STOP NOW: discover nothing, sweep nothing, post nothing; end the run.
+- **"another doc-sync-sweep run is in progress"** → STOP NOW: post nothing, touch neither marker nor the lock; end the run.
 - **"DIAGRAM-ONLY mode"** → the text sweep already posted this month; the ONLY outstanding work is the mandatory diagram pass. Do NOT re-run discovery or the text sweep and do NOT re-post the preview. Go straight to Phase 1.5 (STEP 1, Chrome pass) on the docs recorded in `state/doc_sync_diagram_pending_<MONTH>.json`:
     - **Browser connected** → read the diagrams, diff vs code, post a "[doc-sync sweep — diagram pass]" follow-up to the doc-sweep channel + Relay finding cards for any new sequence drift, then stamp SUCCESS (see RECORD SUCCESS).
-    - **No browser** → IDLE this fire (post nothing), so a later fire with a browser completes it. STOP.
+    - **No browser** → IDLE this fire (post nothing) — `rm -f "$LOCK"` first so a later fire with a browser can run. STOP.
 - **"FULL run"** → proceed to the steps below (discovery + text sweep + attempt diagrams + post preview + cards).
 
 STEP 0 — Resolve a yaml-capable python:
@@ -102,4 +109,10 @@ matches flagged on the card), so approving won't double-post.
 
    **Do NOT stamp SUCCESS if `diagram_pass: pending_no_browser`** — leave it unstamped so subsequent fires retry in DIAGRAM-ONLY mode until a Confluence browser is connected and the diagrams are actually read. (In DIAGRAM-ONLY mode, stamp SUCCESS once the diagram follow-up is delivered.)
 
-If discovery/sweep errored or the channel post could not be delivered, stamp NEITHER marker so the next 30-min fire retries the whole thing.
+3. **LOCK RELEASE** — EVERY fire that acquired the lock (FULL or DIAGRAM-ONLY) must release it when the run ends, whatever the outcome — SUCCESS stamped, POSTED-only (diagram pending), or a clean failure:
+
+    rm -f __REPO__/work-context/state/docsync_sweep_inprogress.lock
+
+   (A crashed session that never reaches this is covered by the lock's 45-min self-expiry.)
+
+If discovery/sweep errored or the channel post could not be delivered, stamp NEITHER marker (but DO release the lock) so the next 30-min fire retries the whole thing.

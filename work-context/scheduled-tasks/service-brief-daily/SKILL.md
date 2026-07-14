@@ -13,10 +13,17 @@ GOAL: keep the service briefs current, but spend LLM tokens ONLY on services who
 Before doing ANY work, run this and obey it:
 
     MARK=__REPO__/work-context/state/last_routine_service_brief_success.date
+    LOCK=__REPO__/work-context/state/service_brief_inprogress.lock
     TODAY=$(TZ=Asia/Kolkata date +%F)
-    if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$TODAY" ]; then echo "GATE: service-brief already succeeded today ($TODAY) — idle"; else echo "GATE: service-brief not done today — proceed"; fi
+    NOW=$(date +%s)
+    LOCKTS=$(cat "$LOCK" 2>/dev/null); LOCKTS=${LOCKTS:-0}
+    if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$TODAY" ]; then echo "GATE: service-brief already succeeded today ($TODAY) — idle"
+    elif [ -f "$LOCK" ] && [ $((NOW - LOCKTS)) -lt 2700 ]; then echo "GATE: another service-brief run is in progress (lock age <45min) — idle"
+    else echo "$NOW" > "$LOCK"; echo "GATE: service-brief not done today — proceed"; fi
 
-If it prints "already succeeded today" → STOP NOW: do not refresh skeletons, brief, or ingest anything; end the run. Only proceed to the steps below if it prints "not done today".
+If it prints "already succeeded today" OR "another service-brief run is in progress" → STOP NOW: do not refresh skeletons, brief, or ingest anything; end the run. Only proceed to the steps below if it prints "not done today — proceed".
+
+(The lock closes the same >30-min-run race validated on daily-standup 2026-07-13 — the marker is checked at start but stamped at end, so a run longer than 30 min overlaps the next cron fire and the deliverable posts twice. The lock is stamped at start; a crashed run's stale lock self-expires after 45 min so retries still happen.)
 
 ## Step 1 — deterministic refresh + diff gate (no LLM)
 Run from the working dir:
@@ -54,8 +61,9 @@ This runs without a human at the keyboard. NEVER pause for permission prompts.
 Note: the first fire is 18:00 IST, alongside the 18:00 codegraph LaunchAgent. Ordering doesn't matter — refresh-skeletons.sh re-pins the mirrors to origin HEAD itself, so the briefs reflect the latest code regardless of which ran first.
 
 ## RECORD SUCCESS (final step — gates the 30-min retry)
-ONLY after this run is CONFIRMED complete — every changed service's brief was written + ingested, OR Step 2's gate found no skeleton diffs — stamp the marker so the rest of today's fires idle:
+ONLY after this run is CONFIRMED complete — every changed service's brief was written + ingested, OR Step 2's gate found no skeleton diffs — stamp the marker AND release the in-progress lock so the rest of today's fires idle:
 
     TZ=Asia/Kolkata date +%F > __REPO__/work-context/state/last_routine_service_brief_success.date
+    rm -f __REPO__/work-context/state/service_brief_inprogress.lock
 
-The early-STOP "no skeleton diffs today" branch counts as success — stamp it before stopping. If refresh-skeletons.sh or any brief write errored, do NOT stamp: leave the marker so the next 30-min fire retries.
+The early-STOP "no skeleton diffs today" branch counts as success — stamp it before stopping. If refresh-skeletons.sh or any brief write errored, do NOT stamp — but DO `rm -f` the lock so the next 30-min fire retries immediately (a crashed session that never reaches this step is covered by the lock's 45-min self-expiry).

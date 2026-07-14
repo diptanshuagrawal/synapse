@@ -11,10 +11,17 @@ Working dir: __REPO__
 Before doing ANY work, run this and obey it:
 
     MARK=__REPO__/work-context/state/last_routine_ticketize_success.date
+    LOCK=__REPO__/work-context/state/ticketize_inprogress.lock
     TODAY=$(TZ=Asia/Kolkata date +%F)
-    if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$TODAY" ]; then echo "GATE: ticketize already succeeded today ($TODAY) — idle"; else echo "GATE: ticketize not done today — proceed"; fi
+    NOW=$(date +%s)
+    LOCKTS=$(cat "$LOCK" 2>/dev/null); LOCKTS=${LOCKTS:-0}
+    if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$TODAY" ]; then echo "GATE: ticketize already succeeded today ($TODAY) — idle"
+    elif [ -f "$LOCK" ] && [ $((NOW - LOCKTS)) -lt 2700 ]; then echo "GATE: another ticketize run is in progress (lock age <45min) — idle"
+    else echo "$NOW" > "$LOCK"; echo "GATE: ticketize not done today — proceed"; fi
 
-If it prints "already succeeded today" → STOP NOW: do not gather, detect, write the candidate md, or invoke the bot; end the run. Only proceed to the steps below if it prints "not done today".
+If it prints "already succeeded today" OR "another ticketize run is in progress" → STOP NOW: do not gather, detect, write the candidate md, or invoke the bot; end the run. Only proceed to the steps below if it prints "not done today — proceed".
+
+(The lock closes the same >30-min-run race validated on daily-standup 2026-07-13 — the marker is checked at start but stamped at end, so a run longer than 30 min overlaps the next cron fire and the deliverable posts twice. The lock is stamped at start; a crashed run's stale lock self-expires after 45 min so retries still happen.)
 
 STEP 0 — Resolve a yaml-capable python (the interactive/cron shell may pick a bare python3 without pyyaml):
   PY=$(for p in /opt/homebrew/bin/python3 python3 /usr/local/bin/python3; do "$p" -c 'import yaml' 2>/dev/null && { echo "$p"; break; }; done)
@@ -69,8 +76,9 @@ click). Roster = scope:team reports, on-call suppressed. Read-only on events.db 
 the only writes are the candidate md file + invoking the bot post.
 
 ## RECORD SUCCESS (final step — gates the 30-min retry)
-ONLY after the DETECT run is CONFIRMED complete — the candidate md was written and the Relay bot post landed (or the bot correctly posted "no new ticketable gaps") — stamp the marker so the rest of today's fires idle:
+ONLY after the DETECT run is CONFIRMED complete — the candidate md was written and the Relay bot post landed (or the bot correctly posted "no new ticketable gaps") — stamp the marker AND release the in-progress lock so the rest of today's fires idle:
 
     TZ=Asia/Kolkata date +%F > __REPO__/work-context/state/last_routine_ticketize_success.date
+    rm -f __REPO__/work-context/state/ticketize_inprogress.lock
 
-A clean "no new gaps" run counts as success — stamp it. If the gather/detect errored or the bot post could not be delivered, do NOT stamp: leave the marker so the next 30-min fire retries.
+A clean "no new gaps" run counts as success — stamp it. If the gather/detect errored or the bot post could not be delivered, do NOT stamp — but DO `rm -f` the lock so the next 30-min fire retries immediately (a crashed session that never reaches this step is covered by the lock's 45-min self-expiry).
