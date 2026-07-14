@@ -1,6 +1,6 @@
 # PRD — Ticketize: work-gap → Jira ticket (→ gated PR)
 
-_Status: draft · 2026-06-09 · owner: owner_
+_Status: live · shipped 2026-06 · pipeline in daily use (see work-context/scheduled-tasks/track-work-ticketize) · owner: owner_
 
 **TL;DR:** Turn `/standup`-detected untracked work into Jira tickets via a maker-checker gate, and let the safe subset flow into existing code→PR skills — never collapsing read-only / ticket-write / code-write risk tiers into one unsupervised flow.
 
