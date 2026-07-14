@@ -397,9 +397,9 @@ tags each open CMR:
   still open to close"), and only if it adds signal. Never frame a standing CMR as freshly
   done.
 
-## 7. Output — FOUR root messages (team scope), in this order
+## 7. Output — THREE root messages (team scope), in this order
 
-A `team` run produces **four separate top-level Slack messages** (not one parent +
+A `team` run produces **three separate top-level Slack messages** (not one parent +
 threaded replies — distinct posts, each free to grow its own thread), across TWO
 channels. Post them in this order; each is self-contained:
 
@@ -407,12 +407,15 @@ channels. Post them in this order; each is self-contained:
 2. **⚠️ Your queue** (§7b) — the owner's personal action items. → owner channel.
 3. **👥 Standup updates** (§7c) — the per-person standup ONLY (no team summary). → team
    channel. Devs are @-mentioned here, so this is the one everyone reads.
-4. **📋 Team summary** (§7d) — the team-level synthesis (blocked / ships / unowned /
-   out-on-call). → owner channel (plain names, no @-pings).
 
-Channel routing is owned by the scheduled-task SKILL.md Step 3 (Day update + Your queue +
-Team summary → `standup_channel`; Standup updates → `dev_updates_channel`). For an
-interactive `team` run, render all four in the chat reply.
+(A fourth message, `📋 Team summary`, was DROPPED 2026-07-13 by owner decision: it
+restated ~70% of Day update + Your queue into the same owner channel. Anything it
+uniquely carried is already owned elsewhere — blocked/needs-attention → §7b, ships +
+out/on-call → §7a, unowned/stalled → §7a's own group. Do not reintroduce it.)
+
+Channel routing is owned by the scheduled-task SKILL.md Step 3 (Day update + Your queue
+→ `standup_channel`; Standup updates → `team_standup_channel`). For an
+interactive `team` run, render all three in the chat reply.
 
 For `me` / `<person>` (interactive, non-team): skip the multi-message split — just render
 that one person's section (§7c per-person format) in the chat reply.
@@ -437,10 +440,14 @@ scans. Group as short bullets under bold headers; each item carries its link:
   who's on-call now + over the next 4 weeks (§6c forecast), and **every `# RISKS` line**:
   LEAVE×ONCALL collisions first (dated, named, "needs a swap"), then COVERAGE gaps. Risks
   scan a full four weeks out — this is the heads-up; never omit a risk to save space.
+- **Unowned / stalled** — tickets needing a picker (unassigned / bounced to To-Do),
+  untriaged alerts. (Moved here from the retired Team-summary message, 2026-07-13.)
 - **Cross-team** — notable asks/decisions from sister teams touching this team's surface.
 
 Keep it tight but complete; this is FYI awareness, so don't duplicate Message 2's action
-items here. If a whole group is empty, drop the header.
+items here. If a whole group is empty, drop the header. **Each fact appears ONCE across
+Messages 1+2** — if an item is in Your queue (§7b) it does not also get a Day-update
+bullet; a decision pending the owner lives in §7b only.
 
 ### 7b. Message 2 — `⚠️ Your queue — <date>`
 
@@ -459,6 +466,19 @@ first:
     - `via=subteam-dev` — a ping of the **dev-level team handle**.
       These are usually NOT the owner's personal reply — they go in the separate **To route /
       delegate** bucket below, not here.
+    - `via=broadcast` — an `@here` / `@channel` message with no owner mention (owner ask
+      2026-07-14: "someone may not tag me specifically but use @here/@channel instead").
+      **Judge contextually — the tag alone decides nothing.** KEEP it here when the
+      broadcast is a request that plausibly lands on the owner in his EM/team-owner
+      capacity: share feedback / pain points, submit nominations or plans, confirm
+      ownership or sign off, respond on OKRs/process, join a call — especially from
+      leadership or a central team, in a channel where the owner is one of the obvious
+      addressees, or when the thread is later chased for responses (`escalating×N`).
+      DROP pure announcements (deploy/maintenance notices, releases, FYI broadcasts) and
+      asks clearly aimed at a different audience (e.g. an @here in a channel asking devs
+      to merge a branch). The test: would a manager reading it feel personally on the
+      hook to respond? If a later reply in the same thread names the owner directly,
+      the direct row supersedes this one — render it once, at the direct tier.
   So for THIS bucket keep only `direct` + `subteam-mgr` that are real asks of *him* (decision,
   opinion, join a call, confirm/approve); drop pure-cc / FYI mentions, asks aimed at someone
   else in the same ping, and anything he has clearly already actioned (e.g. a "kindly approve"
@@ -514,8 +534,8 @@ This message is **team-facing** (the team channel) — so the per-person header 
 the dev's **real @-mention**, not their plain name, and every dev gets notified. The
 mention is `<@SLACK_USER_ID>` (id from `config/people.yaml`) and MUST sit on a **bold line,
 NOT a `###` heading** — a `###` heading escapes the mention to literal `<@U…>` text. Same
-`<@U…>` mention for every cross-reference too (reviewer-of, "<dev>'s ticket", team-summary
-names). (Validated 2026-06-22: `### <@U…>` rendered as literal text; `**<@U…> · …**`
+`<@U…>` mention for every cross-reference too (reviewer-of, "<dev>'s ticket").
+(Validated 2026-06-22: `### <@U…>` rendered as literal text; `**<@U…> · …**`
 rendered as a real ping.)
 
 **AUDIENCE — write for the whole team, NEVER addressed to the owner.** This is a general
@@ -525,7 +545,7 @@ broadcast everyone reads, not a note to the manager. So:
 - Re-frame an owner-directed ask as a **neutral team statement**: "needs your lookback call"
   → "pending a decision on the lookback window"; "for your review" → "awaiting review".
 - Owner-directed framing (action items, approvals, decisions the manager owns) belongs ONLY
-  in §7b Your queue and §7d Team summary — both of which post to the owner channel, not here.
+  in §7b Your queue — which posts to the owner channel, not here.
 - Keep it dev-friendly: what each person did / is doing / is blocked on / picks up next,
   stated plainly for peers.
 
@@ -557,16 +577,6 @@ upcoming-leave note, no sub-bullets.
 
 (For interactive `me`/`<person>` chat replies — no Slack post — plain names and `###`
 headers are fine; the `<@U…>`/bold-line rule is only for the team-facing Slack Message 3.)
-
-### 7d. Message 4 — `📋 Team summary — <date>`
-
-The team-level synthesis — a **separate message to the owner channel** (NOT appended to
-Message 3, which is team-facing and per-person only). Owner-facing, so **plain names, no
-@-mentions** (don't re-ping the team here). Bold-header bullets:
-- **Blocked / needs attention** — consolidated, most urgent first (what you raise in standup).
-- **Notable ships** — 2-4 headline deliveries (by owner).
-- **Unowned / stalled** — tickets needing a picker (unassigned / bounced to To-Do), untriaged alerts.
-- **Out / on-call** — on-leave members (one line) + the on-call name.
 
 ## 8. Describe every item — never a bare ID, enrich from body + slack
 
@@ -629,15 +639,15 @@ body/slack enrichment clause, and standup's own pre-save check.
 `management/standup/<date>/` team.md + per-person files cost ~3 min of duplicate
 generation per run and weren't being read). Read-only on all sources; the only outputs:
 
-- **Scheduled `team` run** → FOUR root Slack posts (per the scheduled task's Step 3),
-  in order: 📅 Day update (§7a) → ⚠️ Your queue (§7b) → 👥 Standup updates (§7c) →
-  📋 Team summary (§7d). Day update + Your queue + Team summary → owner channel; Standup
-  updates → team channel (devs @-mentioned). Plus this chat transcript.
+- **Scheduled `team` run** → THREE root Slack posts (per the scheduled task's Step 3),
+  in order: 📅 Day update (§7a) → ⚠️ Your queue (§7b) → 👥 Standup updates (§7c).
+  Day update + Your queue → owner channel; Standup updates → team channel (devs
+  @-mentioned). Plus this chat transcript.
 - **Interactive run (any scope)** → the chat reply only. For `team`, render the same
-  four sections in order (📅 Day update → ⚠️ Your queue → 👥 Standup updates → 📋 Team
-  summary); for `me`/`<person>`, just that person's §7c section.
+  three sections in order (📅 Day update → ⚠️ Your queue → 👥 Standup updates);
+  for `me`/`<person>`, just that person's §7c section.
 
-The "pre-save check" (§8) still applies — run it on all four messages before posting.
+The "pre-save check" (§8) still applies — run it on all three messages before posting.
 
 ## Hard constraints
 
@@ -646,15 +656,15 @@ The "pre-save check" (§8) still applies — run it on all four messages before 
 - On-leave members badged, not expected to report; on-call member badged, incident work expected.
 - Never a bare ticket ID OR bare PR number; describe + enrich + link. Every `[#N]` PR
   link gets a 2–4 word inline label (§8) — a bare `#845/#850/#865` is a regression.
-- `team` output = FOUR root messages in order: 📅 Day update (§7a) → ⚠️ Your queue
-  (§7b) → 👥 Standup updates (§7c) → 📋 Team summary (§7d). §7a = FYI awareness
+- `team` output = THREE root messages in order: 📅 Day update (§7a) → ⚠️ Your queue
+  (§7b) → 👥 Standup updates (§7c). §7a = FYI awareness
   (decisions/announcements/timelines/risk), §7b = owner's own action queue only, §7c =
-  per-person standup, §7d = team-level synthesis. Never duplicate §7b action items into
-  §7a. Empty §7b says `Nothing pending your action.` — no padding.
-  §7a + §7b + §7d post to the owner channel (plain names); §7c (Standup updates) posts to
+  per-person standup. NO Team-summary message (retired 2026-07-13 — duplicated §7a+§7b).
+  Never duplicate §7b action items into §7a — each fact appears ONCE across Messages 1+2.
+  Empty §7b says `Nothing pending your action.` — no padding.
+  §7a + §7b post to the owner channel (plain names); §7c (Standup updates) posts to
   the team channel with each dev as a real `<@U…>` mention on a BOLD line (a `###` header
-  escapes the mention) — every dev must be notified. Team summary is its OWN message to the
-  owner channel, NOT appended to the team-facing Standup updates.
+  escapes the mention) — every dev must be notified.
 - Per-person uses NESTED bullets — bold status header (Done/In review/In progress/
   Reviewing/Blockers/Up next) as parent, items as sub-bullets; omit empty sections.
 - Announce upcoming leave ONE SPRINT (14d) ahead, and LEAVE×ONCALL/COVERAGE risks FOUR

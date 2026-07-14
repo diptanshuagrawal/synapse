@@ -17,7 +17,7 @@ routines:
   - id: daily-standup
     cron: "0,30 6-23 * * 1-5"    # weekdays, every 30 min 06:00–23:30 IST (retry until 1 success/day; SKILL.md run-once gate)
     enabled: true
-    needs: [standup_channel, dev_updates_channel]  # __STANDUP_CHANNEL__ (Day update + Your queue) + __DEV_UPDATES_CHANNEL__ (team Standup-updates) must be set
+    needs: [standup_channel, team_standup_channel]  # __STANDUP_CHANNEL__ (Day update + Your queue) + __TEAM_STANDUP_CHANNEL__ (team Standup-updates) must be set
     permissions: []
 
   - id: service-brief-daily
