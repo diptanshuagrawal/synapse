@@ -28,3 +28,7 @@ jira_fields:
   overall_budget: customfield_00000                # epic "Overall Budget" number
   monthly_budget_base: customfield_00000           # "Jan Budget"; Feb..Dec must be consecutive IDs
   story_points: customfield_00000                  # "Story Points" (actual SP burned, for retro)
+  epic_health: customfield_00000                   # "Epic Health" select (retro columns)
+  epic_planning_cycle: customfield_00000           # "Epic Planning Cycle" select
+  epic_org_priority: customfield_00000             # "Epic Org Priority" select
+  challenges: customfield_00000                    # "Challenges" multi-select

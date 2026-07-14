@@ -2,7 +2,8 @@
 """Generate sprint-planner-v2.html — a RESTRUCTURED workspace, not a scroll.
 
 Built from sprint-planner.html (v1). All data/API logic in the core <script> is kept
-verbatim; the ONLY JS change is presentational (planSignalsHTML → compact rows). The body
+verbatim; the only JS changes are presentational (planSignalsHTML → compact rows, and
+plan-gantt work labels linkified to Jira for keys that exist in the loaded data). The body
 is re-laid into a 4-tab workspace (Capacity · Initiatives · Backlog · Plan) with a sticky
 step rail; the Plan tab carries an As-specified ⇄ Rebalance segmented toggle so the two
 plan gantts no longer stack. Tabs/toggle/expand are wired by a small APPENDED script that
@@ -133,6 +134,8 @@ NEW_CSS = """
   .c-avail{background:var(--avail);} .c-L{background:var(--leave);color:var(--leave-t);}
   .c-W{background:var(--wfh);color:var(--wfh-t);} .c-O{background:var(--onc);color:var(--onc-t);}
   .c-H{background:var(--hol);color:var(--hol-t);} .c-WE{background:var(--we);}
+  .g .wk a{color:inherit;text-decoration:none;border-bottom:1px dotted var(--hint);}
+  .g .wk a:hover{color:var(--accent);border-bottom-color:var(--accent);}
   .legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:11px;font-size:11px;color:var(--muted);}
   .legend span{display:flex;align-items:center;gap:6px;}
   .sw{width:11px;height:11px;border-radius:3px;display:inline-block;border:1px solid rgba(20,32,46,.05);}
@@ -198,6 +201,34 @@ NEW_SIGFN = '''function planSignalsHTML(d){
   return `<div class="sigbar">${summary}<span class="sighint">click a line to expand</span></div>${rows}`;
 }'''
 
+# linkify ticket refs in plan-gantt work labels — only keys that exist in the loaded
+# data (spillover / backlog pool / initiative epics / plan picks). Full keys like
+# "ABC-123" link directly; bare 3-5 digit numbers link only when they resolve to a
+# known key, so plain words/labels never turn into dead links. No org identity here:
+# the key prefix comes from the data at runtime, the base URL from v1's JIRA const.
+OLD_CELL = '''      html+=`<td colspan="${j-i}" class="cell ${cls}${isWork?' wk':''}">${txt}</td>`; i=j;'''
+NEW_CELL = '''      html+=`<td colspan="${j-i}" class="cell ${cls}${isWork?' wk':''}">${isWork?linkifyTix(txt):txt}</td>`; i=j;'''
+LINK_HELPER = '''function tixKnown(){
+  const s=new Set();
+  try{
+    ((CAP&&CAP.people)||[]).forEach(p=>(p.spillover||[]).forEach(t=>{if(t.key)s.add(t.key);}));
+    ((CAP&&CAP.backlogPool)||[]).forEach(t=>{if(t.key)s.add(t.key);});
+    ((typeof S!=="undefined"&&S&&S.initiatives)||[]).forEach(i=>{const k=(i.epic||"").trim();if(k)s.add(k);});
+    ((typeof LAST_PLAN!=="undefined"&&LAST_PLAN&&LAST_PLAN.backlogPicks)||[]).forEach(t=>{if(t.key)s.add(t.key);});
+  }catch(_){}
+  return s;
+}
+function linkifyTix(txt){
+  if(!txt||txt.indexOf("<")>=0)return txt;
+  const known=tixKnown();
+  const bare={}; known.forEach(k=>{const m=k.match(/-(\\d+)$/); if(m)bare[m[1]]=k;});
+  const A=(k,l)=>`<a href="${JIRA}${k}" target="_blank" rel="noopener">${l}</a>`;
+  let out=txt.replace(/\\b[A-Z][A-Z0-9]+-\\d+\\b/g,m=>A(m,m));
+  out=out.replace(/(^|[\\s(+\\u00b7])(\\d{3,5})(?=$|[\\s)+\\u00b7,])/g,(m,pre,num)=>bare[num]?pre+A(bare[num],num):m);
+  return out;
+}
+'''
+
 RAIL = '''<nav class="rail" id="rail">
     <button class="tab" data-step="cap"><span class="k">1</span>Capacity</button>
     <button class="tab" data-step="init"><span class="k">2</span>Initiatives</button>
@@ -244,6 +275,12 @@ def main():
     # 2) compact signals (the only logic-adjacent change — presentational)
     assert OLD_SIGFN in html, "planSignalsHTML anchor not found — v1 changed"
     html = html.replace(OLD_SIGFN, NEW_SIGFN)
+
+    # 2b) clickable tickets in plan-gantt work cells (presentational; real keys only)
+    assert OLD_CELL in html, "plan-gantt cell anchor not found — v1 changed"
+    html = html.replace(OLD_CELL, NEW_CELL)
+    assert "function planGanttHTML(d){" in html
+    html = html.replace("function planGanttHTML(d){", LINK_HELPER + "function planGanttHTML(d){", 1)
 
     # 3) masthead
     html = html.replace(
