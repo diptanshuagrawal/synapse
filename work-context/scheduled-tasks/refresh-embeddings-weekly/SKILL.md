@@ -15,6 +15,7 @@ cd __REPO__/work-context
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 import pathlib
+import time as _time
 now = datetime.now(ZoneInfo("Asia/Kolkata"))
 wd = now.weekday()  # Mon=0 .. Wed=2, Thu=3
 # anchor = this cycle's Wednesday date (YYYY-MM-DD)
@@ -27,11 +28,22 @@ if wd == 3 and now.time() > time(23,0): print("IDLE: past Thu 23:00 IST (missed 
 stamp = pathlib.Path("state/last_routine_refresh_embeddings_success.date")
 if stamp.exists() and stamp.read_text().strip() == str(anchor):
     print(f"IDLE: already succeeded this cycle ({anchor})"); raise SystemExit
+# in-progress lock: a >30-min run must not overlap the next 30-min fire
+# (race validated on daily-standup 2026-07-13 — deliverable posted twice).
+# Stamped here at start; 45-min self-expiry covers crashed runs.
+lock = pathlib.Path("state/refresh_embeddings_inprogress.lock")
+try:
+    lockts = float(lock.read_text().strip() or 0)  # empty lock file → 0 (treated as stale)
+except (OSError, ValueError):
+    lockts = 0.0
+if lock.exists() and _time.time() - lockts < 2700:
+    print("IDLE: another refresh run is in progress (lock age <45min)"); raise SystemExit
+lock.write_text(str(int(_time.time())))
 print(f"PROCEED anchor={anchor}")
 PY
 ```
-- If the output starts with "IDLE": print that one line and STOP the run. Do nothing else.
-- If it prints "PROCEED anchor=YYYY-MM-DD": remember that anchor date and continue. The anchor is the success-stamp value for the final step.
+- If the output starts with "IDLE": print that one line and STOP the run. Do nothing else (an "in progress" idle must not touch the lock or the stamp).
+- If it prints "PROCEED anchor=YYYY-MM-DD": remember that anchor date and continue. The anchor is the success-stamp value for the final step. The lock is now held — EVERY exit after this point (success stamp OR any of the failure STOPs in STEPs 2/4/5) must release it with `rm -f state/refresh_embeddings_inprogress.lock`; a crashed session is covered by the 45-min self-expiry.
 
 STEP 1 — Pre-flight status (Phase 2):
 ```bash
@@ -84,8 +96,9 @@ STEP 5 — Post a run-summary to Slack channel #rollup (channel ID __ROLLUP_CHAN
 STEP 6 — Stamp success (ONLY on confirmed success — apply done, integrity clean, AND the run-summary landed in #rollup):
 ```bash
 printf '%s\n' "<ANCHOR-from-STEP-0>" > state/last_routine_refresh_embeddings_success.date
+rm -f state/refresh_embeddings_inprogress.lock
 ```
 - Substitute the anchor date STEP 0 printed. This stops further retries this cycle.
 - Print a final one-line verdict: embedded N, clusters preserved/relabel/new/dropped, integrity clean, posted to #rollup, stamped <anchor>.
 
-Hard rules: `--apply` is the only mutator. NO Anthropic API calls anywhere. OpenAI only for embeddings. On ANY failure (including the Slack run-summary failing to land), do not stamp — let the 30-min retry handle it until Thu 23:00 IST.
+Hard rules: `--apply` is the only mutator. NO Anthropic API calls anywhere. OpenAI only for embeddings. On ANY failure (including the Slack run-summary failing to land), do not stamp — but DO `rm -f state/refresh_embeddings_inprogress.lock` before stopping, so the 30-min retry fires immediately (until Thu 23:00 IST).
