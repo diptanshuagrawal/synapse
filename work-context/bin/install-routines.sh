@@ -40,7 +40,7 @@ PYTHONPATH="$WORKCTX${PYTHONPATH:+:$PYTHONPATH}" \
 import json, os, sys
 from pathlib import Path
 import yaml
-from derive.sources_config import standup_channel, dev_updates_channel, slack_mcp_server, rollup_channel, jira_project_keys, leave_plan_channel, leave_plan_subteam
+from derive.sources_config import standup_channel, dev_updates_channel, team_standup_channel, slack_mcp_server, rollup_channel, jira_project_keys, leave_plan_channel, leave_plan_subteam
 
 manifest = sys.argv[1]
 repo_root = os.environ["REPO_ROOT"]
@@ -55,6 +55,7 @@ subs = {
     "__SLACK_MCP__": slack_mcp_server(),
     "__STANDUP_CHANNEL__": standup_channel(),
     "__DEV_UPDATES_CHANNEL__": dev_updates_channel(),
+    "__TEAM_STANDUP_CHANNEL__": team_standup_channel(),
     "__ROLLUP_CHANNEL__": rollup_channel(),
     "__LEAVE_PLAN_CHANNEL__": leave_plan_channel(),
     "__LEAVE_PLAN_SUBTEAM__": leave_plan_subteam(),
@@ -65,6 +66,7 @@ NEED_OK = {
     "slack_mcp": bool(subs["__SLACK_MCP__"]),
     "standup_channel": bool(subs["__STANDUP_CHANNEL__"]),
     "dev_updates_channel": bool(subs["__DEV_UPDATES_CHANNEL__"]),
+    "team_standup_channel": bool(subs["__TEAM_STANDUP_CHANNEL__"]),
     "rollup_channel": bool(subs["__ROLLUP_CHANNEL__"]),
     "leave_plan_channel": bool(subs["__LEAVE_PLAN_CHANNEL__"]),
 }

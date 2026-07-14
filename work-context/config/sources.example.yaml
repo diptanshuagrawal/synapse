@@ -29,6 +29,7 @@ slack:
   workspace: "example"
   mom_channels: ["C0EXAMPLE"]
   standup_channel: "C0EXAMPLE"   # daily-standup routine target (env override: STANDUP_CHANNEL)
+  team_standup_channel: "C0EXAMPLE"  # daily-standup team-facing Standup-updates msg (env override: TEAM_STANDUP_CHANNEL; falls back to dev_updates_channel)
   rollup_channel: "C0EXAMPLE"    # rollup-classify run-summary target (env override: ROLLUP_CHANNEL)
   leave_plan_channel: "C0EXAMPLE"  # leave-plan-reminder routine target (env override: LEAVE_PLAN_CHANNEL)
   leave_plan_subteam: "S0EXAMPLE"  # subteam (user-group) the reminder pings (env override: LEAVE_PLAN_SUBTEAM)

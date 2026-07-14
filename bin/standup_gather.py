@@ -506,10 +506,15 @@ def main():
         "WHERE source='slack' AND ts>=? AND ts<? AND body LIKE '%<@%'", (WL, W1)).fetchall()
     # OWNER-scoped slack over the LONGER lookback (WLo), incl. subteam pings (<!subteam^)
     # not just direct <@uid> — the owner queue must catch group-handle escalations too.
+    # ALSO <!here>/<!channel> broadcasts (owner ask 2026-07-14): an ask aimed at "everyone
+    # here" (share feedback, submit noms, confirm ownership) often expects the owner to act
+    # without naming him — wide-recall them as via=broadcast; the consuming skill classifies
+    # contextually (volume is low: ~20 per 5d window across all ingested channels).
     slack_owner_recent = cur.execute(
         "SELECT ts,channel_id,thread_ts,actor,body,subject FROM events "
         "WHERE source='slack' AND ts>=? AND ts<? "
-        "AND (body LIKE '%<@%' OR body LIKE '%<!subteam^%')", (WLo, W1)).fetchall()
+        "AND (body LIKE '%<@%' OR body LIKE '%<!subteam^%' "
+        "     OR body LIKE '%<!here>%' OR body LIKE '%<!channel>%')", (WLo, W1)).fetchall()
 
     # On-call signals (§6) — config-driven: the oncall bot channel(s) (class:oncall) + the
     # @oncall ping handle tokens. On-call work follows the HANDLE across the whole org, NOT
@@ -791,7 +796,8 @@ def main():
         b = body or ""
         if actor == o_sl or not thr:
             continue
-        if o_mtok in b or any(tok in b for tok in o_subteams):
+        if o_mtok in b or any(tok in b for tok in o_subteams) \
+                or "<!here>" in b or "<!channel>" in b:
             o_ping[(ch, thr)] += 1
     o_asks = []
     for ts, ch, thr, actor, body, subj in slack_owner_recent:
@@ -801,7 +807,8 @@ def main():
         direct = o_mtok in b
         matched_tiers = [tier for tok, tier in o_subteams.items() if tok in b]
         via_subteam = bool(matched_tiers)
-        if not (direct or via_subteam):
+        bcast = ("<!here>" in b) or ("<!channel>" in b)
+        if not (direct or via_subteam or bcast):
             continue
         if thr and thr in o_answered:
             continue
@@ -817,11 +824,15 @@ def main():
         if LEAVE_RE.search(b) and not ask:
             continue
         # direct <@owner> OR a managerial-group ping = owner's own reply; a DEV-group ping
-        # (no managerial/direct) = route-to-dev. Managerial wins when both are pinged.
+        # (no managerial/direct) = route-to-dev; a bare <!here>/<!channel> (nothing more
+        # specific matched) = broadcast — the consuming skill judges contextually whether
+        # it's an ask that lands on the owner. Most-specific tier wins.
         if direct or "managerial" in matched_tiers:
             how = "direct" if direct else "subteam-mgr"
-        else:
+        elif via_subteam:
             how = "subteam-dev"
+        else:
+            how = "broadcast"
         o_asks.append((ts, ch, thr, actor, b, subj, how, ask))
     # Collapse re-pings of the SAME thread to the latest (count preserved in o_ping) so
     # the queue isn't cluttered by every reminder copy — re-sort by ts for display.
@@ -839,14 +850,23 @@ def main():
         return r[7] or (r[2] and o_ping[(r[1], r[2])] >= 2)
     likely = [r for r in o_asks if _hot(r)]
     maybe = [r for r in o_asks if not _hot(r)]
+    # Broadcast maybes (un-phrased <!here>/<!channel> = mostly announcements) get their OWN
+    # smaller cap so a noisy week can't push direct-mention maybes out of the shared tail.
     MAYBE_CAP = 12
-    shown = likely + maybe[-MAYBE_CAP:]
-    hidden = len(maybe) - min(len(maybe), MAYBE_CAP)
+    BCAST_MAYBE_CAP = 8
+    maybe_bcast = [r for r in maybe if r[6] == "broadcast"]
+    maybe_rest = [r for r in maybe if r[6] != "broadcast"]
+    shown = likely + maybe_rest[-MAYBE_CAP:] + maybe_bcast[-BCAST_MAYBE_CAP:]
+    hidden = (len(maybe_rest) - min(len(maybe_rest), MAYBE_CAP)) \
+        + (len(maybe_bcast) - min(len(maybe_bcast), BCAST_MAYBE_CAP))
     hnote = f"; +{hidden} older maybe hidden" if hidden else ""
     out.append(f"-- OWNER @-asks (reply pending = direct/subteam-mgr; subteam-dev = route to a dev; "
+               f"broadcast = <!here>/<!channel>, judge contextually; "
                f"{OWNER_ASK_LOOKBACK_DAYS}d->window-end) ({len(o_asks)} = {len(likely)} ask / {len(maybe)} maybe{hnote}) --")
     out.append("   tag `ask`=explicit ask phrasing · `maybe`=owner @-mentioned, no ask words → "
-               "CLASSIFY each (real action-item vs FYI / cc / status / approval); never assume from the tag alone")
+               "CLASSIFY each (real action-item vs FYI / cc / status / approval); never assume from the tag alone. "
+               "via=broadcast rows never name the owner — keep only if the request plausibly lands on him "
+               "(EM/team-owner audience); drop pure announcements")
     for ts, ch, thr, actor, body, subj, how, ask in sorted(shown, key=lambda r: r[0]):
         snip = re.sub(r"\s+", " ", body or "")[:160]
         esc = f" escalating×{o_ping[(ch, thr)]}" if thr and o_ping[(ch, thr)] >= 2 else ""

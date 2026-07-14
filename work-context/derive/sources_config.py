@@ -95,9 +95,15 @@ def slack_mcp_server() -> str:
     return _get("slack.mcp_server", env="SLACK_MCP_SERVER", default="")
 
 def dev_updates_channel() -> str:
-    """Slack channel id the daily-standup routine posts the team-facing Standup-updates
-    (per-dev, @-mentioned) message to. Falls back to standup_channel if unset."""
+    """Slack channel id for team-facing digests (doc-sync-digest, monthly-highs-lows).
+    Falls back to standup_channel if unset."""
     return _get("slack.dev_updates_channel", env="DEV_UPDATES_CHANNEL", default="") or standup_channel()
+
+def team_standup_channel() -> str:
+    """Slack channel id the daily-standup routine posts the team-facing Standup-updates
+    (per-dev, @-mentioned) message to. Falls back to dev_updates_channel if unset
+    (pre-2026-07-13 installs posted it there)."""
+    return _get("slack.team_standup_channel", env="TEAM_STANDUP_CHANNEL", default="") or dev_updates_channel()
 
 def rollup_channel() -> str:
     """Slack channel id the rollup-classify routine posts its run-summary to. Empty if unset."""
