@@ -149,3 +149,23 @@ def test_parse_highs_lows_top_level_items_only():
 
 def test_parse_highs_lows_empty():
     assert ce._parse_highs_lows("no sections here") == ([], [])
+
+
+# --- _opt_str: readable string from select / multi-select / user field values ---
+
+def test_opt_str_select_dict_prefers_value_then_name():
+    assert ce._opt_str({"value": "On Track"}) == "On Track"
+    assert ce._opt_str({"name": "In Progress"}) == "In Progress"
+    assert ce._opt_str({"value": "Green", "name": "ignored"}) == "Green"
+
+
+def test_opt_str_multiselect_list_joins_values():
+    assert ce._opt_str([{"value": "Scope creep"}, {"name": "Attrition"}]) == "Scope creep, Attrition"
+    assert ce._opt_str(["plain", {"value": "mixed"}]) == "plain, mixed"
+
+
+def test_opt_str_scalar_and_empty():
+    assert ce._opt_str("Done") == "Done"
+    assert ce._opt_str(None) == ""
+    assert ce._opt_str("") == ""
+    assert ce._opt_str([]) == ""
