@@ -401,6 +401,23 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if self.path.split("?")[0] == "/api/plan-dump":
+            # Persist the /plan roadmap sandbox's dump for the /monthly-plan chat skill.
+            try:
+                n = int(self.headers.get("Content-Length", 0))
+                raw = self.rfile.read(n) or b"{}"
+                json.loads(raw)  # validate
+                with open(os.path.join(DERIVED, "plan-dump.json"), "wb") as f:
+                    f.write(raw)
+                body = json.dumps({"ok": True, "path": "work-context/derived/plan-dump.json"}).encode()
+                self.send_response(200)
+            except Exception as e:
+                body = json.dumps({"error": str(e)}).encode()
+                self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path.split("?")[0] == "/api/plan":
             try:
                 n = int(self.headers.get("Content-Length", 0))

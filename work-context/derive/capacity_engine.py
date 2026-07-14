@@ -34,6 +34,7 @@ BUDGET_OVERALL_FIELD = ""
 EPIC_ISSUETYPE_ID = "10000"
 BUDGET_FIELDS = {}
 SP_FIELD = ""
+EPIC_HEALTH_FIELD = EPIC_CYCLE_FIELD = EPIC_ORGPRI_FIELD = CHALLENGES_FIELD = ""
 
 
 def _yaml(name):
@@ -76,8 +77,13 @@ def _load_cfg():
     global INITIATIVE_POD_FIELD, INITIATIVE_ORGPRI_FIELD, INITIATIVE_ENG_DRI_FIELD
     global INITIATIVE_PROD_DRI_FIELD, INITIATIVE_IMPACT_FIELD, INITIATIVE_LINK_TYPE
     global EPIC_ISSUETYPE_ID, BUDGET_OVERALL_FIELD, BUDGET_FIELDS, SP_FIELD
+    global EPIC_HEALTH_FIELD, EPIC_CYCLE_FIELD, EPIC_ORGPRI_FIELD, CHALLENGES_FIELD
     jf = sp.get("jira_fields") or {}
     SP_FIELD = jf.get("story_points", "")
+    EPIC_HEALTH_FIELD = jf.get("epic_health", "")
+    EPIC_CYCLE_FIELD = jf.get("epic_planning_cycle", "")
+    EPIC_ORGPRI_FIELD = jf.get("epic_org_priority", "")
+    CHALLENGES_FIELD = jf.get("challenges", "")
     INITIATIVE_POD_FIELD = jf.get("pods", "")
     INITIATIVE_ORGPRI_FIELD = jf.get("org_priority", "")
     INITIATIVE_ENG_DRI_FIELD = jf.get("eng_dri", "")
@@ -398,6 +404,16 @@ def _user_name(v):
     return v.get("displayName", "") if isinstance(v, dict) else ""
 
 
+def _opt_str(v):
+    """Readable string from a select / multi-select / status field value."""
+    if isinstance(v, list):
+        return ", ".join((x.get("value") or x.get("name") or "") if isinstance(x, dict) else str(x)
+                         for x in v)
+    if isinstance(v, dict):
+        return v.get("value") or v.get("name") or ""
+    return v or ""
+
+
 def pod_options():
     """Distinct values of the OINT 'PODs' multi-select field, derived by scanning the
     initiatives (the field-option admin API is 403 for us). Cached by the server; falls
@@ -710,8 +726,13 @@ def retro_summary(months):
         y, m = map(int, ym.split("-"))
         nxt = dt.date(y + 1, 1, 1) if m == 12 else dt.date(y, m + 1, 1)
         return nxt - dt.timedelta(days=1)
-    start, end = _first(yms[0]).isoformat(), _last(yms[-1]).isoformat()
     mnames = [BUDGET_MONTHS[int(ym.split("-")[1]) - 1] for ym in yms]
+    # ACTUAL uses resolution_sprint_end in the org's sprint-cycle window (matches the Epic
+    # Reports pivot): <first-month>-16 → <month-after-last>-05. Calendar bounds over-count.
+    ly, lm = map(int, yms[-1].split("-"))
+    nxt = dt.date(ly + 1, 1, 1) if lm == 12 else dt.date(ly, lm + 1, 1)
+    start = f"{yms[0]}-16"
+    end = f"{nxt.year}-{nxt.month:02d}-05"
 
     def _search(jql, fields):
         out, tok, pages = [], None, 0
@@ -734,7 +755,8 @@ def retro_summary(months):
         children = _search(
             f'project = {JIRA_PROJECT} AND issuetype in (Story,Task,Bug) '
             f'AND status in (Done,"Mobile Release Pending") '
-            f'AND resolved >= "{start}" AND resolved <= "{end}"',
+            f'AND resolution_sprint_end > "{start}" AND resolution_sprint_end < "{end}" '
+            f'AND resolution_sprint_end is not EMPTY',
             ["parent", SP_FIELD])
         actual = {}
         for i in children:
@@ -750,27 +772,50 @@ def retro_summary(months):
         planned = {k: round(sum(bud[k]["budgets"].get(mn, 0) for mn in mnames), 1) for k in bud}
 
         keys = set(actual) | {k for k, v in planned.items() if v > 0}
-        summ = {e["key"]: e.get("summary", "") for e in bud.values()}
-        missing = [k for k in keys if k not in summ]
-        for j in range(0, len(missing), 80):
-            for it in _search(f"key in ({','.join(missing[j:j+80])})", ["summary"]):
-                summ[it["key"]] = it["fields"].get("summary", "")
+        # per-epic display fields + the epic's own issue links (to detect its initiative)
+        want = [f for f in ["summary", "status", "issuelinks", EPIC_HEALTH_FIELD,
+                            EPIC_CYCLE_FIELD, EPIC_ORGPRI_FIELD, CHALLENGES_FIELD] if f]
+        meta, klist = {}, sorted(keys)
+        for j in range(0, len(klist), 80):
+            for it in _search(f"key in ({','.join(klist[j:j+80])})", want):
+                meta[it["key"]] = it["fields"]
+
+        def _linked_initiative(f):
+            # ONLY initiative-linked epics are "planned for" — read the epic's OWN links to
+            # an OINT initiative (any status / any pod), not the pod-filtered initiative list.
+            for l in (f.get("issuelinks") or []):
+                o = l.get("outwardIssue") or l.get("inwardIssue") or {}
+                k = o.get("key", "")
+                if OINT_PROJECT and k.startswith(OINT_PROJECT + "-"):
+                    return k
+            return ""
 
         rows = []
         for k in keys:
-            pl = round(planned.get(k, 0), 1)
-            ac = round(actual.get(k, 0), 1)
-            rows.append({"key": k, "url": f"https://{JIRA_HOST}/browse/{k}",
-                         "summary": summ.get(k, ""), "planned": pl, "actual": ac,
-                         "delta": round(pl - ac, 1)})
-        rows.sort(key=lambda r: -abs(r["delta"]))
+            f = meta.get(k, {})
+            ini = _linked_initiative(f)
+            rows.append({
+                "key": k, "url": f"https://{JIRA_HOST}/browse/{k}",
+                "summary": _opt_str(f.get("summary")),
+                "linked": bool(ini), "initiative": ini,
+                "status": _opt_str(f.get("status")),
+                "health": _opt_str(f.get(EPIC_HEALTH_FIELD)) if EPIC_HEALTH_FIELD else "",
+                "cycle": _opt_str(f.get(EPIC_CYCLE_FIELD)) if EPIC_CYCLE_FIELD else "",
+                "orgPriority": _opt_str(f.get(EPIC_ORGPRI_FIELD)) if EPIC_ORGPRI_FIELD else "",
+                "challenges": _opt_str(f.get(CHALLENGES_FIELD)) if CHALLENGES_FIELD else "",
+                "planned": round(planned.get(k, 0), 1), "actual": round(actual.get(k, 0), 1),
+                "delta": round(planned.get(k, 0) - actual.get(k, 0), 1)})
+        rows.sort(key=lambda r: (not r["linked"], -abs(r["delta"])))   # linked first, then by gap
     except Exception as e:
         sys.stderr.write(f"[retro_summary] {e}\n")
         return {"__error__": str(e)}
 
+    linked = [r for r in rows if r["linked"]]
     return {"months": yms, "monthNames": mnames, "start": start, "end": end,
             "epics": rows,
-            "totalPlanned": round(sum(r["planned"] for r in rows), 1),
+            "totalPlanned": round(sum(r["planned"] for r in linked), 1),        # only linked = planned
+            "totalActualLinked": round(sum(r["actual"] for r in linked), 1),
+            "totalActualUnlinked": round(sum(r["actual"] for r in rows if not r["linked"]), 1),
             "totalActual": round(sum(r["actual"] for r in rows), 1)}
 
 
@@ -1077,23 +1122,34 @@ def month_capacity(year, month):
             oncall_canon[diso] = c
     leaves = leaves_for(first, last)
 
+    # per-day metadata for the daily grid (mirrors build())
+    day_meta = [{"date": d.isoformat(), "dow": d.strftime("%a"),
+                 "weekend": d.weekday() >= 5, "holiday": hol.get(d.isoformat())} for d in days]
+
     people = []
     for p in team:
         plv = leaves.get(p["canonical"], {})
-        leave_n = onc_n = 0
-        for d in working:
+        statuses, leave_n, onc_n, wfh_n = [], 0, 0, 0
+        for d in days:
             diso = d.isoformat()
+            if d.weekday() >= 5:
+                statuses.append("WE"); continue
             if diso in mand_hol:
-                continue
-            if plv.get(diso) == "L":
-                leave_n += 1
-            elif oncall_canon.get(diso) == p["canonical"]:
-                onc_n += 1
+                statuses.append("H"); continue
+            st = plv.get(diso, "")
+            if st == "L":
+                statuses.append("L"); leave_n += 1; continue
+            if oncall_canon.get(diso) == p["canonical"]:
+                statuses.append("O"); onc_n += 1; continue
+            if st == "W":
+                statuses.append("W"); wfh_n += 1; continue
+            statuses.append("")
         net = wd - leave_n - onc_n
         sp = round(net * eff.get(p["role"], 0), 2)
         people.append({"name": p["name"], "canonical": p["canonical"],
                        "role": p["role"], "eff": eff.get(p["role"], 0),
-                       "net": net, "sp": sp, "leave": leave_n, "oncall": onc_n})
+                       "net": net, "sp": sp, "leave": leave_n, "oncall": onc_n,
+                       "wfh": wfh_n, "statuses": statuses})
 
     team_sp = round(sum(p["sp"] for p in people), 1)
     nominal_sp = round(sum(wd * eff.get(p["role"], 0) for p in people), 1)
@@ -1102,6 +1158,7 @@ def month_capacity(year, month):
         "label": first.strftime("%B %Y"),
         "start": first.isoformat(), "end": last.isoformat(),
         "workingDays": wd,
+        "days": day_meta,
         "people": people,
         "teamNetDays": sum(p["net"] for p in people),
         "teamSP": team_sp,
