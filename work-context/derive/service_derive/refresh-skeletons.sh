@@ -22,8 +22,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"   # work-context/
 STATE_DIR="$ROOT/state"
 LOG="$STATE_DIR/service_brief_$(date +%Y%m%d).log"
+
+# Unattended launchd/routine fires get a bare PATH where python3 = the yaml-less
+# system interpreter (/usr/bin/python3); sources_config needs yaml. Probe, fall
+# back to the repo venv (which has yaml; slack_sdk not needed here).
+PY="$(command -v python3 || true)"
+if [ -z "$PY" ] || ! "$PY" -c 'import yaml' >/dev/null 2>&1; then
+  PY="$ROOT/.venv/bin/python3"
+fi
+if ! "$PY" -c 'import yaml' >/dev/null 2>&1; then
+  echo "FATAL: no yaml-capable python3 (tried PATH python3 and $ROOT/.venv/bin/python3)" >&2
+  exit 1
+fi
+
 # Target Go services come from config (github.codegraph_repos); never hardcode.
-SVCS=($(python3 - "$ROOT" <<'PY'
+SVCS=($("$PY" - "$ROOT" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])
 from derive.sources_config import codegraph_repos
@@ -35,7 +48,7 @@ mkdir -p "$STATE_DIR" "$ROOT/derived/services"
 log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 
 resolve_mirror() {
-  python3 - "$1" <<'PY'
+  "$PY" - "$1" <<'PY'
 import json, sys, pathlib
 reg = json.load(open(pathlib.Path.home() / ".code-review-graph/registry.json"))
 repos = reg.get("repos", reg) if isinstance(reg, dict) else reg
@@ -64,14 +77,14 @@ for svc in "${SVCS[@]}"; do
   prev="$STATE_DIR/$svc.skeleton.prev.json"
   if [ -f "$out" ]; then cp "$out" "$prev"; else rm -f "$prev"; fi
 
-  if ! python3 "$SCRIPT_DIR/go_extractor.py" --repo "$repo" --svc "$svc" >>"$LOG" 2>&1; then
+  if ! "$PY" "$SCRIPT_DIR/go_extractor.py" --repo "$repo" --svc "$svc" >>"$LOG" 2>&1; then
     log "ERROR extractor failed: $svc"
     continue
   fi
 
   head="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo '?')"
   # Content diff ignoring the volatile `commit` field.
-  if python3 - "$prev" "$out" <<'PY'
+  if "$PY" - "$prev" "$out" <<'PY'
 import json, sys
 def load(p):
     try:
@@ -91,7 +104,7 @@ PY
   fi
 done
 
-python3 - "$STATE_DIR/service_brief_changed.json" ${changed[@]+"${changed[@]}"} <<'PY'
+"$PY" - "$STATE_DIR/service_brief_changed.json" ${changed[@]+"${changed[@]}"} <<'PY'
 import json, sys, datetime
 path = sys.argv[1]
 changed = sys.argv[2:]
