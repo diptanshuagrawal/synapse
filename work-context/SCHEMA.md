@@ -77,16 +77,46 @@ CREATE TABLE events (
   title      TEXT,
   body       TEXT,
   url        TEXT,
-  raw_path   TEXT NOT NULL
+  raw_path   TEXT NOT NULL,
+
+  -- Jira enrichment (NULL for other sources). Added by ingest migrations.
+  issue_type   TEXT,    -- Epic | Story | Task | Bug | CMR ...
+  story_points REAL,
+  sprint_id    INTEGER,
+  sprint_name  TEXT,
+  sprint_state TEXT,    -- active | closed | future
+  assignee     TEXT,    -- assignee at event time (dev-vs-reviewer credit)
+  to_status    TEXT,    -- status_change events: destination status
+
+  -- Slack enrichment (NULL for other sources).
+  channel_id         TEXT,
+  thread_ts          TEXT,    -- Slack epoch ts of thread parent
+  edited_ts          TEXT,
+  deleted_ts         TEXT,    -- tombstone marker; row kept, content cleared
+  reactions_json     TEXT,    -- [{name, count, users}]
+  reply_count        INTEGER, -- thread parents only
+  drain_attempted_at TEXT,    -- stale-thread drain cooldown
+  files_json         TEXT     -- [{id, name, mimetype, size, mode, permalink, user}]
 );
 CREATE INDEX idx_events_ts          ON events(ts);
 CREATE INDEX idx_events_actor_ts    ON events(actor, ts);
 CREATE INDEX idx_events_source_ts   ON events(source, ts);
+CREATE INDEX idx_events_channel_ts  ON events(channel_id, ts);
+CREATE INDEX idx_events_thread_ts   ON events(thread_ts);
+CREATE INDEX idx_events_subject     ON events(subject, event_type);
+CREATE INDEX idx_events_deleted_ts_partial ON events(source, deleted_ts)
+    WHERE source = 'slack' AND deleted_ts IS NOT NULL;
+CREATE INDEX idx_events_subject_to_status  ON events(subject, ts)
+    WHERE to_status IS NOT NULL;
 
 CREATE TABLE event_refs (
   event_id  TEXT NOT NULL,
   ref_type  TEXT NOT NULL,   -- person | project | ticket | page
   ref_value TEXT NOT NULL,
+  role      TEXT,            -- WHY the ref appears (LLM enrich pass, migration 005):
+                             -- ASKING_QUESTION | REQUESTING_ACTION | FIXING | BLOCKED_BY |
+                             -- DUPLICATE | REFERENCING | PASSING_MENTION | UPDATE_ON | RESOLVED_BY.
+                             -- Nullable; ingest inserts NULL — treat NULL as "role unknown".
   PRIMARY KEY (event_id, ref_type, ref_value)
 );
 CREATE INDEX idx_refs_value ON event_refs(ref_type, ref_value);
@@ -96,6 +126,19 @@ CREATE VIRTUAL TABLE events_fts USING fts5(
   content='events',
   content_rowid='rowid'
 );
+-- (FTS5 also creates internal shadow tables events_fts_data/idx/docsize/config.)
+
+-- Slack ingest retry queue: bot-thread roots whose replies weren't drained yet.
+-- Producers: ingest/slack_ingest_app.py, derive/slack_backfill_helper.py.
+CREATE TABLE slack_pending_reply_check (
+  channel_id  TEXT NOT NULL,
+  parent_ts   TEXT NOT NULL,               -- Slack epoch ts of the (bot) root
+  reply_count INTEGER,                     -- declared reply_count at enqueue time
+  first_seen  TEXT NOT NULL,               -- ISO ts first enqueued
+  attempts    INTEGER NOT NULL DEFAULT 0,  -- drain attempts so far (retry/abandon ceiling)
+  PRIMARY KEY (channel_id, parent_ts)
+);
+CREATE INDEX idx_pending_reply_check_chan ON slack_pending_reply_check(channel_id, parent_ts);
 
 -- Identity self-heal: observed actor pairs captured at ingest time.
 -- Written by derive/identity_signals.record_signal/record_user_dict;
@@ -179,6 +222,18 @@ CREATE TABLE embedding (
 );
 CREATE INDEX idx_embedding_source ON embedding(source);
 
+-- Embed-recipe cache: per-subject content fingerprint so incremental refresh
+-- (derive/refresh_embeddings.py, content built by derive/subject_content.py)
+-- can skip subjects whose rendered content hasn't changed.
+CREATE TABLE embed_content_cache (
+  subject        TEXT PRIMARY KEY,
+  recipe_version INTEGER NOT NULL,   -- bump invalidates the whole cache
+  n_events       INTEGER NOT NULL,
+  last_event_ts  TEXT,
+  content_sha    TEXT NOT NULL,
+  computed_at    TEXT NOT NULL
+);
+
 -- One row per topic cluster (cross-source). Producers: derive/cluster_subjects.py
 -- (clustering) → derive/enrich_clusters.py / label_clusters.py (LLM enrich + name).
 CREATE TABLE topic_brief (
@@ -232,6 +287,25 @@ CREATE TABLE cluster_project_map (
 CREATE INDEX idx_cpm_cluster    ON cluster_project_map(cluster_id);
 CREATE INDEX idx_cpm_project    ON cluster_project_map(project_slug);
 CREATE INDEX idx_cpm_confidence ON cluster_project_map(confidence DESC);
+
+-- Noise-filter decisions: channels/subjects excluded from clustering
+-- (alert/bot spam). Producer: derive/cluster_noise_filter.py.
+CREATE TABLE cluster_excluded_channel (
+  channel_id TEXT PRIMARY KEY,
+  name       TEXT,
+  reason     TEXT,      -- force_exclude | ratio | name-bootstrap
+  noise      INTEGER,   -- sampled noise-thread count
+  real       INTEGER,   -- sampled real-thread count
+  ratio      REAL,
+  decided_at TEXT
+);
+
+CREATE TABLE cluster_excluded_subject (
+  subject    TEXT PRIMARY KEY,
+  channel_id TEXT,
+  reason     TEXT,      -- automation-no-reply | force_exclude
+  decided_at TEXT
+);
 ```
 
 ### Slack thread rollups
@@ -352,9 +426,138 @@ CREATE TABLE team_leaves_processed (
 );
 ```
 
+### PR quality + friction
+
+```sql
+-- Per-PR metadata (size, checks, labels). Producers: ingest/github.py,
+-- ingest/github_backfill_pr_meta.py (one-time backfill).
+CREATE TABLE pr_meta (
+  subject            TEXT PRIMARY KEY,   -- owner/repo#N
+  repo               TEXT NOT NULL,
+  number             INTEGER NOT NULL,
+  state              TEXT,               -- open | closed | merged
+  additions          INTEGER,
+  deletions          INTEGER,
+  files_changed      INTEGER,
+  is_draft           INTEGER,            -- 0 | 1
+  labels_json        TEXT,               -- JSON list of label names
+  head_sha           TEXT,
+  checks_status      TEXT,               -- success | failure | pending | none | unknown
+  checks_failed_json TEXT,               -- JSON list of failing check-run names
+  created_at         TEXT,
+  merged_at          TEXT,
+  updated_at         TEXT,
+  fetched_at         TEXT
+);
+CREATE INDEX idx_pr_meta_repo  ON pr_meta(repo);
+CREATE INDEX idx_pr_meta_state ON pr_meta(state);
+
+-- Root-cause classification of each PR review comment (chat-classified via
+-- /pr-quality). Producers: derive/pr_quality_dump.py → derive/apply_pr_classes.py.
+CREATE TABLE pr_comment_class (
+  event_id      TEXT PRIMARY KEY,   -- events.id of the review / comment
+  subject       TEXT NOT NULL,      -- owner/repo#N
+  source        TEXT NOT NULL,      -- human | <ai-review-bot> (agentic reviewer tag)
+  category      TEXT NOT NULL,      -- root-cause taxonomy (pr_review_rules.md)
+  confidence    REAL,
+  classified_at TEXT
+);
+CREATE INDEX idx_pr_comment_class_subject  ON pr_comment_class(subject);
+CREATE INDEX idx_pr_comment_class_category ON pr_comment_class(category);
+
+-- Per-PR friction score rolled up from comment classes + mechanical signals.
+-- Producer: derive/pr_quality_report.py (rendered by /pr-report).
+CREATE TABLE pr_friction (
+  subject              TEXT PRIMARY KEY,  -- owner/repo#N
+  score                REAL,              -- 0-100
+  dominant_category    TEXT,
+  mechanical_json      TEXT,              -- size / checks / churn signals
+  category_counts_json TEXT,
+  computed_at          TEXT
+);
+```
+
+### Feature / release tracking
+
+```sql
+-- CMR tickets as the rollout record (real Released ts, approver, PR links).
+-- Producer: derive/cmr_releases.py (CMR release-signal pipeline);
+-- slug linkage via derive/feature_resolve.py.
+CREATE TABLE feature_release (
+  cmr_subject           TEXT NOT NULL,    -- CMR ticket key
+  slug                  TEXT NOT NULL,    -- projects.yaml slug, or ''
+  linked_via            TEXT,             -- project_ref | impacted_areas | none
+  service               TEXT,
+  impacted_areas        TEXT,
+  pr_urls_json          TEXT,             -- JSON list of owner/repo#N
+  release_owner         TEXT,
+  created_at            TEXT,             -- CMR issue_created ts
+  approval_requested_at TEXT,
+  approved_at           TEXT,
+  approved_by           TEXT,
+  released_at           TEXT,
+  outcome               TEXT,             -- released|emergency|rolled_back|cancelled|pending
+  is_feature_release    INTEGER,          -- 0 | 1 (feature rollout vs ops CMR)
+  title                 TEXT,
+  url                   TEXT,
+  computed_at           TEXT,
+  PRIMARY KEY (cmr_subject, slug)
+);
+CREATE INDEX idx_feature_release_slug    ON feature_release(slug);
+CREATE INDEX idx_feature_release_outcome ON feature_release(outcome);
+CREATE INDEX idx_feature_release_relts   ON feature_release(released_at);
+
+-- Lifecycle stage detection per feature slug (planning → trd → code_dev → rollout).
+-- Producer: derive/feature_stages.py; consumed by the feature-narrative pipeline.
+CREATE TABLE feature_stage (
+  slug             TEXT NOT NULL,
+  scope            TEXT NOT NULL DEFAULT '',  -- '' = domain rollup; else the anchor epic key
+  stage            TEXT NOT NULL,   -- planning | trd | code_dev | rollout
+  entered_at       TEXT,
+  detection_source TEXT,
+  confidence       TEXT,            -- high | medium | low
+  artefact_count   INTEGER,
+  detail_json      TEXT,
+  computed_at      TEXT,
+  PRIMARY KEY (slug, scope, stage)
+);
+CREATE INDEX idx_feature_stage_slug ON feature_stage(slug);
+```
+
 > Backup tables (`topic_brief_bak_*`, `topic_brief_member_bak_*`) are transient
 > snapshots written by `derive/finalize_refresh.py` before a cluster re-derive.
 > Not part of the stable schema.
+
+---
+
+## Second database: `state/doc_sync.db`
+
+Doc-sync automation state — one row per drift-finding comment the sweep left on a
+Confluence page. Owner script: `derive/doc_sync_state.py` (written by the doc-sync
+sweep/digest routines; drives the pending-review digest + Relay approve/reject flow).
+
+```sql
+CREATE TABLE doc_sync_comments (
+  comment_id        TEXT PRIMARY KEY,
+  page_id           TEXT NOT NULL,
+  page_title        TEXT NOT NULL,
+  page_url          TEXT NOT NULL,
+  comment_url       TEXT NOT NULL,
+  owner_account     TEXT,            -- Confluence/Jira account id (people.yaml jira_id)
+  severity          TEXT,            -- major | medium | minor
+  check_type        TEXT,            -- schema | behavior | decision | dependency | lld | sequence
+  finding_title     TEXT NOT NULL,   -- short headline shown in the digest
+  anchor            TEXT,            -- inline text the comment is anchored to
+  created_ts        TEXT,
+  resolution_status TEXT DEFAULT 'open',  -- open | resolved | dangling | reopened
+  last_checked_ts   TEXT,
+  sweep_run_id      TEXT,
+  finding_key       TEXT            -- stable dedup key for re-found findings
+);
+CREATE INDEX idx_docsync_status  ON doc_sync_comments(resolution_status);
+CREATE INDEX idx_docsync_owner   ON doc_sync_comments(owner_account);
+CREATE INDEX idx_docsync_finding ON doc_sync_comments(finding_key);
+```
 
 ---
 
@@ -364,6 +567,7 @@ CREATE TABLE team_leaves_processed (
 raw/<source>/YYYY/MM/DD.jsonl   — append-only raw events, one JSON per line
 index/events.db                 — SQLite unified index
 state/cursors.json              — last-seen IDs/timestamps per source
+state/doc_sync.db               — doc-sync automation state (see above)
 derived/                        — machine-generated rollups (agent-readable, do not write)
 ```
 
@@ -375,7 +579,7 @@ fixed clock every 30 min inside the work window, not on a rolling timer. See
 
 | Agent | Schedule (IST) | Idle guard |
 |-------|----------------|------------|
-| `slack-ingest`      | every 30 min, 12:00–22:30 | **none** — ingests every fire (volume justifies it) |
+| `slack-ingest`      | every 30 min, 12:00–23:00 | **none** — ingests every fire (volume justifies it) |
 | `github-ingest`     | every 30 min, 12:00–22:30 | gated → one success/day (`last_github_success.date`) |
 | `jira-ingest`       | every 30 min, 12:00–22:30 | gated → one success/day |
 | `confluence-ingest` | every 30 min, 12:05–22:35 | gated → one success/day |

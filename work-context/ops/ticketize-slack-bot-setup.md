@@ -3,6 +3,14 @@
 One-time owner setup. After this, paste the two tokens into `~/.secrets/ticketize_slack.env`
 and tell Claude to build `bin/ticketize_slack_app.py` + the LaunchAgent.
 
+> **Scope (updated):** the setup steps below remain valid, but this app is no longer
+> ticketize-only. `bin/relay_bot.py` is now a **shared approve/reject surface**: besides
+> ticketize candidates (`--post`), it posts doc-sync discovery cards (`--post-docsync`),
+> drift findings (`--post-findings`), user-group proposals (`--post-usergroups`), and
+> housekeeping cards (`--post-housekeeping`); one listener handles all action prefixes
+> (`tkz:` / `dsc:` / `dsf:` / `ugd:` / `hk:`). Any new channel that uses a card flow needs
+> `@relaybot` invited to it.
+
 ## 1. Create the app from manifest
 api.slack.com/apps → **Create New App** → **From a manifest** → pick the workspace →
 paste this YAML:

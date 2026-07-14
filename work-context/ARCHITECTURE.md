@@ -8,7 +8,7 @@ Generated from the [code-review-graph](https://github.com/your-org/code-review-g
 
 ## 1. Graph overview
 
-Graph last rebuilt **2026-06-03**.
+Graph last rebuilt **2026-06-03**. Counts below are as-of that date and stale — the graph needs a full rebuild to pick up newer modules (`person_profile.py`, `ask_engine.py`, `sprint_server.py`, `capacity_engine.py`, the v3–v5 dashboard layers, …).
 
 | Metric | Value |
 |--------|-------|
@@ -455,7 +455,7 @@ Source of truth for `person_profile.py`. Schema:
 
 - `_detect_new_epic_slugs(records, ...)` — filters `issue_type == "Epic"` (was over-applying to all jira types → 13 bad CMR-derived slugs).
 - `_slug_from_title(title, fallback_key)` — kebab-case from title, fallback to epic-key only if title empty.
-- `_keywords_from_title(title)` — **bigrams only** (unigrams caused `transaction-failure-enhancement-customer` to match 525 unrelated subjects).
+- `_keywords_from_title(title)` — **bigrams only** (unigrams caused a slug like `domain-a-failure-enhancement-customer` to match 525 unrelated subjects).
 - Sort order: Epics → non-Epic jira → confluence → github.
 - `_load_team_enum()` + `_rules_md()` embed the ownership schema (team-id enum from `config/teams.yaml`, team descriptions, author→team table, ownership decision tree) into `pending_classification.json.rules.md` so chat emits ownership fields per subject.
 
@@ -564,7 +564,7 @@ Pipeline:
    | `total_msgs >= 20` (low ratio, active) | `auto_team_involved` |
    | else | `needs_review` |
 
-   **Alert-channel branch (2026-06-03):** team-owned alert firehoses (`service-a-alerts`, `example-tracker`, `example-txn-alerts`, …) are bot-authored — team is a member but rarely posts/@-mentions, so author+mention scoring ~0 and the floor would drop them. Gate = `_is_alert_channel(name, bot_ratio)` (name token `alert`/`tracker`/`opsgenie`/`sentry`/`pagerduty`/`notifications`/`-logs`, OR ≥80% bot-authored) **AND** `_name_has_team_domain(name)` (token-aware: whole `-`/`_`-split tokens with startswith for plurals — keywords `accounting`/`recon`/`service-c`/`EX`/`transaction(s)`/`txn`/`service-a`/`account-freeze` + compound `ledger-balance`/`pending_txn`). Mode = `full` (`team_involved` would drop every bot alert). `deposits`/`td` excluded (sister-team). Token-aware matching prevents substring mis-fires like `gl` inside `breakglass`.
+   **Alert-channel branch (2026-06-03):** team-owned alert firehoses (`service-a-alerts`, `domain-a-alerts`, `example-tracker`, …) are bot-authored — team is a member but rarely posts/@-mentions, so author+mention scoring ~0 and the floor would drop them. Gate = `_is_alert_channel(name, bot_ratio)` (name token `alert`/`tracker`/`opsgenie`/`sentry`/`pagerduty`/`notifications`/`-logs`, OR ≥80% bot-authored) **AND** `_name_has_team_domain(name)` (token-aware: whole `-`/`_`-split tokens with startswith for plurals — matched against the team's domain-keyword list, e.g. `domain-a(s)`/`service-a` + compounds like `domain-a-metric`; the org-specific keyword list lives in the script, not here). Mode = `full` (`team_involved` would drop every bot alert). Sister-team domains explicitly excluded from the list. Token-aware matching prevents substring mis-fires (a short keyword matching inside a longer unrelated token).
 6. `--apply` appends `auto_*` rows to `config/slack_channels.yaml` (MPIM rows get `allow_mpim: true`; `team_involved` rows get `ingest_mode: team_involved`). `--json-out` writes proposals for cron-status DISCOVERY block.
 
 Subteam-aware scoring (2026-06-03) moved 34 channels out of `needs_review` in one dry-run (0→20 auto_full + 0→14 auto_team_involved).
@@ -665,6 +665,35 @@ Produces `embedding` / `topic_brief` / `topic_brief_member` tables (§6.1 + `SCH
 | `derive/story_graph.py` | Walks the cross-source link graph in `event_refs` — a "story" = connected component (PR → ticket → page → thread). |
 | `derive/slack_ingest_runner.py` | Legacy MCP-path runner: parses a Slack MCP `slack_read_channel`/`_thread` dump → upserts → advances cursor. Used by the `*-mcp` commands. |
 
+### 5.31 `ingest-autofix` routine — unmapped-actor WARN resolver
+
+Daily 16:00 IST Claude routine (manifest entry in `scheduled-tasks/routines.yaml`; single fire, no retry gate). Resolves the {github,jira,confluence} validators' "unmapped actor" attribution WARNs:
+
+1. `derive/unmapped_actors.py --json` — the COMPLETE per-source unmapped list (validators only surface top-10). Detection mirrors each validator exactly, with up to 3 sample subjects per actor for lookup context.
+2. The routine session resolves each identity (Atlassian lookup) and classifies **tiered-auto**: SAFE class auto-applies (org-domain human → `scope: org`, clear bot/service → `scope: external`) via `derive/people_autofix_apply.py`; RISKY class (alias-merge into an existing person, possible teammate, ambiguous) is PARKED in `state/ingest_autofix_pending.json` for owner review — never auto-merged, never auto-team.
+3. `people_autofix_apply.py` is **append-only text** (no yaml.dump round-trip — existing hand-curated `people.yaml` entries stay byte-untouched), idempotent (already-known identity keys skipped), and REFUSES `scope: team` (team membership is a human decision).
+4. Re-runs the validators + refreshes cached state so cron-status reflects clean; posts a run-summary to the rollup channel. Slack drift/orphan + pipeline-coverage WARNs are reported only (not auto-fixable). No Anthropic API — facts in scripts, identity judgment in chat.
+
+### 5.32 `leave-plan-reminder` routine — bi-monthly leave-plan ping
+
+1st of even months, 10:00 IST (`scheduled-tasks/routines.yaml`; single fire, no retry gate, no Bash — posts via the Slack MCP). Pings the team subteam in the leave-plan channel (config `slack.leave_plan_*` tokens) to fill the leave plan for the NEXT two months, computed at run time in IST — each fire lands 1 month before the 2-month window starts (e.g. an Apr 1 fire asks for May + June). One message per fire.
+
+### 5.33 `config/holidays-<year>.yaml` + `derive/holidays.py` — company holiday calendar
+
+Yearly YAML fetched from the HR system (refreshed manually each year); `derive/holidays.py` is the single loader (holiday dict: `date`, `day`, `type` ∈ {holiday, optional}, `occasion`). Consumers: `derive/render_leaves.py` (team-leaves markdown render) + `bin/dashboard.py` (next-holiday in the LEAVES lane, purple column shading on the `/leaves` gantt, `/api/holidays`). **Display-only** — holidays are company-wide, never written into `team_leaves`. All helpers degrade gracefully (empty list / None) when a year's YAML is missing, so callers never need a try/except.
+
+### 5.34 `derive/slack_discover_usergroups.py` — user-group (subteam) discovery
+
+Finds Slack user-groups the owner/team belong to that aren't yet in `config/team_subteams.yaml`: one `usergroups.list(include_users=true)` call, members intersected with the owner UID + team roster (`slack_team.load_team_slack_ids`). Two layers, mirroring how the yaml is consumed: **manager** (owner is a member → written with `owner_member: true`, so a ping counts as an owner-ask) vs **team** (≥N direct reports are members → written without `owner_member`; feeds the team-involved ingest filter only). **Propose-only on the discover cron** — manager-vs-team-vs-noise can't be auto-decided from membership alone — proposals land in `state/last_slack_discover_usergroups.json`; the owner applies explicitly via `--apply-manager` / `--apply-team` / `--skip` (skiplist silences noise like org-wide groups). Append-only writes: existing rows + their inline comments are never rewritten.
+
+### 5.35 `bin/relay_bot.py` — shared Slack approve/reject surface
+
+Single owner-only Socket-Mode bot (repo-root `bin/`) shared by every maker-checker loop. Post modes: `--post <date>` (ticketize candidates), `--post-docsync <run-id>` (newly-discovered docs), `--post-findings <run-id>` (doc-drift findings), `--post-usergroups <run-id>` (user-group proposals: Manager / Team / Reject buttons), `--post-housekeeping <run-id>` (cleanup suggestions). Run with no args = the Socket-Mode listener, which handles the `tkz:` / `dsc:` / `dsf:` / `ugd:` / `hk:` button actions (owner-only), applies the decision via the deterministic apply scripts (`ticketize_apply.py`, `doc_sync_apply.py` + `doc_sync_state.py`, usergroup apply, `housekeeping_apply.py`), and updates the card in place. Apply safety: `RELAY_APPLY_MODE=dry` (default — clicks acknowledged + echoed, no writes) vs `live`. Tokens from `~/.secrets/relay_slack_*`.
+
+### 5.36 `derive/sprint_server.py` — sprint planner + monthly planning workspace
+
+Local chat-driven planning server (stdlib http.server, **no API key** — Claude sessions are the analysis layer) serving HTML from `derived/`. Pages (nav sidebar injected server-side): `/` + `/sprint` → the v2 4-tab workspace (Capacity gantt · Initiatives · Backlog · Plan; generated by the `bin/_sprint_v2*.py` reskin generators), `/monthly` → the monthly planning workspace (per-month capacity, initiatives, planned budgets, commit), `/plan` → roadmap sandbox (scratch; doesn't touch budgets). GET: `/api/capacity` + `/api/monthly` (cached `capacity_engine.build()` / `build_monthly()`, `?fresh=1` rebuilds), plus `/api/epic_sp`, `/api/ticket`, `/api/month`, `/api/budgets`, `/api/initiative`, `/api/initiatives`, `/api/pods`. POST: `/api/save_initiatives` + `/api/dump` back the `/resolve-initiatives` and `/sprint-plan` dump→file→reload loops, `/api/link-epic` + `/api/submit-budgets` back the monthly commit, and `/api/accept` snapshots the accepted plan to `derived/sprint-plan-accepted.json` so `/sprint-apply` can execute it even after plan files regenerate. Generated HTML + `derived/*.json` are local-only/gitignored — never publish real names/tickets. Leaves stays on the cron dashboard (separate port); the sidebar links out.
+
 ---
 
 ## 6. Data layer
@@ -719,7 +748,7 @@ Produces `embedding` / `topic_brief` / `topic_brief_member` tables (§6.1 + `SCH
 | `evidence_json` | matched epics / pages / keywords for audit |
 | `computed_at` | ISO timestamp |
 
-PK `(cluster_id, project_slug)`. Many-to-many: one cluster may link multiple slugs (e.g. cluster 268 → service-c-txn-misc + db-optimisation + accounting-refactor + service-c-txn-ops + txn-correctness). Populated by `derive/link_clusters_to_projects.py` (deterministic, no LLM). Wired into `finalize_refresh.py apply` so every refresh re-links. Migration: `derive/migrations/008_cluster_project_map.sql`.
+PK `(cluster_id, project_slug)`. Many-to-many: one cluster may link multiple slugs (e.g. cluster 268 → service-c-domain-misc + db-optimisation + domain-a-refactor + service-c-domain-ops + domain-a-correctness). Populated by `derive/link_clusters_to_projects.py` (deterministic, no LLM). Wired into `finalize_refresh.py apply` so every refresh re-links. Migration: `derive/migrations/008_cluster_project_map.sql`.
 
 **Linker rules (highest confidence wins per slug):**
 1. **Domain agreement (0.95)** — ≥50% of mappable cluster members share a slug in `subject_summary.domains`.
@@ -819,7 +848,9 @@ All agents survive sleep/wake (replay missed fires on wake). gh/jira/confluence 
 
 **Code-graph lane** (`bin/_codegraph_status.py`, shared): reads `state/last_codegraph_success.date` + newest `state/codegraph_<date>.log` → status of the daily 18:00 rebuild (schedule/next-fire, last-run ok/fail, per-repo ✓/✗ with node·edge totals, in-flight). Mirrors the EMBEDDING lane.
 
-**Monitoring surfaces**: `bin/cron-status.sh` reports all sources + ROLLUP / PIPELINE / HOUSEKEEPING / IDENTITY / EMBEDDING / CODE-GRAPH lanes + HEALTH footer. Drill-downs: `cron-status {slack,identity,housekeeping,embedding,pipeline,discover}` and `cron-status html`. Web dashboard: `bin/dashboard.py` (stdlib http.server, no Flask) — per-lane cards, D3 cluster circle-pack, identity-signal time-series, log-tail, expandable channel/discover tables.
+**Monitoring surfaces**: `bin/cron-status.sh` reports all sources + ROLLUP / PIPELINE / HOUSEKEEPING / IDENTITY / EMBEDDING / CODE-GRAPH lanes + HEALTH footer. Drill-downs: `cron-status {slack,identity,housekeeping,embedding,pipeline,discover}` and `cron-status html`.
+
+**Web dashboard**: `bin/dashboard.py` (stdlib http.server, no Flask) — per-lane cards, D3 cluster circle-pack, identity-signal time-series, log-tail, expandable channel/discover tables. Version routes `/v1`–`/v5` serve the console generations; **v5 (exception-first) is the default at `/`**. v3 is a re-skinned ingest console over the v1 markup; v4 = v3 + a Status/Insights tab split; v5 = v4 + an exception-first health grid that collapses healthy lane cards to their headers so anomalies are the only thing drawing detail. v2–v5 are NOT separate templates — each is a stacked chain of `.replace()` string-transforms over the version below it, anchored on literal v1 fragments (the v1-edit anchor trap is documented in `dashboard.py`: editing an anchored string silently no-ops the downstream transform). Pages: `/channels`, `/leaves` (= `/leaves-v2`; `/leaves-v1` keeps the old gantt). JSON: `/api/snapshot`, `/api/cadence` (30-min-bucketed signature cadence), `/api/insights` (SVG insights deck via `bin/_v3_insights.py`), `/api/leaves`, `/api/holidays`, `/api/slack-channels`, `/api/discover`, `/api/clusters`, `/api/identity-timeseries`, `/api/logs`, `/api/log-tail`.
 
 ---
 

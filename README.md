@@ -50,6 +50,14 @@ GitHub / Jira / Confluence / Slack
 
 The unified `Event` schema, event-type tables, classification mechanics, and identity unification are documented in `work-context/ARCHITECTURE.md` + `work-context/README.md` → SCHEMA. Setup is below.
 
+**Beyond the core pipeline** (one-liners — detail in `work-context/ARCHITECTURE.md`):
+
+- **Local web dashboard** — `bin/dashboard.py` serves `/v1`–`/v5` console views; v5 (exception-first health grid) is the default. Local-only.
+- **Sprint planner + monthly planning workspace** — local HTML planning tools served by `work-context/derive/sprint_server.py`, chat-driven (no API key).
+- **Slack team-search safety net** — `ingest/slack_ingest_app.py --search-net` catches late team replies to threads the `team_involved` filter originally dropped.
+- **Company-holiday calendar** — `config/holidays-<year>.yaml` + `derive/holidays.py`; display-only shading in leave views + dashboard.
+- **Slack user-group auto-discovery** — `derive/slack_discover_usergroups.py` proposes user-groups the team is in for the `team_involved` filter (owner applies explicitly).
+
 ---
 
 ## Fresh machine setup
@@ -281,14 +289,33 @@ Installs macOS LaunchAgents (see `bin/install-agents.sh::SERVICES`). Survive sle
 | `github-ingest` | :00 and :30, 12h–22h | `state/last_github_success.date` |
 | `jira-ingest` | :00 and :30, 12h–22h | `state/last_jira_success.date` |
 | `confluence-ingest` | :05 and :35, 12h–22h | `state/last_confluence_success.date` |
-| `slack-ingest` | :00 and :30, 12h–22h | **none** — ingests every fire (volume) |
-| `slack-discover` | Wed + Fri 13:00 | auto-discovers new team channels |
+| `slack-ingest` | :00 and :30, 12h–23h (last fire 23:00) | **none** — ingests every fire (volume) |
+| `slack-discover` | Mon + Wed + Fri 13:00 | auto-discovers new team channels |
 | `leaves` | daily 04:00 | regex prefilter + render (chat steps manual) |
 | `codegraph` | daily 18:00 | git fetch + full code-graph rebuild (feeds `/ask` code-logic) |
-| `housekeeping-review` | weekly Mon (Claude routine) | deterministic prune **+** a classification layer that scans for further cleanup candidates and posts Approve/Reject cards to #rollup (suggest-only; git-safe apply) |
 | rollup | **manual** (no LaunchAgent) | invoke `/rollup` in chat |
 
 **Retry policy (idle-gated agents):** fires every 30 min; checks gate file (YYYY-MM-DD local time). If today's date present → exits immediately. First success writes today's date → idles rest of day. Auth/network failure → auto-retries next fire. `slack-ingest` has no gate and ingests on every fire.
+
+#### Claude routines (scheduled-tasks MCP)
+
+Besides LaunchAgents, the system runs recurring Claude Code routines via the scheduled-tasks MCP. Manifest: `work-context/scheduled-tasks/routines.yaml` (bootstrap with `bin/install-routines.sh`; SKILL.md bodies in `scheduled-tasks/<id>/`). Most fire every 30 min inside a window and idle once a `state/last_routine_<id>_success.date` stamp says they succeeded (retry-until-success).
+
+| Routine | Schedule (IST) | Purpose |
+|---------|---------------|---------|
+| `daily-standup` | weekdays, retries 06:00–23:30 until 1 success/day | daily standup digest for the team channel |
+| `service-brief-daily` | daily, retries 18:00–23:30 | refresh service-context briefs |
+| `track-work-ticketize` | weekdays, retries 06:15–23:45 | turn standup-detected work gaps into Jira tickets (maker-checker) |
+| `rollup-classify` | weekdays, retries 15:00–23:30 | classify pending rollup subjects + apply verdicts |
+| `daily-leaves-classify` | daily, retries 13:00–23:30 | classify team leave mentions from Slack |
+| `slack-ingest` / `slack-reconcile` | **disabled by default** | legacy MCP-path Slack ingest + nightly reconcile |
+| `doc-sync-sweep` | monthly (days 1–3), retries 10:00–23:30 | team-wide TRD/PRD doc-drift sweep (preview-only, Approve/Reject cards) |
+| `doc-sync-digest` | Mon/Wed/Fri, retries 13:00–23:30 | pending-review digest for the doc-drift sweep |
+| `leave-plan-reminder` | 1st of even months, 10:00 (single fire) | ping the team to update the next two months' leave plan |
+| `refresh-embeddings-weekly` | weekly window Wed 17:00 → Thu 23:00 | incremental embedding + cluster refresh |
+| `monthly-highs-lows` | monthly on the 28th, retries 12:00–23:30 | month's highs/lows retro posted to the updates channel |
+| `ingest-autofix` | daily 16:00 (best-effort, single fire) | resolve unmapped-actor ingest attribution warnings |
+| `housekeeping-review` | Mondays, retries 06:00–13:30 (weekly stamp) | deterministic prune + suggest-only cleanup cards (Approve/Reject; git-safe apply) |
 
 Check health: `./bin/cron-status.sh`
 
@@ -346,14 +373,14 @@ Canonical detail (full `Event` shape, event-type tables, classification internal
 **Domain classification — five mechanisms, in priority order:**
 
 1. **Jira epic anchor (deterministic)** — if an issue's epic key matches `jira_epics` in projects.yaml, tag to that slug immediately (no LLM). Auto-applied via `llm_classifier._apply_epic_anchor`, even on chat-emitted verdicts.
-2. **Auto-slug from new in-window Epics** — `derive/dump_pending.py::_detect_new_epic_slugs` filters `issue_type == "Epic"` (added by `ingest/backfill-jira-issue-type.py` one-shot, maintained by `ingest/jira.py::normalize_issue_created`). For each unmapped Epic in the window: kebab-case slug from title + bigram-only keywords, appended via `_persist_auto_slugs`. **Only Epics** create new slugs; CMRs/Tasks/Bugs link to existing via keywords.
+2. **Auto-slug from new in-window Epics** — `derive/dump_pending.py::_detect_new_epic_slugs` filters `issue_type == "Epic"` (added by `ingest/backfill-jira-issue-type.py` one-shot, maintained by `ingest/jira.py::normalize_issue_created`). For each unmapped Epic in the window: kebab-case slug from title + bigram-only keywords, written as a proposal via `dump_pending.py::_write_pending_slug_proposals` and folded into projects.yaml by `derive/apply_epic_slugs.py` (`manual-rollup.sh apply-slugs`). **Only Epics** create new slugs; CMRs/Tasks/Bugs link to existing via keywords.
 3. **LLM slug synthesis for unmapped epics referenced by children (`/slug-epics`)** — when a child's `epic_key` is missing from projects.yaml AND the Epic is outside the dump window, `derive/rollup.py::_emit_pending_slug_creation` bundles the epic title+body + recent child titles/bodies into `state/pending_slug_creation.json`; `manual-rollup.sh dump` halts and prompts `/slug-epics`, which synthesises a slug + bigram keywords (optional `merge_into`). `apply-slugs` folds verdicts into projects.yaml and invalidates affected `subject_summary` rows. Replaces prior `epic-<key>` fabrication.
 4. **Chat classifier (`/rollup`)** — events with no epic/keyword match land in `state/pending_classification.json`; chat reads rules, writes `verdicts.json`. Thin GitHub PRs: inline `gh pr diff` (the `needs_diff: true` flag is dead in chat path; `apply_verdicts.py` rejects verdicts still setting it).
 5. **Keyword fallback (cron + script path)** — with auth stripped (always, per policy), `llm_classifier._fallback_classify` does case-insensitive substring match against projects.yaml keywords. Clean hits → `subject_summary` directly; misses stay pending. Cache keyed by `(subject, content_hash)`.
 
 Removed: `derive/algo_classify.py` (algorithmic bulk classifier w/ embedded `CMR_BODY_HINTS`). See `work-context/ARCHITECTURE.md` §3.2.
 
-**MatterAI signal** — every PR gets a `matterai[bot]` review (`🧪 PR Review is completed: <one-line summary>`). Rollup extracts it into person + project files for instant risk triage (`critical`, `panic`, `race condition`, `security`) without reading diffs.
+**Review-bot signal** — every PR gets an automated review summary the pipeline extracts into person + project files for instant risk triage (`critical`, `panic`, `race condition`, `security`) without reading diffs. Current source: the **Claude Code Review bot** — posts as `github-actions[bot]` and is identified by the body marker `<!-- add-pr-comment:claude-review-summary -->`, not the actor (`derive/subject_content.py`). Legacy: `matterai[bot]` reviews (`🧪 PR Review is completed: <one-line summary>`) — bot removed ~2026-05, but historical comments are still parsed.
 
 **Auth resolution (LLM paths) — superseded.** As of 2026-05-12 scripts never call Anthropic: both `derive/run-rollup.sh` (cron) and `derive/manual-rollup.sh` export empty `ANTHROPIC_API_KEY` + `ANTHROPIC_AUTH_TOKEN` before invoking `rollup.py`, which short-circuits to `_fallback_classify`. All semantic classification happens in the live Claude Code session via `/rollup` or `/classify`. Reason: scripts previously raced the chat session for OAuth quota → 429s; `_call_claude` now raises `RuntimeError` on retry exhaustion (fail-loud) so accidental auth presence surfaces. Historical resolution order (still coded, never reached): (1) `~/.secrets/anthropic_api_key`, (2) Claude Code OAuth (Keychain `Claude Code-credentials` or `~/.claude/.credentials.json`), (3) skip → keyword fallback (the only path that runs today).
 

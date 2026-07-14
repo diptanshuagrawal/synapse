@@ -123,7 +123,7 @@ channels:
 - `full` (default) — every message stored.
 - `team_involved` — keep only threads where the team participates. Team-involved = ANY of: author on team.md · body @-mentions a team UID (`<@U…>`) · body pings a team subteam handle (`<!subteam^S…>` from `config/team_subteams.yaml`) · OR any reply satisfies the same. **Whole-thread keep:** one team-involved reply pulls the whole thread, including non-team replies and bot-authored incident-alert roots (PagerDuty / OpsGenie / "Alert Incident Commander" templates). Logic: `derive/slack_team.py::is_team_involved`.
 
-**Extra per-channel flag — `no_threads: true`:** skip the per-fire stale-thread reply reconcile (Phase 2.5) for that channel. Top-level messages + edit/delete reconcile still run. Use for bot alert firehoses where reply threads are acks/status noise and re-fetching them every fire dominates ingest wall-time (e.g. `service-a-alerts`, `example-tracker`, `example-recon`). The discovery alert-channel branch sets this automatically. Do NOT set it where threads carry real discussion (incident rooms, CMR-approval channels).
+**Extra per-channel flag — `no_threads: true`:** skip the per-fire stale-thread reply reconcile (Phase 2.5) for that channel. Top-level messages + edit/delete reconcile still run. Use for bot alert firehoses where reply threads are acks/status noise and re-fetching them every fire dominates ingest wall-time (e.g. `service-a-alerts`, `example-tracker`, `service-b-alerts`). The discovery alert-channel branch sets this automatically. Do NOT set it where threads carry real discussion (incident rooms, CMR-approval channels).
 
 `config/team_subteams.yaml` lists the Slack user-group ids the team is paged via — e.g. `S0EXAMPLE` for `service-c-team-devs` / `example-team`, `S0EXAMPLE` for `service-c-oncall`. Add ids manually (the bot's `usergroups:read` scope is often unavailable, so `usergroups.list` returns empty). Without these ids, threads pinged via subteam handle silently filter out as "not team involved".
 
@@ -156,7 +156,7 @@ Discovery facts:
 - Activity floor: 5 team msgs/90d for non-MPIM, 1 for MPIM. MPIM auto_full requires ≥3 team handles in the channel name.
 - A message counts toward team-activity if author ∈ team OR body @-mentions a team member OR body pings a team subteam handle (`config/team_subteams.yaml`) — subteam coverage surfaces oncall/incident channels.
 
-**Alert-channel branch:** bot-authored alert firehoses for team-owned systems (e.g. `service-a-alerts`, `example-tracker`, `example-txn-alerts`) auto-add as `full` even when team authorship is ~0, bypassing the floor. Gate = alert-named or ≥80% bot-authored AND name carries a team-domain keyword (`accounting`, `recon`, `service-c`/`EX`, `transaction(s)`, `txn`, `service-a`, `account-freeze`, `ledger-balance`, `pending_txn`; `deposits`/`td` excluded as liabilities-domain). Token-aware match — won't mis-fire on `gl` inside `breakglass`.
+**Alert-channel branch:** bot-authored alert firehoses for team-owned systems (e.g. `service-a-alerts`, `domain-a-alerts`, `example-tracker`) auto-add as `full` even when team authorship is ~0, bypassing the floor. Gate = alert-named or ≥80% bot-authored AND name carries a team-domain keyword (e.g. `domain-a(s)`, `service-a`, compounds like `domain-a-metric`; sister-team domains excluded — the org-specific keyword list lives in the script, not here). Token-aware match — a short keyword won't mis-fire inside a longer unrelated token.
 
 ---
 
@@ -796,7 +796,9 @@ bin/dashboard.py [--port 8765]
 open http://127.0.0.1:8765
 ```
 
-Stdlib-only HTTP server (no Flask/FastAPI). Auto-refresh 30min. Per-lane cards, D3 circle-pack of top clusters (area ∝ member_count, color by status, click for detail), identity-signals 7d time-series (Chart.js), log-tail picker, expandable slack per-channel + discovered-channel tables. Routes: `/api/snapshot`, `/api/slack-channels`, `/api/discover`, `/api/clusters`, `/api/identity-timeseries`, `/api/log-tail`.
+Stdlib-only HTTP server (no Flask/FastAPI). Auto-refresh 30min. Per-lane cards, D3 circle-pack of top clusters (area ∝ member_count, color by status, click for detail), identity-signals 7d time-series (Chart.js), log-tail picker, expandable slack per-channel + discovered-channel tables.
+
+Version routes `/v1`–`/v5`; **v5 (exception-first) is the default at `/`**. v3 = re-skinned ingest console, v4 = v3 + Status/Insights tab split, v5 = v4 + exception-first health grid with collapse-healthy lanes. v2–v5 are stacked string-transforms of the v1 HTML (the v1-edit anchor trap is documented in `dashboard.py`). Pages: `/channels`, `/leaves` (= `/leaves-v2`; `/leaves-v1` = old gantt). Routes: `/api/snapshot`, `/api/cadence` (30-min-bucketed signature cadence), `/api/insights` (SVG insights deck via `bin/_v3_insights.py`), `/api/leaves`, `/api/holidays`, `/api/slack-channels`, `/api/discover`, `/api/clusters`, `/api/identity-timeseries`, `/api/logs`, `/api/log-tail`.
 
 ---
 
