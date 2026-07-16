@@ -53,7 +53,11 @@ import json, sys, pathlib
 reg = json.load(open(pathlib.Path.home() / ".code-review-graph/registry.json"))
 repos = reg.get("repos", reg) if isinstance(reg, dict) else reg
 svc = sys.argv[1]
-hit = next((r for r in repos if r.get("alias") == svc), None)
+# Match by registry alias OR by the mirror dir's basename — config names repos by
+# full GitHub repo name while the registry alias may be a short form; alias-only
+# matching silently skipped such repos every run.
+hit = next((r for r in repos
+            if r.get("alias") == svc or pathlib.Path(r.get("path", "")).name == svc), None)
 print(hit["path"] if hit else "")
 PY
 }
@@ -77,7 +81,9 @@ for svc in "${SVCS[@]}"; do
   prev="$STATE_DIR/$svc.skeleton.prev.json"
   if [ -f "$out" ]; then cp "$out" "$prev"; else rm -f "$prev"; fi
 
-  if ! "$PY" "$SCRIPT_DIR/go_extractor.py" --repo "$repo" --svc "$svc" >>"$LOG" 2>&1; then
+  # --out is REQUIRED: the extractor's default is CWD-relative derived/services/,
+  # which lands outside the repo whenever the caller's cwd isn't work-context/.
+  if ! "$PY" "$SCRIPT_DIR/go_extractor.py" --repo "$repo" --svc "$svc" --out "$out" >>"$LOG" 2>&1; then
     log "ERROR extractor failed: $svc"
     continue
   fi
