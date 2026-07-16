@@ -35,12 +35,14 @@ if ! "$PY" -c 'import yaml' >/dev/null 2>&1; then
   exit 1
 fi
 
-# Target Go services come from config (github.codegraph_repos); never hardcode.
+# Target Go services come from config (github.codegraph_repos) minus the
+# brief-exclude list (graph-only repos); never hardcode.
 SVCS=($("$PY" - "$ROOT" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])
-from derive.sources_config import codegraph_repos
-print(" ".join(codegraph_repos()))
+from derive.sources_config import codegraph_repos, service_brief_exclude
+skip = set(service_brief_exclude())
+print(" ".join(r for r in codegraph_repos() if r not in skip))
 PY
 ))
 

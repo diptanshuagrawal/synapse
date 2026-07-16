@@ -21,6 +21,7 @@ github:
   # match by this body marker, not the actor, which is overloaded with CI noise).
   claude_review_marker: "<!-- add-pr-comment:claude-review-summary -->"
   codegraph_repos: ["service-a", "service-c", "service-b"]
+  service_brief_exclude: []           # codegraph_repos entries to skip in the service-brief loop (graph-only)
 teams:
   home: "home-team"
   coowner: "payments-team"
