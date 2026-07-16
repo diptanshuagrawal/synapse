@@ -152,6 +152,11 @@ def codegraph_repos() -> list[str]:
     """Repo short-names mirrored for the code-graph build (may differ from github.repos)."""
     return _as_list(_get("github.codegraph_repos", default=["service-a", "service-b", "service-c"]))
 
+def service_brief_exclude() -> list[str]:
+    """codegraph_repos entries to SKIP in the service-brief skeleton/brief loop
+    (graph-only repos — e.g. one too large to brief). Empty by default."""
+    return _as_list(_get("github.service_brief_exclude", default=[]))
+
 def mom_channels() -> list[str]:
     """Slack channel ids that host weekly-sync MoM posts."""
     return _as_list(_get("slack.mom_channels", default=["C0EXAMPLE"]))
