@@ -3,9 +3,10 @@ slack_team.py — single source of truth for "who's on my team" lookup.
 
 Resolves team identifiers from two configs:
 
-  1. `management/context/team.md` (markdown roster, `## <Name> — <email>` lines)
-     joined against `config/people.yaml::people[].slack_id`
-     → set of individual Slack user-ids (UID). Owner email auto-included.
+  1. `config/people.yaml` — every entry with `scope: team` IS the roster
+     (consolidated 2026-07-16; `management/context/team.md` is the manager's
+     1:1-notes doc only and no longer drives membership). Owner auto-included.
+     → set of individual Slack user-ids (UID).
 
   2. `config/team_subteams.yaml` (subteams list)
      → set of Slack user-group ids (SID) the team is addressed by, e.g.
@@ -32,7 +33,6 @@ bot-rooted incident header is retained alongside the team replies.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Optional
 
@@ -41,46 +41,42 @@ import yaml
 from derive.sources_config import owner_email
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-TEAM_MD = _REPO_ROOT.parent / "management" / "context" / "team.md"
 PEOPLE_YAML = _REPO_ROOT / "config" / "people.yaml"
 TEAM_SUBTEAMS_YAML = _REPO_ROOT / "config" / "team_subteams.yaml"
 OWNER_EMAIL = owner_email()
 
-# Matches `## <Name> — <email>` (em-dash) or `## <Name> -- <email>` (double-hyphen).
-_TEAM_MD_HEADER = re.compile(r"^##\s+.+?\s+[—-]+\s+(\S+@\S+)\s*$")
+
+def _team_people() -> list[dict]:
+    """people.yaml entries with `scope: team`, plus the owner's entry (any scope)."""
+    if not PEOPLE_YAML.exists():
+        return []
+    with PEOPLE_YAML.open() as f:
+        cfg = yaml.safe_load(f) or {}
+    return [p for p in cfg.get("people", []) or []
+            if p.get("scope") == "team" or p.get("email") == OWNER_EMAIL]
 
 
 def load_team_emails() -> set[str]:
-    """Parse team.md for the owner's direct-report emails. Owner email auto-included."""
-    emails: set[str] = {OWNER_EMAIL}
-    if TEAM_MD.exists():
-        for line in TEAM_MD.read_text().splitlines():
-            m = _TEAM_MD_HEADER.match(line.strip())
-            if m:
-                emails.add(m.group(1).strip())
+    """Emails of the roster = people.yaml `scope: team` entries. Owner auto-included.
+
+    SINGLE SOURCE OF TRUTH (consolidated 2026-07-16): membership previously
+    lived in management/context/team.md AND people.yaml scope, kept in sync by
+    hand — a new dev added to one but not the other got silent partial
+    coverage. team.md is now the manager's notes doc only.
+    """
+    emails = {p.get("email") for p in _team_people() if p.get("email")}
+    emails.add(OWNER_EMAIL)
     return emails
 
 
 def load_team_slack_ids() -> dict[str, str]:
     """Returns {slack_id: canonical_name} for the owner + every direct report.
 
-    Source of truth: management/context/team.md (manager's team list).
-    people.yaml is the cross-source identity map — used only to resolve
-    email→slack_id. People in people.yaml but NOT in team.md (cross-team
-    collaborators) are excluded.
+    Source of truth: people.yaml `scope: team` (owner included regardless of
+    scope). Cross-team collaborators (scope: org / external) are excluded.
     """
-    team_emails = load_team_emails()
-    if not PEOPLE_YAML.exists():
-        return {}
-    with PEOPLE_YAML.open() as f:
-        cfg = yaml.safe_load(f)
-    out: dict[str, str] = {}
-    for p in cfg.get("people", []):
-        email = p.get("email")
-        sid = p.get("slack_id")
-        if email in team_emails and sid:
-            out[sid] = p.get("canonical", sid)
-    return out
+    return {p["slack_id"]: p.get("canonical", p["slack_id"])
+            for p in _team_people() if p.get("slack_id")}
 
 
 def load_owner_slack_id() -> Optional[str]:

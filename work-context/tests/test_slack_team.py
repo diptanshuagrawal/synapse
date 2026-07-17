@@ -94,3 +94,38 @@ def test_owner_slack_id_not_in_file(tmp_path, monkeypatch):
 def test_owner_slack_id_no_people_file(tmp_path, monkeypatch):
     monkeypatch.setattr(st, "PEOPLE_YAML", tmp_path / "missing.yaml")
     assert st.load_owner_slack_id() is None
+
+
+# ── roster = people.yaml scope:team (single source of truth, 2026-07-16) ────
+# Membership used to come from a separate team.md roster kept in sync by hand;
+# a dev added to one file but not the other got silent partial coverage.
+
+PEOPLE_FIXTURE = [
+    {"email": "owner@example.com", "slack_id": "U0OWNER", "canonical": "owner", "scope": "org"},
+    {"email": "dev1@example.com", "slack_id": "U0DEV1", "canonical": "dev-one", "scope": "team"},
+    {"email": "dev2@example.com", "slack_id": "U0DEV2", "canonical": "dev-two", "scope": "team"},
+    {"email": "friend@example.com", "slack_id": "U0FRIEND", "canonical": "friend", "scope": "org"},
+    {"email": "noslack@example.com", "canonical": "no-slack", "scope": "team"},
+]
+
+
+def test_team_emails_from_scope_team_plus_owner(tmp_path, monkeypatch):
+    monkeypatch.setattr(st, "OWNER_EMAIL", "owner@example.com")
+    monkeypatch.setattr(st, "PEOPLE_YAML", _write_people(tmp_path, PEOPLE_FIXTURE))
+    assert st.load_team_emails() == {
+        "owner@example.com", "dev1@example.com", "dev2@example.com", "noslack@example.com"}
+
+
+def test_team_slack_ids_exclude_org_scope(tmp_path, monkeypatch):
+    # org-scope collaborators are NOT roster; owner included regardless of scope.
+    monkeypatch.setattr(st, "OWNER_EMAIL", "owner@example.com")
+    monkeypatch.setattr(st, "PEOPLE_YAML", _write_people(tmp_path, PEOPLE_FIXTURE))
+    ids = st.load_team_slack_ids()
+    assert ids == {"U0OWNER": "owner", "U0DEV1": "dev-one", "U0DEV2": "dev-two"}
+
+
+def test_team_loaders_empty_when_people_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(st, "OWNER_EMAIL", "owner@example.com")
+    monkeypatch.setattr(st, "PEOPLE_YAML", tmp_path / "missing.yaml")
+    assert st.load_team_slack_ids() == {}
+    assert st.load_team_emails() == {"owner@example.com"}  # owner always included

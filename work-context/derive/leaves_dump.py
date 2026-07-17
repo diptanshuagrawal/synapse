@@ -5,7 +5,7 @@ Phase 1 of the chat-classify leave pipeline (mirrors derive/dump_pending.py
 for subjects):
 
   1. Pull slack events from last 60 days authored by a team member
-     (team = team.md direct reports, owner included).
+     (team = people.yaml scope:team direct reports, owner included).
   2. Filter messages whose body matches one of the leave-coordination
      regex patterns (OOO, WFH, on leave, vacation, holiday, etc.).
   3. Skip events already in team_leaves_processed (dedup — covers both
@@ -45,7 +45,6 @@ PENDING_JSON = STATE_DIR / "pending_leaves.json"
 RULES_MD = STATE_DIR / "pending_leaves.rules.md"
 CHANNELS_YAML = _REPO_ROOT / "config" / "slack_channels.yaml"
 PEOPLE_YAML = _REPO_ROOT / "config" / "people.yaml"
-TEAM_MD = _REPO_ROOT.parent / "management" / "context" / "team.md"
 OWNER_EMAIL = owner_email()
 
 # ── Regex prefilter ──────────────────────────────────────────────────────────
@@ -104,13 +103,16 @@ def _load_team_emails() -> set[str]:
     team they manage. Differs from slack_team.load_team_emails() which
     includes owner for the is_team_involved check (where owner-authored
     messages legitimately count as team activity).
+
+    Source of truth: people.yaml `scope: team` (consolidated 2026-07-16 —
+    team.md is the manager's notes doc and no longer drives membership).
     """
     emails: set[str] = set()
-    if TEAM_MD.exists():
-        for line in TEAM_MD.read_text().splitlines():
-            m = re.match(r"^##\s+.+?\s+[—-]+\s+(\S+@\S+)\s*$", line.strip())
-            if m:
-                emails.add(m.group(1).strip())
+    if PEOPLE_YAML.exists():
+        with PEOPLE_YAML.open() as f:
+            cfg = yaml.safe_load(f) or {}
+        emails = {p.get("email") for p in cfg.get("people", []) or []
+                  if p.get("scope") == "team" and p.get("email")}
     emails.discard(OWNER_EMAIL)  # belt + suspenders
     return emails
 
@@ -250,7 +252,7 @@ def main() -> int:
     team_canonical = _load_team_canonical()
     team_slack_map = _load_team_slack_map()
     if not team_canonical or not team_slack_map:
-        print("[err] team set empty — check team.md + people.yaml "
+        print("[err] team set empty — check people.yaml scope:team "
               f"(canonical={len(team_canonical)}, slack_ids={len(team_slack_map)})",
               file=sys.stderr)
         return 2

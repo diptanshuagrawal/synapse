@@ -1155,7 +1155,7 @@ def main() -> int:
     print(f"[subteams] cached {len(subteams_cache)}")
 
     team_slack_ids = set(load_team_slack_ids().keys())
-    print(f"[team] {len(team_slack_ids)} team slack-ids loaded (from team.md)")
+    print(f"[team] {len(team_slack_ids)} team slack-ids loaded (from people.yaml scope:team)")
     team_subteam_ids = load_team_subteam_ids()
     print(f"[team] {len(team_subteam_ids)} team subteam-ids loaded (from team_subteams.yaml)")
 
