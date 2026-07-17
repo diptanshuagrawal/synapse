@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Launch the Synapse desktop app — a native window over the whole suite
+# (Dashboard · Sprint · Monthly · Plan · Retro · Leaves), served from one local origin.
+#
+#   bin/synapse-app                  # native window on http://127.0.0.1:8765
+#   SYNAPSE_PORT=8790 bin/synapse-app
+#
+# Secrets (OpsGenie / Atlassian) load from ~/.secrets as usual — nothing to export.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # work-context/
+exec "$ROOT/.venv/bin/python" "$ROOT/derive/synapse_app.py"

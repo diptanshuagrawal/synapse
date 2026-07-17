@@ -44,6 +44,8 @@ work-context/derive/slack_ingest_runner.py
 work-context/derive/slack_reparse_empty.py
 work-context/derive/sources_config.py
 work-context/derive/sprint_server.py
+work-context/derive/synapse_app.py
+work-context/bin/make_synapse_warm2.py
 work-context/derive/trd/build_context_pack.py
 work-context/derive/trd/extract_trd_artifacts.py
 work-context/ingest/backfill-confluence-creators.py
