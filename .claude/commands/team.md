@@ -5,6 +5,7 @@ verification pass + a short residual checklist of the things only the owner can 
 ## Usage — `/team <subcommand> <arg>`
 
 - `/team add-dev <name or email>` — onboard a new team member across every pipeline.
+- `/team remove-dev <name or email>` — offboard a member who left the team/org.
 - `/team add-repo <repo> [--graph-only]` — onboard a repo across GitHub ingest +
   code-graph + service-brief. `--graph-only` = graph/ingest but never brief it.
 
@@ -100,6 +101,48 @@ user-group).
   `contributors_github`.
 - Coverage is FORWARD-ONLY: their pre-existing Confluence docs / PRs won't backfill
   until touched again.
+
+---
+
+## `/team remove-dev <name or email>`
+
+Offboarding is a SCOPE FLIP, not a delete — events.db history references the
+person's canonical/ids forever, so past attribution must keep resolving.
+
+### STEP 1 — flip membership off, keep identity
+In `config/people.yaml`, change their entry's `scope: team` → `scope: org` and add
+an inline comment `# LEFT ORG <date>` (or `# MOVED TEAMS <date>`). Do NOT delete
+the entry or any of its ids — deleting breaks historical attribution in standup
+lookbacks, /retro, /ask person queries and PR-quality reports.
+
+### STEP 2 — docs
+- `management/context/team.md`: annotate their section header
+  `_(LEFT ORG <date> — notes kept for reference)_`. Keep the notes.
+- `config/teams.yaml` `contributors_github`: KEEP their login — it attributes
+  their historical team PRs. (Remove only if they moved to a SIBLING team whose
+  new work would now mis-attribute to this team.)
+
+### STEP 3 — verify the roster dropped them
+```bash
+cd $HOME/context/work-context && .venv/bin/python - <<'PY'
+import sys; sys.path.insert(0, '.')
+from derive.slack_team import load_team_slack_ids
+ids = load_team_slack_ids()
+assert '<their U...>' not in ids, "still on the roster"
+print("roster size:", len(ids))
+PY
+```
+Standup / leaves / capacity / pulse all read the same scope — one flip covers all.
+
+### STEP 4 — residual checklist (owner/admin actions; print them)
+- Remove them from the team Slack user-group(s) — otherwise group pings keep
+  "reaching" a dead account and the subteam-size signals drift.
+- Remove/replace their future on-call rota slots (external scheduler) — the
+  forecast reads the rota as-is and will keep showing them until it's edited.
+  Flag any leave×on-call collision the swap creates.
+- Reassign their open Jira tickets + in-review PRs (surface them: board query
+  assignee=<them> status not Done; open PRs by their login).
+- If they were a DRI on any cross-team track, name the replacement there.
 
 ---
 
