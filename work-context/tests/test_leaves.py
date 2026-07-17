@@ -117,3 +117,26 @@ def test_leave_plan_prompt_matches(text):
 @pytest.mark.parametrize("text", ["on leave today", "I'm off tomorrow", "plan the sprint"])
 def test_leave_plan_prompt_rejects_plain_leave(text):
     assert not ld.LEAVE_PLAN_PROMPT.search(text)
+
+
+# ── _load_team_emails: roster = people.yaml scope:team, owner excluded ───────
+# Consolidated 2026-07-16 (was a separate team.md roster). Leaves tracks the
+# managed team only — the owner's own leaves stay out by design.
+
+def test_team_emails_scope_team_owner_excluded(tmp_path, monkeypatch):
+    import yaml
+    p = tmp_path / "people.yaml"
+    p.write_text(yaml.safe_dump({"people": [
+        {"email": "owner@example.com", "scope": "team"},
+        {"email": "dev1@example.com", "scope": "team"},
+        {"email": "friend@example.com", "scope": "org"},
+    ]}))
+    monkeypatch.setattr(ld, "PEOPLE_YAML", p)
+    monkeypatch.setattr(ld, "OWNER_EMAIL", "owner@example.com")
+    assert ld._load_team_emails() == {"dev1@example.com"}
+
+
+def test_team_emails_empty_when_people_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(ld, "PEOPLE_YAML", tmp_path / "missing.yaml")
+    monkeypatch.setattr(ld, "OWNER_EMAIL", "owner@example.com")
+    assert ld._load_team_emails() == set()
