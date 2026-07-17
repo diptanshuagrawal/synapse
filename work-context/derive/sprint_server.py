@@ -18,57 +18,12 @@ sys.path.insert(0, os.path.join(ROOT, "derive"))
 import capacity_engine
 import plan_brain
 
-# Leaves lives on the cron dashboard (separate server/port); link out to it.
-LEAVES_URL = "http://127.0.0.1:8765/leaves"
+# Shared nav sidebar — one source of truth for the whole ecosystem.
+import synapse_nav
 
 
 def _inject_nav(html_bytes, clean_path):
-    """Inject a hamburger slide-out sidebar (Sprint / Monthly / Leaves) into a page."""
-    active = ("sprint" if "sprint-planner" in clean_path
-              else "plan" if "plan.html" in clean_path
-              else "retro" if "retro.html" in clean_path
-              else "monthly" if "monthly" in clean_path else "")
-    def a(href, key, label):
-        cls = ' class="active"' if key == active else ""
-        return f'<a href="{href}"{cls}>{label}</a>'
-    nav = f"""
-<style>
-  body{{padding-top:58px !important;}}   /* reserve a strip so the menu button never overlaps content */
-  #cnavBtn{{position:fixed;top:12px;left:14px;z-index:9998;width:38px;height:38px;border-radius:10px;
-    border:1px solid #e4e9f2;background:#fff;color:#15202e;font-size:18px;cursor:pointer;
-    box-shadow:0 1px 4px rgba(20,32,46,.12);display:flex;align-items:center;justify-content:center;}}
-  #cnavBtn:hover{{border-color:#3a55d9;}}
-  #cnavOv{{position:fixed;inset:0;background:rgba(10,15,20,.28);z-index:9998;opacity:0;pointer-events:none;transition:opacity .15s;}}
-  #cnav{{position:fixed;top:0;left:0;height:100%;width:250px;background:#fff;z-index:9999;
-    box-shadow:2px 0 16px rgba(20,32,46,.14);transform:translateX(-100%);transition:transform .18s ease;
-    font-family:'Hanken Grotesk',-apple-system,system-ui,sans-serif;padding:18px 14px;}}
-  body.cnav-open #cnav{{transform:none;}} body.cnav-open #cnavOv{{opacity:1;pointer-events:auto;}}
-  #cnav .t{{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#5b6675;font-weight:700;margin:6px 8px 12px;}}
-  #cnav a{{display:block;text-decoration:none;color:#15202e;font-size:14px;font-weight:600;
-    padding:10px 12px;border-radius:10px;margin-bottom:4px;}}
-  #cnav a:hover{{background:#eef2f8;}} #cnav a.active{{background:rgba(58,85,217,.08);color:#2c41b8;}}
-</style>
-<button id="cnavBtn" title="Menu">&#9776;</button>
-<div id="cnavOv"></div>
-<nav id="cnav">
-  <div class="t">Planning</div>
-  {a('/sprint','sprint','🗓️ Sprint Planner')}
-  {a('/monthly','monthly','📆 Monthly Planner')}
-  {a('/plan','plan','🧭 Plan (roadmap)')}
-  {a('/retro','retro','🔁 Retro')}
-  {a(LEAVES_URL,'leaves','🌴 Team Leaves')}
-</nav>
-<script>(function(){{
-  var b=document.getElementById('cnavBtn'),o=document.getElementById('cnavOv');
-  function close(){{document.body.classList.remove('cnav-open');}}
-  b.addEventListener('click',function(){{document.body.classList.toggle('cnav-open');}});
-  o.addEventListener('click',close);
-  document.addEventListener('keydown',function(e){{if(e.key==='Escape')close();}});
-}})();</script>
-</body>"""
-    if b"</body>" in html_bytes:
-        return html_bytes.replace(b"</body>", nav.encode(), 1)
-    return html_bytes + nav.encode()
+    return synapse_nav.inject_bytes(html_bytes, synapse_nav.active_from_path(clean_path))
 
 
 class Handler(SimpleHTTPRequestHandler):
