@@ -494,7 +494,7 @@ def main() -> int:
         team_slack_ids = set(load_team_slack_ids().keys())
         if not team_slack_ids:
             print(f"FAIL {cname}: ingest_mode=team_involved but no team slack-ids "
-                  "resolved from team.md", file=sys.stderr)
+                  "resolved from people.yaml scope:team", file=sys.stderr)
             return 1
         team_subteam_ids = load_team_subteam_ids()
     print(json.dumps({
