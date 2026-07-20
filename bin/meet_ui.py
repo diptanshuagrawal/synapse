@@ -74,6 +74,16 @@ def rec_status() -> dict:
         }
     except Exception:
         pass
+    # Persistent in-person nudge (meet_watch writes it while a calendar meeting is
+    # live but nothing is recording) → surfaced as a Steno banner so a missed
+    # macOS notification doesn't mean a mislabeled/unrecorded meeting.
+    if not out.get("recording"):
+        try:
+            title, nend = (CAP / "nudge").read_text().strip().rsplit("|", 1)
+            if int(nend) > time.time():
+                out["nudge"] = title
+        except Exception:
+            pass
     return out
 
 
@@ -426,6 +436,12 @@ a{color:var(--accent)}
   <div id="list"></div>
 </div>
 <div id="main">
+  <div id="nudge" style="display:none;align-items:center;gap:10px;margin-bottom:14px;
+    background:var(--recbg);border:1px solid var(--recline);border-radius:14px;padding:12px 16px">
+    <div style="flex:1;font-size:13.5px;color:var(--accent)"><b id="nudgetitle"></b> is live — not recording.</div>
+    <button onclick="nudgeRec()" style="border:1px solid var(--recline);background:var(--card);
+      color:var(--accent);border-radius:9px;padding:6px 16px;font-size:13px;font-weight:600;cursor:pointer">● Record it</button>
+  </div>
   <div id="startrow" style="display:none;align-items:center;gap:10px;margin-bottom:22px;
     background:var(--card);border:1px dashed var(--line);border-radius:14px;padding:12px 16px">
     <input id="startlbl" placeholder="in-person meeting — name it (optional)"
@@ -460,6 +476,9 @@ function md(t){return t.replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(/^## (.*)$
 async function poll(){
  const s=await (await fetch('/api/status')).json();
  $('rec').className = s.recording ? 'on' : '';
+ const nud = s.nudge && !s.recording;
+ $('nudge').style.display = nud ? 'flex':'none';
+ if(nud) $('nudgetitle').textContent = s.nudge;
  $('startrow').style.display = s.recording ? 'none':'flex';
  $('pad').style.display = s.recording ? 'block':'none';
  $('padhint').style.display = s.recording ? 'block':'none';
@@ -756,6 +775,9 @@ function mom(){
 function toggleRec(){fetch('/api/toggle',{method:'POST'}).then(()=>setTimeout(()=>{poll();load()},1500))}
 function startRec(){fetch('/api/start',{method:'POST',body:$('startlbl').value})
  .then(()=>{$('startlbl').value='';setTimeout(poll,2500)})}
+// Record the live calendar meeting from the nudge banner — empty body so
+// meet-record adopts the event's own name (not "in-person").
+function nudgeRec(){fetch('/api/start',{method:'POST',body:''}).then(()=>setTimeout(poll,2500))}
 $('pad').addEventListener('input',()=>{clearTimeout(padTimer);
  padTimer=setTimeout(()=>fetch('/api/scratchpad',{method:'POST',body:$('pad').value}),800)});
 $('linkin').addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.value){
@@ -921,9 +943,15 @@ class H(BaseHTTPRequestHandler):
             # Manual start for IN-PERSON meetings (no call app → the daemon
             # can't detect them). Manual recordings are never auto-stopped —
             # the owner ends them with the banner's Stop button.
-            label = re.sub(r"[^a-zA-Z0-9 _-]", "", body)[:60].strip() or "in-person"
-            subprocess.Popen([str(REPO / "bin" / "meet-record"), "start", label],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # A BLANK name must NOT default to "in-person": passing any label
+            # makes meet-record skip its calendar auto-labeling, so an on-calendar
+            # in-person 1-1 ended up mislabeled. Blank → no label arg →
+            # meet-record adopts the live calendar event's slug.
+            label = re.sub(r"[^a-zA-Z0-9 _-]", "", body)[:60].strip()
+            cmd = [str(REPO / "bin" / "meet-record"), "start"]
+            if label:
+                cmd.append(label)
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self._json({"ok": True})
         elif p == "/api/toggle":
             subprocess.Popen([str(REPO / "bin" / "meet-record"), "toggle"],
