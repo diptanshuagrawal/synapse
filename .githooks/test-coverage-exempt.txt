@@ -56,3 +56,13 @@ work-context/ingest/github_backfill_pr_meta.py
 work-context/ingest/slack-compact.py
 work-context/ingest/slack_backfill_app.py
 work-context/ingest/slack_mpim_oneshot.py
+
+# Steno meeting-intelligence pipeline — daemons + subprocess/CLI drivers, covered
+# by live runs not unit tests. (merge_streams.py + correct.py ARE unit-tested.)
+work-context/derive/meetings/build_vocab.py
+work-context/derive/meetings/calendar_feed.py
+work-context/derive/meetings/delete_meeting.py
+work-context/derive/meetings/ingest_transcript.py
+work-context/derive/meetings/live_asr_client.py
+work-context/derive/meetings/live_stream_daemon.py
+work-context/derive/meetings/signals.py
