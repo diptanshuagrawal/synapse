@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# meet-record — one-command meeting capture (the P2 "hotkey" entrypoint).
+#
+#   meet-record start [label]   begin capturing system audio + mic
+#   meet-record stop            finalize → mixed m4a lands in transcripts/inbox/
+#   meet-record toggle [label]  start if idle, stop if recording (hotkey target)
+#   meet-record status          RECORDING <label> <elapsed> | IDLE
+#
+# Capture runs as a detached background process (survives this shell). Stop
+# mixes the two streams offline with ffmpeg (no realtime clock-sync games),
+# names the file <label>-<HHMM>.m4a so the inbox sweep derives slug + start
+# time, then kicks the sweep after the 60s freshness window.
+set -uo pipefail
+
+# launchd agents get a bare PATH — ffmpeg/whisper live in homebrew (a 14:48
+# call's mix failed on exactly this and the audio was lost; never again).
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+WC="$REPO/work-context"
+INBOX="$WC/transcripts/inbox"
+CAP="$WC/transcripts/.capture"
+SRC="$REPO/bin/meet_record_capture.m"
+BIN="$CAP/meet-record-capture"
+PIDF="$CAP/pid"
+
+mkdir -p "$INBOX" "$CAP"
+
+notify() {  # best-effort UI feedback for hotkey use; silent in headless runs
+  osascript -e "display notification \"$1\" with title \"meet-record\"" 2>/dev/null || true
+}
+
+ensure_built() {
+  if [ ! -x "$BIN" ] || [ "$SRC" -nt "$BIN" ]; then
+    echo "building capture binary..."
+    clang -fobjc-arc -O2 "$SRC" -o "$BIN" \
+      -framework Foundation -framework AVFoundation -framework CoreMedia \
+      -framework ScreenCaptureKit || { echo "ERROR: clang build failed"; exit 1; }
+  fi
+}
+
+is_recording() { [ -f "$PIDF" ] && kill -0 "$(cut -d' ' -f1 "$PIDF")" 2>/dev/null; }
+
+cmd_start() {
+  local label="${1:-}"
+  # No name given (e.g. UI Record card left blank) — adopt the LIVE calendar
+  # event's title so an on-calendar meeting you join IN PERSON labels itself.
+  if [ -z "$label" ] && [ -x "$WC/.venv/bin/python3" ]; then
+    local st; st=$("$WC/.venv/bin/python3" "$WC/derive/meetings/calendar_feed.py" now 2>/dev/null | head -1)
+    case "$st" in ACTIVE\|*) label=$(printf '%s' "$st" | cut -d'|' -f2) ;; esac
+  fi
+  [ -n "$label" ] || label="meeting"
+  label=$(echo "$label" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')
+  [ -n "$label" ] || label="meeting"
+  if is_recording; then echo "already recording ($(cut -d' ' -f2 "$PIDF"))"; exit 1; fi
+  ensure_built
+  # Orphaned wavs = a previous stop failed mid-mix. NEVER delete meeting
+  # audio — push the raw wavs into the inbox (the sweep transcribes wav
+  # directly) and let this start begin clean.
+  local ts; ts=$(TZ=Asia/Kolkata date +%H%M%S)
+  [ -s "$CAP/sys.wav" ] && mv "$CAP/sys.wav" "$INBOX/rescued-sys-$ts.wav"
+  [ -s "$CAP/mic.wav" ] && mv "$CAP/mic.wav" "$INBOX/rescued-mic-$ts.wav"
+  rm -f "$CAP/sys.wav" "$CAP/mic.wav"
+  nohup "$BIN" "$CAP/sys.wav" "$CAP/mic.wav" >"$CAP/capture.log" 2>&1 &
+  local pid=$!
+  disown "$pid" 2>/dev/null || true
+  # SCK start is <2s normally, but a pending TCC permission prompt (or the
+  # decline path) takes up to ~15s — poll instead of a blind sleep.
+  local ok=""
+  for _ in $(seq 1 36); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "ERROR: capture failed to start:"; cat "$CAP/capture.log"
+      notify "capture FAILED — grant Screen Recording permission"
+      exit 1
+    fi
+    grep -q "^RECORDING" "$CAP/capture.log" 2>/dev/null && ok=1 && break
+    sleep 0.5
+  done
+  if [ -z "$ok" ]; then
+    echo "WARN: capture not confirmed after 18s (permission prompt pending?) — still waiting in background"
+  fi
+  echo "$pid $label $(date +%s)" > "$PIDF"
+  echo "RECORDING label=$label pid=$pid"
+  notify "recording started: $label"
+}
+
+cmd_stop() {
+  if ! is_recording; then echo "IDLE — nothing to stop"; rm -f "$PIDF"; exit 1; fi
+  read -r pid label started < "$PIDF"
+  kill -INT "$pid" 2>/dev/null
+  for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+  kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+  rm -f "$PIDF"
+
+  local out="$INBOX/${label}-$(TZ=Asia/Kolkata date +%H%M).m4a"
+  local mixlog="$CAP/mix.log"
+  if [ -s "$CAP/sys.wav" ] && [ -s "$CAP/mic.wav" ]; then
+    ffmpeg -y -loglevel error -i "$CAP/sys.wav" -i "$CAP/mic.wav" \
+      -filter_complex "amix=inputs=2:duration=longest:normalize=1" \
+      -ac 1 -c:a aac -b:a 96k "$out" 2>"$mixlog"
+  elif [ -s "$CAP/sys.wav" ]; then
+    ffmpeg -y -loglevel error -i "$CAP/sys.wav" -ac 1 -c:a aac -b:a 96k "$out" 2>"$mixlog"
+  elif [ -s "$CAP/mic.wav" ]; then
+    ffmpeg -y -loglevel error -i "$CAP/mic.wav" -ac 1 -c:a aac -b:a 96k "$out" 2>"$mixlog"
+  else
+    echo "ERROR: no audio captured (see $CAP/capture.log)"; notify "stop: no audio captured"; exit 1
+  fi
+  [ -s "$out" ] || { echo "ERROR: mix failed:"; cat "$mixlog"; exit 1; }
+  # Dual-stream handoff: when BOTH streams captured, keep them as a pair next
+  # to the m4a — the sweep transcribes each separately for ground-truth
+  # Me:/Them: speaker labels, then deletes the wavs (m4a stays as the archive).
+  local base; base="$(basename "$out" .m4a)"
+  if [ -s "$CAP/sys.wav" ] && [ -s "$CAP/mic.wav" ]; then
+    mv "$CAP/mic.wav" "$INBOX/$base.me.wav"
+    mv "$CAP/sys.wav" "$INBOX/$base.them.wav"
+  fi
+  rm -f "$CAP/sys.wav" "$CAP/mic.wav"
+
+  # Live scratchpad (typed in the meet UI during the call) rides along under
+  # the audio's final stem so the sweep archives them together and the notes
+  # skill merges it (Granola's your-notes-drive-the-AI mechanic).
+  if [ -s "$CAP/live.notes.md" ]; then
+    mv "$CAP/live.notes.md" "$INBOX/$(basename "$out" .m4a).notes.md"
+  fi
+  # Context links attached in the UI during the call (slack threads,
+  # confluence docs, jira) — /meeting-notes resolves their content.
+  if [ -s "$CAP/live.links" ]; then
+    mv "$CAP/live.links" "$INBOX/$(basename "$out" .m4a).links"
+  fi
+
+  local dur; dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$out" 2>/dev/null | cut -d. -f1)
+  echo "SAVED $out (${dur:-?}s)"
+  notify "saved: $(basename "$out") (${dur:-?}s) — transcribing shortly"
+
+  # Kick the sweep once the file clears the 60s freshness window; the launchd
+  # watcher is the backstop if this shell dies first.
+  ( sleep 65 && bash "$REPO/bin/transcripts_process.sh" >>"$CAP/sweep.log" 2>&1 ) &
+  disown 2>/dev/null || true
+}
+
+cmd_relabel() {
+  # Overlapping calendar events make the auto-label a guess — this is the
+  # human override (the UI's "wrong meeting?" picker calls it).
+  is_recording || { echo "IDLE — nothing to relabel"; exit 1; }
+  local newlabel
+  newlabel=$(echo "${1:?usage: meet-record relabel <slug>}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')
+  [ -n "$newlabel" ] || { echo "ERROR: empty label"; exit 1; }
+  read -r pid _ started < "$PIDF"
+  echo "$pid $newlabel $started" > "$PIDF"
+  echo "RELABELED to $newlabel"
+  notify "relabeled: $newlabel"
+}
+
+cmd_status() {
+  if is_recording; then
+    read -r pid label started < "$PIDF"
+    echo "RECORDING label=$label elapsed=$(( $(date +%s) - started ))s pid=$pid"
+  else
+    echo "IDLE"
+  fi
+}
+
+case "${1:-}" in
+  start)  cmd_start "${2:-}" ;;
+  stop)   cmd_stop ;;
+  toggle) if is_recording; then cmd_stop; else cmd_start "${2:-}"; fi ;;
+  status) cmd_status ;;
+  relabel) cmd_relabel "${2:-}" ;;
+  *) echo "usage: meet-record {start [label]|stop|toggle [label]|status|relabel <slug>}"; exit 2 ;;
+esac
