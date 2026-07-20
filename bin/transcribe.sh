@@ -72,8 +72,24 @@ fi
 VAD_MODEL="$HOME/.whisper-models/ggml-silero-v5.1.2.bin"
 VAD_ARGS=""
 [ -f "$VAD_MODEL" ] && VAD_ARGS="--vad --vad-model $VAD_MODEL"
-whisper-cli -m "$MODEL" -f "$WAV" -l auto -oj -otxt -of "$OUT" --no-prints -bs 5 -sns $VAD_ARGS \
-  ${PROMPT:+--prompt "This bank meeting discusses $PROMPT."} >/dev/null
+_run_whisper() {  # $1 = extra flags (e.g. "-mc 0" on the loop-recovery retry)
+  whisper-cli -m "$MODEL" -f "$WAV" -l auto -oj -otxt -of "$OUT" --no-prints -bs 5 -sns $VAD_ARGS $1 \
+    ${PROMPT:+--prompt "This bank meeting discusses $PROMPT."} >/dev/null
+}
+_run_whisper ""
+
+# REPETITION-LOOP GUARD (2026-07-20): context-carry (needed for the vocab prompt)
+# can make whisper latch into a loop that BURIES the real speech — the CBS audit
+# decoded as "So, I am the senior software developer." / "Okay." x1500 (~2% unique,
+# the whole hour of discussion lost). Detect a pathological low-unique ratio and
+# re-run with -mc 0: no context-carry breaks the loop (some vocab-carry lost, but
+# post-ASR correct.py recovers names). Normal files skip this and keep the boost.
+_tot=$(grep -cvE '^[[:space:]]*$' "$OUT.txt" 2>/dev/null || true); _tot=${_tot:-0}
+_uniq=$(grep -vE '^[[:space:]]*$' "$OUT.txt" 2>/dev/null | sort -u | wc -l | tr -d ' '); _uniq=${_uniq:-0}
+if [ "$_tot" -gt 30 ] && [ "$(( _uniq * 100 / _tot ))" -lt 30 ]; then
+  echo "transcribe: repetition loop (${_uniq}/${_tot} unique) — retrying with -mc 0" >&2
+  _run_whisper "-mc 0"
+fi
 
 # Post-ASR correction on the .txt (names + phrase map). The dual-stream path
 # gets this via merge_streams; this covers the single-stream .txt the UI shows.
@@ -86,6 +102,12 @@ fi
 # speech ("Virtual transactions." x18) — keep the first two, drop the rest.
 awk 'prev==$0 {c++; if (c<2) print; next} {c=0; prev=$0; print}' "$OUT.txt" > "$OUT.txt.dedup" \
   && mv "$OUT.txt.dedup" "$OUT.txt"
+
+# Safety net for loops the consecutive-collapse misses (alternating A/B/A/B, the
+# audit's failure mode): cap any identical line to 6 occurrences total. A decoder
+# loop repeats a line hundreds of times; genuine filler ("Okay.") rarely exceeds
+# this over a meeting. The -mc 0 retry above is the real fix; this is belt-and-braces.
+awk '{ if (++seen[$0] <= 6) print }' "$OUT.txt" > "$OUT.txt.cap" && mv "$OUT.txt.cap" "$OUT.txt"
 
 # Drop known Whisper silence-hallucination lines that leak past the gate.
 # These YouTube/caption artifacts essentially never occur in a bank meeting;
