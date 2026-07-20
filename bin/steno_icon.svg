@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Steno — speech becomes the written record.
+       Left: voice waveform. Right: text lines. One continuous thought. -->
+  <defs>
+    <clipPath id="sq"><rect x="0" y="0" width="1024" height="1024" rx="232"/></clipPath>
+  </defs>
+  <g clip-path="url(#sq)">
+    <rect width="1024" height="1024" fill="#1f1d1a"/>
+    <!-- waveform (spoken) -->
+    <g stroke="#c2410c" stroke-width="58" stroke-linecap="round" fill="none">
+      <path d="M 232 512 v -70"  transform="translate(0,35)"/>
+      <path d="M 340 512 v -190" transform="translate(0,95)"/>
+      <path d="M 448 512 v -120" transform="translate(0,60)"/>
+    </g>
+    <!-- text lines (written) -->
+    <g stroke="#faf6ee" stroke-width="58" stroke-linecap="round" fill="none">
+      <path d="M 560 392 h 232"/>
+      <path d="M 560 512 h 232"/>
+      <path d="M 560 632 h 150"/>
+    </g>
+  </g>
+</svg>
