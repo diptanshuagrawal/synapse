@@ -106,12 +106,22 @@ while true; do
     case "$nstate" in
       ACTIVE\|*)
         IFS='|' read -r _ nslug nend nuid ntitle <<< "$nstate"
+        # Persistent nudge for the Steno banner — the one-shot notification is
+        # easy to miss (DnD / perms; an on-calendar 1-1 recorded mislabeled
+        # because of exactly this). Refresh it every poll while the meeting is live and
+        # unrecorded; cleared below once recording starts or the meeting ends.
+        if [ "${nend:-0}" -gt "$NOW" ]; then
+          printf '%s|%s\n' "$ntitle" "$nend" > "$CAP/nudge"
+        fi
         if [ "${nend:-0}" -gt $(( NOW + 300 )) ] && ! grep -q "^$nuid$" "$CAP/nudged" 2>/dev/null; then
           echo "$nuid" >> "$CAP/nudged"
           osascript -e "display notification \"Not recording — click to start in Steno\" with title \"Meeting now: $ntitle\" sound name \"\"" 2>/dev/null || true
           log "NUDGE calendar meeting live, not recording: $ntitle"
         fi ;;
+      *) rm -f "$CAP/nudge" 2>/dev/null || true ;;
     esac
+  else
+    rm -f "$CAP/nudge" 2>/dev/null || true
   fi
 
   offcnt=0
