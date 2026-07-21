@@ -18,12 +18,21 @@ Output (--json, the routine reads this):
     {"computed_at": ISO,
      "n_unmapped_total": N,
      "by_source": {
-        "github":     [{"actor": str, "count": int, "samples": [subject, ...]}, ...],
+        "github":     [{"actor": str, "count": int, "samples": [subject, ...],
+                        "signals": {key_type: [{"value": v, "n_obs": n}, ...]}}, ...],
         "jira":       [...],
         "confluence": [...]}}
 
 The samples (up to 3 distinct subjects) give the resolver context — which repo /
 page / ticket the actor touched — to disambiguate look-ups.
+
+`signals` carries the identity pairs OBSERVED for this actor at ingest time
+(from events.db::identity_signals) — e.g. a github login's commit-author email
++ git name, or an accountId's linked email. This is GROUND TRUTH captured from
+the payloads, not a name guess: it lets the resolver map a login/accountId to a
+real person deterministically (login → corp email → people.yaml) instead of a
+fuzzy name search that returns several candidates. Empty {} means no pair was
+ever observed (then the resolver must fall back to a name look-up).
 
 CLI
 ---
@@ -88,6 +97,45 @@ def _samples(conn: sqlite3.Connection, source: str, actor: str) -> list[str]:
     return [r[0] for r in rows]
 
 
+def _signals(conn: sqlite3.Connection, actor: str) -> dict[str, list[dict]]:
+    """Identity pairs observed for `actor` in events.db::identity_signals.
+
+    Pairs are stored with a canonical (type, value) ordering, so the actor can
+    appear on either side of a row — we match its value against both and keep
+    the OTHER side of each row. Returns {key_type: [{"value", "n_obs"}, ...]}
+    with each type's values sorted by observation count (highest confidence
+    first). Ground truth from ingest payloads — e.g. a github login's
+    commit-author email — so the resolver maps login/accountId → person without
+    a fuzzy name guess. Missing table / any error degrades to {} (never fatal).
+    """
+    al = actor.lower()
+    try:
+        # Case-insensitive match on both sides: signal values are stored with
+        # source case preserved for non-email types, so compare lowercased.
+        # identity_signals is small (~hundreds of rows) — the lost index use is
+        # negligible and case-insensitivity is worth more than the micro-scan.
+        rows = conn.execute(
+            "SELECT key_a_type, key_a_value, key_b_type, key_b_value, n_obs "
+            "FROM identity_signals "
+            "WHERE LOWER(key_a_value)=? OR LOWER(key_b_value)=?",
+            (al, al),
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    acc: dict[str, dict[str, int]] = {}
+    for at, av, bt, bv, n in rows:
+        for typ, val in ((at, av), (bt, bv)):
+            if val is None or val.lower() == al:
+                continue  # the actor's own identity — skip; keep the linked side
+            acc.setdefault(typ, {})
+            acc[typ][val] = max(acc[typ].get(val, 0), n)
+    return {
+        typ: [{"value": v, "n_obs": nn}
+              for v, nn in sorted(vals.items(), key=lambda kv: -kv[1])]
+        for typ, vals in sorted(acc.items())
+    }
+
+
 def compute(conn: sqlite3.Connection) -> dict:
     scope_map = _build_actor_scope_map()
     by_source: dict[str, list[dict]] = {}
@@ -102,7 +150,12 @@ def compute(conn: sqlite3.Connection) -> dict:
             if scope_map.get(actor) is not None:
                 continue
             unmapped.append(
-                {"actor": actor, "count": n, "samples": _samples(conn, source, actor)}
+                {
+                    "actor": actor,
+                    "count": n,
+                    "samples": _samples(conn, source, actor),
+                    "signals": _signals(conn, actor),
+                }
             )
         unmapped.sort(key=lambda x: -x["count"])
         by_source[source] = unmapped
@@ -128,6 +181,9 @@ def _render_human(report: dict) -> None:
         for r in rows:
             samp = DIM + (", ".join(r["samples"]) or "—") + RST
             print(f"    {YEL}{r['actor']:42s}{RST} {r['count']:>4}  {samp}")
+            for typ, vals in (r.get("signals") or {}).items():
+                shown = ", ".join(f"{v['value']}({v['n_obs']})" for v in vals[:3])
+                print(f"      {DIM}↳ {typ}: {shown}{RST}")
         print()
 
 

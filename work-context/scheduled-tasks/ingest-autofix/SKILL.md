@@ -38,19 +38,33 @@ a. GROUP github actors that share sample subjects (same PRs) — a display-name 
    actors with overlapping samples. Resolve the group once and cover BOTH forms in one entry
    (put both in `git_names`, the login in `github`).
 
-b. LOOK UP the identity with the Atlassian `lookupJiraAccountId` tool (searchString = the
-   actor string; for github prefer the display-name form). It returns displayName + email +
-   accountId. Jira actors are usually already an email or account-id; confluence actors are
-   account-ids — look them up the same way to get the name/email.
+b. RESOLVE the identity. For a GITHUB actor, FIRST read its `signals.email` (emitted by
+   unmapped_actors.py — the commit-author email captured for that login at ingest, i.e. ground
+   truth, NOT a name guess). If exactly one signal email is on the org email domain
+   (`org.email_domain` in config/sources.yaml), THAT email is the person — skip the fuzzy name
+   search. IGNORE github-noreply / local git emails (`…@users.noreply.github.com`,
+   `…@*.local`); if those are the ONLY signal emails, fall through to the name look-up.
+   Then confirm/complete with the Atlassian `lookupJiraAccountId` tool (searchString = the corp
+   signal email when you have one — this returns a single unambiguous user — else the actor
+   string; for a github actor with no usable signal email prefer the display-name form). It
+   returns displayName + email + accountId. Jira actors are usually already an email or
+   account-id; confluence actors are account-ids — look them up the same way. (confluence/jira
+   `signals` are usually empty, so the lookup carries them as before.)
 
 c. CLASSIFY into exactly one tier:
 
    TIER A — AUTO-APPLY (write to people.yaml):
      • Resolves to exactly ONE human on the org email domain (the `org.email_domain` value in
        config/sources.yaml) AND no existing people.yaml entry already shares any of their
-       identity keys → new entry, `scope: org`.
-       Fields: email, name, scope:org; plus jira_id (the accountId) for jira/confluence actors;
-       plus github + git_names (all actor forms) for github actors.
+       identity keys → new entry, `scope: org`. A github actor whose corp `signals.email`
+       (from step b) resolves to one such human counts here — this is the common new-github-
+       person case, and the signal email makes it deterministic. Fields: email, name, scope:org;
+       plus jira_id (the accountId) for jira/confluence actors; plus github + git_names (all
+       actor forms) for github actors.
+       NOTE: this only fires when the person is genuinely NEW. If the signal email / accountId
+       matches someone ALREADY in people.yaml, it is an alias → TIER B (never auto-merge). And
+       a NEW github committer heavy on CORE repos still parks under the possible-teammate rule
+       below (team-vs-org is a human call) even when the signal email resolves cleanly.
      • Clear bot / service / automation account (actor matches /bot|automation|^tech-|-svc$|svc-|\[bot\]/
        or never resolves to a human and is obviously machine) → new entry, `scope: external`,
        carrying the actor under github/git_names (or name if no login form).
