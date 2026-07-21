@@ -84,6 +84,16 @@ def rec_status() -> dict:
                 out["nudge"] = title
         except Exception:
             pass
+        # Pre-call nudge (meet_watch writes it before a scheduled meeting starts)
+        # → a "meeting soon — arm to record?" banner. Same missed-notification
+        # backstop as the live nudge. Only while the meeting is still upcoming.
+        try:
+            parts = (CAP / "prenudge").read_text().strip().split("|")
+            if int(parts[1]) > time.time():
+                out["prenudge"] = parts[0]
+                out["prenudge_mins"] = parts[2] if len(parts) > 2 else ""
+        except Exception:
+            pass
     return out
 
 
@@ -253,6 +263,66 @@ def _meetings_rows(q: str = "") -> list[dict]:
     return rows
 
 
+# Voice-match confidence gate for PRE-FILLING a name suggestion in the UI
+# (mirror of voice_gallery.DEFAULT_THRESHOLD). A suggestion is never auto-applied
+# to a note — the owner confirms it here first.
+VOICE_THRESHOLD = 0.55
+DIAR_PY = Path.home() / ".steno-diarize" / "venv" / "bin" / "python3"
+
+
+def _roster() -> list:
+    """[{handle, name}] from people.yaml, for the speaker-assignment dropdown."""
+    import yaml
+
+    try:
+        ppl = (yaml.safe_load(open(WC / "config" / "people.yaml")) or {}).get("people", [])
+    except Exception:
+        return []
+    out = [{"handle": p.get("canonical"), "name": (p.get("name") or "").strip() or p.get("canonical")}
+           for p in ppl if p.get("canonical")]
+    out.sort(key=lambda r: r["name"].lower())
+    return out
+
+
+def _name_for(handle: str, roster: list) -> str:
+    for r in roster:
+        if r["handle"] == handle:
+            return r["name"]
+    return handle
+
+
+def _speakers_payload(mid: str, month: str) -> dict | None:
+    """Parse <mid>.speakers.json into a UI payload: per-speaker current identity +
+    voice-match suggestion + the roster for the dropdown. None if not diarized."""
+    f = ARCHIVE / month / f"{mid}.speakers.json"
+    if not f.exists():
+        return None
+    try:
+        data = json.loads(f.read_text(errors="replace"))
+    except Exception:
+        return None
+    roster = _roster()
+    lst = []
+    for cluster, e in sorted(data.items(), key=lambda kv: kv[1].get("display", kv[0])):
+        name, handle = e.get("name"), e.get("handle")
+        auto, score = e.get("auto"), float(e.get("score") or 0)
+        if name:
+            effective = name
+        elif handle:
+            effective = _name_for(handle, roster)
+        else:
+            effective = e.get("display", cluster)
+        # A voice suggestion only surfaces when unconfirmed and above the gate.
+        suggestion = (_name_for(auto, roster)
+                      if auto and score >= VOICE_THRESHOLD and not handle and not name else None)
+        lst.append({
+            "cluster": cluster, "display": e.get("display", cluster),
+            "handle": handle, "name": name, "effective": effective,
+            "score": round(score, 2), "suggestion": suggestion, "suggestion_handle": auto,
+        })
+    return {"list": lst, "roster": roster}
+
+
 def meeting_detail(mid: str) -> dict:
     mid = re.sub(r"[^a-zA-Z0-9_-]", "", mid)
     month = mid[:7]
@@ -289,6 +359,12 @@ def meeting_detail(mid: str) -> dict:
         "mom": (NOTES_DIR / f"{mid}.mom.md").read_text(errors="replace")
         if (NOTES_DIR / f"{mid}.mom.md").exists() else "",
         "mom_queued": (NOTES_DIR / f"{mid}.mom.request").exists(),
+        # Redacted-for-sharing export (owner reviews, then sends by hand — never
+        # auto-sent). Shown as its own tab once generated via the Share button.
+        "share": (NOTES_DIR / f"{mid}.share.md").read_text(errors="replace")
+        if (NOTES_DIR / f"{mid}.share.md").exists() else "",
+        # Diarized-speaker identities (in-person meetings) — None if not diarized.
+        "speakers": _speakers_payload(mid, month),
     }
 
 
@@ -444,6 +520,12 @@ a{color:var(--accent)}
     <button onclick="nudgeRec()" style="border:1px solid var(--recline);background:var(--card);
       color:var(--accent);border-radius:9px;padding:6px 16px;font-size:13px;font-weight:600;cursor:pointer">● Record it</button>
   </div>
+  <div id="prenudge" style="display:none;align-items:center;gap:10px;margin-bottom:14px;
+    background:var(--card);border:1px dashed var(--recline);border-radius:14px;padding:12px 16px">
+    <div style="flex:1;font-size:13.5px;color:var(--accent)">Upcoming: <b id="prenudgetitle"></b> <span id="prenudgemins" style="opacity:.7"></span></div>
+    <button onclick="prenudgeRec()" style="border:1px solid var(--recline);background:var(--card);
+      color:var(--accent);border-radius:9px;padding:6px 16px;font-size:13px;font-weight:600;cursor:pointer">● Arm &amp; record</button>
+  </div>
   <div id="startrow" style="display:none;align-items:center;gap:10px;margin-bottom:22px;
     background:var(--card);border:1px dashed var(--line);border-radius:14px;padding:12px 16px">
     <input id="startlbl" placeholder="in-person meeting — name it (optional)"
@@ -481,6 +563,10 @@ async function poll(){
  const nud = s.nudge && !s.recording;
  $('nudge').style.display = nud ? 'flex':'none';
  if(nud) $('nudgetitle').textContent = s.nudge;
+ const pnud = s.prenudge && !s.recording;
+ $('prenudge').style.display = pnud ? 'flex':'none';
+ if(pnud){ $('prenudgetitle').textContent = s.prenudge;
+   $('prenudgemins').textContent = s.prenudge_mins ? '· starts in '+s.prenudge_mins+'m' : ''; }
  $('startrow').style.display = s.recording ? 'none':'flex';
  $('pad').style.display = s.recording ? 'block':'none';
  $('padhint').style.display = s.recording ? 'block':'none';
@@ -704,7 +790,7 @@ async function open_(id,ss){
 async function seg_(id){sel=id;detail=await (await fetch('/api/meeting/'+id)).json();render()}
 function render(){
  if(!detail) return;
- const tabs=['note','transcript','my notes'].concat((detail.mom||detail.mom_queued)?['MoM']:[]);
+ const tabs=['note','transcript','my notes'].concat((detail.mom||detail.mom_queued)?['MoM']:[]).concat(detail.speakers?['Speakers']:[]).concat(detail.share?['Share']:[]);
  const parts=segs.length>1?`<div style="margin:-8px 0 12px;display:flex;gap:6px">${segs.map((s,i)=>`<button class="${s===sel?'on':''}" style="border:1px solid var(--line);background:${s===sel?'var(--ink)':'var(--card)'};color:${s===sel?'var(--paper)':'var(--muted)'};border-radius:8px;padding:3px 10px;font-size:12px;cursor:pointer" onclick="seg_('${s}')">part ${i+1}</button>`).join('')}</div>`:'';
  const linkchips=(detail.links||[]).map(u=>`<a href="${u.startsWith('http')?u:'#'}" target="_blank" style="font-size:11.5px;background:var(--card);border:1px solid var(--line);border-radius:7px;padding:2px 8px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:none">${u}</a>`).join('');
  const linkbar=`<div style="margin:0 0 14px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">${linkchips}
@@ -727,6 +813,7 @@ function render(){
  <div class="tabs">${tabs.map(t=>`<button class="${t===tab?'on':''}" onclick="tab='${t}';render()">${t}</button>`).join('')}
    <span style="margin-left:auto;display:flex;gap:6px">
    ${(!detail.mom&&!detail.mom_queued)?`<button style="border:1px solid var(--line);background:var(--card);border-radius:9px;padding:5px 14px;font-size:13px;cursor:pointer;color:var(--muted)" onclick="mom()">MoM</button>`:''}
+   ${(detail.note||detail.mom)?`<button style="border:1px solid var(--line);background:var(--card);border-radius:9px;padding:5px 14px;font-size:13px;cursor:pointer;color:var(--muted)" onclick="share()">Share (redact)</button>`:''}
    ${detail.note?`<button style="border:1px solid var(--line);background:var(--card);border-radius:9px;padding:5px 14px;font-size:13px;cursor:pointer;color:var(--accent)" onclick="regen()">↻ regenerate</button>`:''}
    <button style="border:1px solid var(--line);background:var(--card);border-radius:9px;padding:5px 14px;font-size:13px;cursor:pointer;color:#b91c1c" onclick="del()">delete</button></span></div>
  <div id="content">${
@@ -735,7 +822,23 @@ function render(){
      :'<div class="empty">Note not generated yet — the routine picks it up within ~30 min.</div>')
    : tab==='MoM' ? (detail.mom?`<div class="md">${md(detail.mom)}</div>`
      :'<div class="empty">MoM queued — generated by the routine within ~15 min.</div>')
-   : tab==='transcript' ? `<pre>${detail.transcript.replace(/</g,'&lt;')}</pre>`
+   : tab==='Share' ? `<div style="background:var(--recbg);border:1px solid var(--recline);border-radius:12px;padding:10px 16px;margin-bottom:14px;font-size:13px;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+       <span style="flex:1;min-width:220px">Redacted from the ${detail.share_src||'note'} for sharing — <b>review before sending</b>. Nothing is sent automatically. Masked: ${detail.share_masked||'PII'}.</span>
+       <button onclick="share('names')" style="border:1px solid var(--line);background:var(--card);border-radius:8px;padding:4px 12px;font-size:12px;cursor:pointer;color:var(--muted)">also mask names</button>
+       <button onclick="copyShare()" style="border:1px solid var(--line);background:var(--card);border-radius:8px;padding:4px 12px;font-size:12px;cursor:pointer;color:var(--accent)">copy</button></div>
+     <div class="md">${md(detail.share)}</div>`
+   : tab==='Speakers' ? (function(){
+       const sp=detail.speakers;
+       const opts=(selh)=>['<option value="">— unassigned —</option>'].concat(
+         sp.roster.map(r=>`<option value="${r.handle}" ${r.handle===selh?'selected':''}>${r.name}</option>`)).join('');
+       return `<div style="font-size:12.5px;color:var(--muted);margin-bottom:12px">Assign each detected voice to a person. Your choice is saved as ground truth for the note AND teaches Steno to recognise that voice in future meetings. 🔊 = auto-matched by voice.</div>`+
+         sp.list.map(s=>`<div style="display:flex;align-items:center;gap:12px;padding:9px 12px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px">
+           <b style="min-width:76px">${s.display}</b>
+           <span style="flex:1;color:var(--muted);font-size:12.5px">${s.name?('→ <b style="color:var(--accent)">'+s.name+'</b>'):(s.suggestion?('🔊 sounds like <b>'+s.suggestion+'</b> ('+s.score+') <button onclick="setSpeaker(\''+s.cluster+'\',\''+s.suggestion_handle+'\')" style="border:1px solid var(--recline);background:var(--card);color:var(--accent);border-radius:7px;padding:2px 9px;font-size:11.5px;cursor:pointer;margin-left:4px">confirm</button>'):'unassigned')}</span>
+           <select onchange="setSpeaker('${s.cluster}',this.value)" style="border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;padding:5px 10px;font-size:12.5px">${opts(s.handle||'')}</select>
+         </div>`).join('');
+     })()
+   : tab==='transcript' ? `<pre>${mapTranscript(detail.transcript).replace(/</g,'&lt;')}</pre>`
    : `<textarea id="mpad" style="width:100%;min-height:320px;border:1px solid var(--line);border-radius:12px;background:var(--card);padding:14px 16px;font:14px/1.6 ui-monospace,Menlo,monospace;resize:vertical;outline:none" placeholder="Add your own context — what mattered, corrections, decisions the transcript garbled. Autosaves; used on the next (re)generation.">${detail.scratchpad.replace(/</g,'&lt;')}</textarea>
       <div style="font-size:12px;color:var(--muted);margin-top:6px">autosaves · attach links above · hit ↻ regenerate when ready</div>`}</div>`;
  const mp=document.getElementById('mpad');
@@ -744,6 +847,25 @@ function render(){
 }
 function regen(){
  fetch('/api/regen/'+sel,{method:'POST'}).then(()=>seg_(sel));
+}
+// Share (redacted): deterministic PII mask, generated instantly server-side.
+// Owner reviews the result and sends it by hand — nothing leaves the machine here.
+function share(mode){
+ fetch('/api/share/'+sel,{method:'POST',body:mode==='names'?'names':''})
+  .then(r=>r.json()).then(j=>{ if(!j.ok){alert(j.error||'no note or MoM to share yet');return;}
+    detail.share=j.share; detail.share_masked=j.masked; detail.share_src=j.source; tab='Share'; render();});
+}
+function copyShare(){ if(navigator.clipboard) navigator.clipboard.writeText(detail.share||''); }
+// Assign/correct a diarized speaker → a person. Saves the mapping + enrolls the
+// voiceprint so future meetings auto-recognise this voice.
+function setSpeaker(cluster,handle){
+ fetch('/api/speakers/'+sel,{method:'POST',body:JSON.stringify({cluster:cluster,handle:handle})}).then(()=>seg_(sel));
+}
+// Display confirmed speaker names in the raw transcript (Speaker N → name).
+function mapTranscript(t){
+ if(!detail.speakers) return t;
+ const m={}; detail.speakers.list.forEach(s=>{ if(s.name) m[s.display]=s.name; });
+ return t.replace(/\bSpeaker \d+\b/g, x=> m[x]||x);
 }
 function setCat(c){if(!c)return;
  fetch('/api/cat/'+sel,{method:'POST',body:c}).then(()=>{seg_(sel);load()})}
@@ -786,6 +908,9 @@ function startRec(){fetch('/api/start',{method:'POST',body:$('startlbl').value})
 // Record the live calendar meeting from the nudge banner — empty body so
 // meet-record adopts the event's own name (not "in-person").
 function nudgeRec(){fetch('/api/start',{method:'POST',body:''}).then(()=>setTimeout(poll,2500))}
+// Arm the upcoming meeting from the pre-call banner — start recording now,
+// labeled with the meeting title (so an early arm still names the note right).
+function prenudgeRec(){fetch('/api/start',{method:'POST',body:$('prenudgetitle').textContent}).then(()=>setTimeout(poll,2500))}
 $('pad').addEventListener('input',()=>{clearTimeout(padTimer);
  padTimer=setTimeout(()=>fetch('/api/scratchpad',{method:'POST',body:$('pad').value}),800)});
 $('linkin').addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.value){
@@ -1068,6 +1193,71 @@ class H(BaseHTTPRequestHandler):
                 NOTES_DIR.mkdir(parents=True, exist_ok=True)
                 (NOTES_DIR / f"{mid}.mom.request").touch()
             self._json({"ok": bool(mid)})
+        elif p.startswith("/api/speakers/"):
+            # Assign (or correct) a diarized speaker → a person. Persists the
+            # mapping in <mid>.speakers.json AND enrolls that speaker's voiceprint
+            # into the local gallery so future meetings auto-recognise the voice.
+            # body = {"cluster":"SPEAKER_00","handle":"alex"}  (handle "" clears).
+            mid = re.sub(r"[^a-zA-Z0-9_-]", "", p.rsplit("/", 1)[1])
+            month = mid[:7]
+            try:
+                req = json.loads(body or "{}")
+            except Exception:
+                req = {}
+            cluster = str(req.get("cluster", ""))
+            handle = str(req.get("handle", "")).strip()
+            spk_f = ARCHIVE / month / f"{mid}.speakers.json"
+            if not (cluster and spk_f.exists()):
+                self._json({"ok": False, "error": "no such speaker map"})
+                return
+            data = json.loads(spk_f.read_text(errors="replace"))
+            if cluster not in data:
+                self._json({"ok": False, "error": "unknown cluster"})
+                return
+            if handle:
+                data[cluster]["handle"] = handle
+                data[cluster]["name"] = _name_for(handle, _roster())
+            else:  # clear assignment
+                data[cluster]["handle"] = None
+                data[cluster]["name"] = None
+            spk_f.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            # Enroll the voiceprint (best-effort; needs the diarize venv + diar.json).
+            diar_f = ARCHIVE / month / f"{mid}.diar.json"
+            if handle and DIAR_PY.exists() and diar_f.exists():
+                subprocess.Popen(
+                    [str(DIAR_PY), str(WC / "derive" / "meetings" / "voice_gallery.py"),
+                     "enroll", str(diar_f), cluster, handle],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            self._json({"ok": True})
+        elif p.startswith("/api/share/"):
+            # Instant redacted export for sharing. Deterministic (no model, no
+            # cloud), so it runs synchronously here — masks PII in the MoM
+            # (preferred) or the note, writes <mid>.share.md, and returns it for
+            # the OWNER to review. Nothing is sent anywhere; sharing is a manual,
+            # permission-required step the owner does by hand. body "names" also
+            # masks team names (default: names kept).
+            mid = re.sub(r"[^a-zA-Z0-9_-]", "", p.rsplit("/", 1)[1])
+            src = None
+            if mid:
+                mom = NOTES_DIR / f"{mid}.mom.md"
+                note = NOTES_DIR / f"{mid}.md"
+                src = mom if mom.exists() else (note if note.exists() else None)
+            if not src:
+                self._json({"ok": False, "error": "no note or MoM to share yet"})
+                return
+            sys.path.insert(0, str(WC))
+            from derive.meetings.redact import redact_text, summarize
+            redacted, report = redact_text(
+                src.read_text(errors="replace"), mask_names=(body.strip() == "names")
+            )
+            (NOTES_DIR / f"{mid}.share.md").write_text(redacted, encoding="utf-8")
+            self._json({
+                "ok": True,
+                "share": redacted,
+                "masked": summarize(report),
+                "source": "MoM" if src.name.endswith(".mom.md") else "note",
+            })
         elif p == "/api/relabel":
             slug = re.sub(r"[^a-z0-9-]", "", body)[:60]
             if slug:
