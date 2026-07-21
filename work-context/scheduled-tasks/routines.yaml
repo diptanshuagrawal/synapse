@@ -131,7 +131,9 @@ routines:
     permissions: [Bash]
     # OWNS the project prune now (the com.example.housekeeping launchd job is disabled): STEP 1
     # runs bin/housekeeping.sh --apply (the deterministic prune — old backups/verdicts/handoffs/
-    # logs/.DS_Store + stale-MPIM, UNCHANGED). STEP 2 runs --scan → state/housekeeping_candidates.json
+    # logs/.DS_Store + stale-MPIM + Steno audio-retention [archived .m4a >14d + orphan raw .wav;
+    # starred meetings exempt, transcripts/events.db untouched], UNCHANGED otherwise). STEP 2 runs
+    # --scan → state/housekeeping_candidates.json
     # (further cleanup candidates as FACTS, no deletion). STEP 3 classifies each in-chat (per
     # .claude/shared/housekeeping-classify.md) → state/housekeeping_verdicts.json → renders via
     # derive/housekeeping_render.py → posts Approve/Reject cards to #rollup. SUGGEST-ONLY: the only
