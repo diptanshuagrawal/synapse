@@ -62,6 +62,8 @@ work-context/ingest/slack_mpim_oneshot.py
 work-context/derive/meetings/build_vocab.py
 work-context/derive/meetings/calendar_feed.py
 work-context/derive/meetings/delete_meeting.py
+work-context/derive/meetings/diarize.py
+work-context/derive/meetings/diarize_fetch_models.py
 work-context/derive/meetings/ingest_transcript.py
 work-context/derive/meetings/live_asr_client.py
 work-context/derive/meetings/live_stream_daemon.py
