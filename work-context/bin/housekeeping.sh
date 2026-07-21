@@ -148,6 +148,24 @@ else
   echo "  SKIP: .venv/bin/python not found"
 fi
 
+# 8. Steno audio-retention — archived .m4a > 14d + orphan raw .wav streams.
+#    Transcripts/notes/events.db are untouched (only heavy audio is reclaimed).
+#    Starred meetings (management/meetings/<stem>.star) are NEVER auto-deleted.
+#    Self-contained (stdlib only) → runs under venv python or system python3.
+echo "[8] steno audio-retention (m4a > 14d + orphan wav; starred exempt):"
+HK_PY="$WC/.venv/bin/python"; [[ -x "$HK_PY" ]] || HK_PY="$(command -v python3 || true)"
+if [[ -n "$HK_PY" && -f "$ROOT/bin/meet_retention.py" ]]; then
+  if [[ "$MODE" == "apply" ]]; then
+    "$HK_PY" "$ROOT/bin/meet_retention.py" --apply 2>&1 | sed 's/^/  /' \
+      || echo "  WARN: meet_retention exited non-zero"
+  else
+    "$HK_PY" "$ROOT/bin/meet_retention.py" 2>&1 | sed 's/^/  /' \
+      || echo "  WARN: meet_retention exited non-zero"
+  fi
+else
+  echo "  SKIP: python3 or bin/meet_retention.py not found"
+fi
+
 echo
 echo "=== Summary ==="
 echo "Files affected: $TOTAL_FILES"

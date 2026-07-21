@@ -1,9 +1,9 @@
 ---
 name: housekeeping-review
-description: Weekly (Mondays, retries every 30 min until it succeeds once that week) — runs the deterministic project prune (old backups/verdicts/handoffs/logs/.DS_Store + stale-MPIM) AND a classification layer that scans for FURTHER cleanup candidates, judges each, and posts Approve/Reject cards to #rollup. Suggest-only: nothing extra is deleted without an explicit Approve click.
+description: Weekly (Mondays, retries every 30 min until it succeeds once that week) — runs the deterministic project prune (old backups/verdicts/handoffs/logs/.DS_Store + stale-MPIM + Steno audio-retention: archived .m4a >14d + orphan raw .wav, starred meetings exempt) AND a classification layer that scans for FURTHER cleanup candidates, judges each, and posts Approve/Reject cards to #rollup. Suggest-only: nothing extra is deleted without an explicit Approve click.
 ---
 
-Run the housekeeping job — prune the known-safe stuff, then surface + classify further cleanup candidates and post them to #rollup for Approve/Reject. This OWNS the prune now (the old weekly `com.example.housekeeping` launchd job is disabled). The only deletes that happen unattended are the deterministic prune (steps 1–7 of housekeeping.sh, same as always); every FURTHER suggestion is gated on an owner click.
+Run the housekeeping job — prune the known-safe stuff, then surface + classify further cleanup candidates and post them to #rollup for Approve/Reject. This OWNS the prune now (the old weekly `com.example.housekeeping` launchd job is disabled). The only deletes that happen unattended are the deterministic prune (steps 1–8 of housekeeping.sh, incl. Steno audio-retention); every FURTHER suggestion is gated on an owner click.
 
 Working dir: __REPO__/work-context. (STEP 0 resolves the python for the render + relay-post; housekeeping.sh uses the project venv internally for the prune + scan.)
 
@@ -35,7 +35,9 @@ cd into __REPO__/work-context first.
 
 ## STEP 1 — deterministic prune (the existing job, unchanged)
     cd __REPO__/work-context && bash bin/housekeeping.sh --apply 2>&1 | tee -a logs/housekeeping.log
-Steps 1–7 delete/truncate the known-safe patterns + prune stale MPIMs. The `tee` keeps the
+Steps 1–8 delete/truncate the known-safe patterns + prune stale MPIMs + reclaim Steno audio
+(archived .m4a >14d + orphan raw .wav; starred meetings exempt, transcripts/events.db untouched).
+The `tee` keeps the
 HOUSEKEEPING lane in cron-status fed. If this errors, do NOT stamp success — let the 30-min
 retry handle it.
 
