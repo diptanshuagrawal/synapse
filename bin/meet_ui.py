@@ -498,18 +498,27 @@ def _enrich_meeting(subject: str, idx: dict) -> dict:
 def todos() -> dict:
     owner = _owner_handle()
     try:
-        items = _sig().owner_facing_todos(owner)
-        done = _sig().owner_facing_todos(owner, status="done")
-        untracked = _sig().owner_untracked()
+        sig = _sig()
+        items = sig.owner_facing_todos(owner)
+        follow_up = sig.follow_up_items(owner, with_evidence=True)
+        suggestions = sig.owner_suggestions()
+        done = sig.owner_facing_todos(owner, status="done")
+        untracked = sig.owner_untracked()
     except Exception:
-        items, done, untracked = [], [], []
+        items, follow_up, suggestions, done, untracked = [], [], [], [], []
     idx = _todo_meeting_map()
-    for it in items + done + untracked:
+    for it in items + follow_up + suggestions + done + untracked:
         it["meeting"] = _enrich_meeting(it.get("subject", ""), idx)
+    # Follow-ups show the teammate's display name, not the raw handle.
+    roster = _roster()
+    for it in follow_up:
+        it["who_name"] = _name_for(it.get("who", ""), roster)
     # Completed view = most-recently-resolved first.
     done.sort(key=lambda it: it.get("resolved_ts", ""), reverse=True)
-    return {"items": items, "done": done, "untracked": untracked,
-            "count": len(items), "done_count": len(done),
+    return {"items": items, "follow_up": follow_up, "suggestions": suggestions,
+            "done": done, "untracked": untracked,
+            "count": len(items), "follow_up_count": len(follow_up),
+            "suggestion_count": len(suggestions), "done_count": len(done),
             "owner_resolved": bool(owner)}
 
 
@@ -912,42 +921,56 @@ function closePop(){const p=document.getElementById('daypop');if(p)p.remove();
 function calNav(d){const [y,m]=calMonth.split('-').map(Number);
  const nd=new Date(y,m-1+d,1);calMonth=`${nd.getFullYear()}-${String(nd.getMonth()+1).padStart(2,'0')}`;calDay=null;load()}
 let mq='', mqT=null, libTab='recent', libCat='', calDay=null,
-    calMonth=new Date().toISOString().slice(0,7), mainView='lib', untOpen=false, doneOpen=false;
+    calMonth=new Date().toISOString().slice(0,7), mainView='lib', untOpen=false, doneOpen=false, todoTab='todo';
 // ── To-do (My action items) view ──────────────────────────────────────────
 async function renderTodos(td){
  if(!td) td=await (await fetch('/api/todos')).json();
  window._todos=td; setTodoBadge(td.count||0); syncTodoNav();
- const items=td.items||[], unt=td.untracked||[];
+ const tabs=`<div class="tabs" style="margin:2px 0 16px">
+   <button class="${todoTab==='todo'?'on':''}" onclick="todoTab='todo';renderTodos(window._todos)">To do${td.count?' · '+td.count:''}</button>
+   <button class="${todoTab==='followup'?'on':''}" onclick="todoTab='followup';renderTodos(window._todos)">Follow up${td.follow_up_count?' · '+td.follow_up_count:''}</button></div>`;
+ const sub=todoTab==='followup'
+   ? 'Things others owe you from meetings — with a said-vs-done hint so you know who to chase.'
+   : 'Your to-dos across meetings — asks to you, your commitments, actions you own or unassigned, plus 💡 AI suggestions.';
+ const body=todoTab==='followup'?renderFollowUp(td):renderMine(td);
+ $('view').innerHTML=`<h1 style="font-size:22px;margin-bottom:4px">My action items</h1>
+   <div style="color:var(--muted);font-size:13px;margin-bottom:6px">${sub}</div>${tabs}${body}`;
+}
+function bucketByDue(arr){
  const today=new Date().toISOString().slice(0,10);
  const in7=new Date(Date.now()+7*864e5).toISOString().slice(0,10);
  const b={overdue:[],week:[],later:[],nodue:[]};
- items.forEach(it=>{
-   if(!it.due) b.nodue.push(it);
+ arr.forEach(it=>{ if(!it.due) b.nodue.push(it);
    else if(it.due<today) b.overdue.push(it);
-   else if(it.due<=in7) b.week.push(it);
-   else b.later.push(it);
- });
+   else if(it.due<=in7) b.week.push(it); else b.later.push(it); });
  const srt=a=>a.sort((x,y)=>(x.due||'').localeCompare(y.due||'')||(y.ts||'').localeCompare(x.ts||''));
- Object.values(b).forEach(srt);
- const grp=(cls,label,arr)=>arr.length?`<div class="tdgrp ${cls}">${label} · ${arr.length}</div>`+arr.map(todoRow).join(''):'';
- let body=grp('over','Overdue',b.overdue)+grp('','This week',b.week)
-   +grp('','Later',b.later)+grp('','No due date',b.nodue);
- if(!items.length) body=`<div class="empty">🎉 Nothing on your plate — no open action items from your meetings.${td.owner_resolved?'':'<div style="font-size:12px;margin-top:8px">(owner identity unresolved — showing unassigned items + asks only)</div>'}</div>`;
- if(unt.length){
-   body+=`<div style="margin-top:30px;max-width:820px">
+ Object.values(b).forEach(srt); return b;
+}
+function grpBlock(arr,rowFn){
+ const b=bucketByDue(arr);
+ const g=(cls,label,a)=>a.length?`<div class="tdgrp ${cls}">${label} · ${a.length}</div>`+a.map(rowFn).join(''):'';
+ return g('over','Overdue',b.overdue)+g('','This week',b.week)+g('','Later',b.later)+g('','No due date',b.nodue);
+}
+function renderMine(td){
+ const items=td.items||[], unt=td.untracked||[], sug=td.suggestions||[], done=td.done||[];
+ let body='';
+ if(sug.length) body+=`<div class="tdgrp" style="color:var(--accent)">💡 Suggested · ${sug.length} <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">— inferred, not an explicit action</span></div>`+sug.map(suggestionRow).join('');
+ body+=grpBlock(items,todoRow);
+ if(!items.length && !sug.length) body=`<div class="empty">🎉 Nothing on your plate — no open action items from your meetings.${td.owner_resolved?'':'<div style="font-size:12px;margin-top:8px">(owner identity unresolved — showing unassigned items + asks only)</div>'}</div>`;
+ if(unt.length) body+=`<div style="margin-top:30px;max-width:820px">
      <div onclick="untOpen=!untOpen;renderTodos(window._todos)" style="cursor:pointer;font-size:12.5px;font-weight:600;color:var(--muted);user-select:none">
        ${untOpen?'▾':'▸'} Mentioned, not tracked · ${unt.length} <span style="font-weight:400">— /ticketize candidates, not personal to-dos</span></div>
      ${untOpen?'<div style="margin-top:10px">'+unt.map(untRow).join('')+'</div>':''}</div>`;
- }
- const done=td.done||[];
- if(done.length){
-   body+=`<div style="margin-top:22px;max-width:820px">
+ if(done.length) body+=`<div style="margin-top:22px;max-width:820px">
      <div onclick="doneOpen=!doneOpen;renderTodos(window._todos)" style="cursor:pointer;font-size:12.5px;font-weight:600;color:var(--good);user-select:none">
        ${doneOpen?'▾':'▸'} Completed · ${done.length} <span style="font-weight:400;color:var(--muted)">— click ↩ to un-check</span></div>
      ${doneOpen?'<div style="margin-top:10px">'+done.map(doneRow).join('')+'</div>':''}</div>`;
- }
- $('view').innerHTML=`<h1 style="font-size:22px;margin-bottom:4px">My action items</h1>
-   <div style="color:var(--muted);font-size:13px;margin-bottom:6px">Open to-dos across your meetings — asks to you, your commitments, and actions you own or that are unassigned.</div>${body}`;
+ return body;
+}
+function renderFollowUp(td){
+ const fu=td.follow_up||[];
+ if(!fu.length) return `<div class="empty">Nothing to follow up on — no open items others owe you.</div>`;
+ return grpBlock(fu,followUpRow);
 }
 function kbadge(kind){
  const col=kind==='ask'?'var(--accent)':kind==='commitment'?'var(--good)':'var(--muted)';
@@ -980,6 +1003,26 @@ function doneRow(it){
    <button class="tddone" title="Un-check (reopen)" onclick='reopenTodo(${JSON.stringify(it.id)})'>↩</button>
    <div class="txt"><span style="text-decoration:line-through">${esc(it.text)}</span>
      <div class="sub">${kbadge(it.kind)}${src?'<span>· '+src+'</span>':''}</div>
+   </div></div>`;
+}
+function suggestionRow(it){
+ const src=meetingSrc(it.meeting);
+ return `<div class="todorow" style="border-color:var(--recline);background:var(--recbg)">
+   <button class="tddone" title="Accept / mark done" onclick='resolveTodo(${JSON.stringify(it.id)})'>✓</button>
+   <div class="txt">${esc(it.text)}
+     <div class="sub"><span class="kbadge" style="color:var(--accent)">suggested</span>${src?'<span>· '+src+'</span>':''}${it.rationale?'<span>· '+esc(it.rationale)+'</span>':''}</div>
+   </div></div>`;
+}
+function followUpRow(it){
+ const src=meetingSrc(it.meeting);
+ const overdue=it.due&&it.due<new Date().toISOString().slice(0,10);
+ const due=it.due?`<span style="color:${overdue?'#b91c1c':'var(--muted)'}">due ${esc(it.due)}</span>`:'';
+ const stale=it.evidence&&it.evidence.indexOf('no activity')>=0;
+ const ev=it.evidence?`<span style="color:${stale?'#b91c1c':'var(--good)'}">${esc(it.evidence)}</span>`:'';
+ return `<div class="todorow">
+   <button class="tddone" title="Mark followed up / handled" onclick='resolveTodo(${JSON.stringify(it.id)})'>✓</button>
+   <div class="txt"><b>${esc(it.who_name||it.who||'?')}</b> — ${esc(it.text)}
+     <div class="sub">${kbadge(it.kind)}${src?'<span>· '+src+'</span>':''}${due?'<span>· '+due+'</span>':''}${ev?'<span>· '+ev+'</span>':''}</div>
    </div></div>`;
 }
 async function resolveTodo(id){
