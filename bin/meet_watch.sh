@@ -124,6 +124,33 @@ while true; do
     rm -f "$CAP/nudge" 2>/dev/null || true
   fi
 
+  # PRE-CALL NUDGE — remind BEFORE a scheduled meeting starts so you can arm
+  # Steno (most valuable for IN-PERSON meetings the daemon can't auto-detect;
+  # the live nudge above only fires once the meeting is already underway).
+  # Fires the macOS notification once per event (dedup in .prenudged) and keeps
+  # a .prenudge banner file refreshed for the Steno UI (a notification alone is
+  # easy to miss — same lesson as the live nudge). Clears once the meeting
+  # starts (the live path / auto-record takes over) or the window passes.
+  if [ -n "$PY" ]; then
+    pnow=$(date +%s)
+    soon="$("$PY" "$WC/derive/meetings/calendar_feed.py" soon "${MEET_PRENUDGE_MIN:-5}" 2>/dev/null | head -1)" || soon="NONE"
+    case "$soon" in
+      SOON\|*)
+        IFS='|' read -r _ pslug pstart pend puid pmins ptitle <<< "$soon"
+        if [ "${pstart:-0}" -gt "$pnow" ]; then
+          printf '%s|%s|%s\n' "$ptitle" "$pstart" "$pmins" > "$CAP/prenudge"
+          if ! grep -q "^$puid$" "$CAP/prenudged" 2>/dev/null; then
+            echo "$puid" >> "$CAP/prenudged"
+            osascript -e "display notification \"Starts in ${pmins}m — arm Steno to record\" with title \"Upcoming: $ptitle\" sound name \"\"" 2>/dev/null || true
+            log "PRENUDGE upcoming meeting in ${pmins}m: $ptitle"
+          fi
+        else
+          rm -f "$CAP/prenudge" 2>/dev/null || true
+        fi ;;
+      *) rm -f "$CAP/prenudge" 2>/dev/null || true ;;
+    esac
+  fi
+
   offcnt=0
   if [ -n "$inuse" ]; then oncnt=$((oncnt+1)); else oncnt=0; fi
   if [ "$oncnt" -ge "$START_POLLS" ]; then
