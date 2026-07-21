@@ -36,7 +36,7 @@ LOG="$CAP/watch.log"
 
 POLL="${MEET_WATCH_POLL:-5}"
 START_POLLS="${MEET_WATCH_START_POLLS:-2}"     # ~10s of sustained mic use
-RELEASE_POLLS="${MEET_WATCH_RELEASE_POLLS:-9}" # ~45s of mic released
+RELEASE_POLLS="${MEET_WATCH_RELEASE_POLLS:-5}" # ~25s of mic released (was 45s — felt too long; still debounces transient drops + merges gap-free back-to-back calls)
 # Apps whose mic use means "you are in a call" (browsers cover Meet).
 APPS="${MEET_WATCH_APPS:-MSTeams|Microsoft Teams|Teams|Slack|zoom.us|Google Chrome|Google Chrome Helper|Safari|Arc|firefox|FaceTime|Webex}"
 
