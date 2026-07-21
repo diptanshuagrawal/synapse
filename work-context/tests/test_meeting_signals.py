@@ -21,6 +21,10 @@ def _seed(tmp_path, monkeypatch):
         "actions": [
             {"id": "a-own", "assignee": OWNER, "action": "owner does X",
              "subject": "meeting:2026-07-20:sync", "status": "open"},
+            # The real /meeting-notes convention: the owner's items carry the
+            # literal "owner" sentinel, NOT the canonical handle.
+            {"id": "a-tok", "assignee": "owner", "action": "owner sentinel does W",
+             "subject": "meeting:2026-07-20:sync", "status": "open"},
             {"id": "a-un", "assignee": "(unassigned)", "action": "someone does Y",
              "subject": "meeting:2026-07-20:sync", "status": "open"},
             {"id": "a-mate", "assignee": MATE, "action": "mate does Z",
@@ -30,6 +34,8 @@ def _seed(tmp_path, monkeypatch):
         ],
         "commitments": [
             {"id": "c-own", "person": OWNER, "promise": "owner promised P",
+             "subject": "meeting:2026-07-19:plan", "status": "open"},
+            {"id": "c-tok", "person": "owner", "promise": "owner sentinel promised S",
              "subject": "meeting:2026-07-19:plan", "status": "open"},
             {"id": "c-mate", "person": MATE, "promise": "mate promised Q",
              "subject": "meeting:2026-07-19:plan", "status": "open"},
@@ -50,8 +56,8 @@ def _seed(tmp_path, monkeypatch):
 def test_owner_facing_includes_owner_unassigned_and_asks(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch)
     ids = {i["id"] for i in sg.owner_facing_todos(OWNER)}
-    # owner action, unassigned action, owner commitment, the ask
-    assert ids == {"a-own", "a-un", "c-own", "k-1"}
+    # owner action (canonical + sentinel), unassigned action, owner commitments, the ask
+    assert ids == {"a-own", "a-tok", "a-un", "c-own", "c-tok", "k-1"}
 
 
 def test_owner_facing_excludes_teammate_and_resolved(tmp_path, monkeypatch):
@@ -65,9 +71,11 @@ def test_owner_facing_excludes_teammate_and_resolved(tmp_path, monkeypatch):
 
 def test_unresolved_owner_never_guesses(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch)
-    # No owner handle → only unassigned actions + asks; never the owner's/teammate's.
+    # No owner handle → the "owner" sentinel + unassigned actions + asks still
+    # surface (the sentinel is unambiguous), but canonical-handle-only items
+    # (a-own/c-own) and teammate items never do.
     ids = {i["id"] for i in sg.owner_facing_todos(None)}
-    assert ids == {"a-un", "k-1"}
+    assert ids == {"a-tok", "a-un", "c-tok", "k-1"}
 
 
 def test_normalized_shape_and_untracked(tmp_path, monkeypatch):
