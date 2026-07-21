@@ -173,13 +173,25 @@ def cmd_list(show_all: bool = False) -> None:
 # they belong to the owner.
 UNASSIGNED = ("(unassigned)", "(unattributed)", "", None)
 
+# The literal sentinel the /meeting-notes skill writes for the owner's own items
+# (teammates get their canonical people.yaml handle; the owner gets "owner").
+# gather-block routes on exactly this token ("assignee==owner → Your queue").
+OWNER_TOKEN = "owner"
+
+
+def _is_owner(value, owner_handle: str | None) -> bool:
+    """True if this assignee/person is the owner — either the "owner" sentinel
+    or (when resolvable) the owner's canonical handle."""
+    return value == OWNER_TOKEN or (owner_handle is not None and value == owner_handle)
+
 
 def owner_facing_todos(owner_handle: str | None) -> list[dict]:
     """Open items the OWNER personally has to act on, across all meetings.
 
     Attribution-honest — includes only:
-      - actions whose assignee IS the owner, or is unassigned (owner must route)
-      - commitments the owner made (person == owner)
+      - actions whose assignee IS the owner ("owner" sentinel or canonical
+        handle), or is unassigned (owner must route)
+      - commitments the owner made (person == "owner"/canonical handle)
       - asks (every ask is directed at the owner by construction)
     Teammate-assigned actions and teammate commitments are NOT owner to-dos and
     are dropped here. `owner_handle` None (no people.yaml / unresolved) → owner
@@ -206,12 +218,12 @@ def owner_facing_todos(owner_handle: str | None) -> list[dict]:
         if it.get("status") != "open":
             continue
         assignee = it.get("assignee")
-        if assignee in UNASSIGNED or (owner_handle and assignee == owner_handle):
+        if assignee in UNASSIGNED or _is_owner(assignee, owner_handle):
             out.append(row(it, "action", "action", "assignee"))
     for it in data["commitments"]:
         if it.get("status") != "open":
             continue
-        if owner_handle and it.get("person") == owner_handle:
+        if _is_owner(it.get("person"), owner_handle):
             out.append(row(it, "commitment", "promise", "person"))
     for it in data["asks"]:
         if it.get("status") != "open":
