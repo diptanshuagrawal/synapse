@@ -68,3 +68,81 @@ def test_main_merges_two_streams_in_time_order(tmp_path, monkeypatch):
     data = json.loads((tmp_path / "merged.json").read_text(encoding="utf-8"))
     assert [s["text"] for s in data["transcription"]] == ["Them: first", "Me: second"]
     assert (tmp_path / "merged.txt").exists()
+
+
+def _turn(start_ms: int, end_ms: int, speaker: str) -> dict:
+    return {"start_ms": start_ms, "end_ms": end_ms, "speaker": speaker}
+
+
+def test_diarized_labels_by_dominant_overlap_and_first_appearance(tmp_path):
+    # In-person single-mic path: whisper segments get `Speaker N` from the turn
+    # they overlap most, numbered by who spoke first (SPEAKER_01 speaks first here
+    # → Speaker 1, even though its raw label sorts second).
+    whisper = tmp_path / "mic.json"
+    whisper.write_text(json.dumps({"transcription": [
+        _seg("morning all", 0, 900),      # overlaps SPEAKER_01 (first speaker)
+        _seg("morning", 1000, 1400),      # overlaps SPEAKER_00
+        _seg("shipping today", 1500, 1900),  # overlaps SPEAKER_01 again
+    ]}), encoding="utf-8")
+    diar = tmp_path / "mic.diar.json"
+    diar.write_text(json.dumps({"turns": [
+        _turn(0, 950, "SPEAKER_01"),
+        _turn(1000, 1450, "SPEAKER_00"),
+        _turn(1460, 2000, "SPEAKER_01"),
+    ]}), encoding="utf-8")
+
+    out = merge_streams.load_diarized(str(whisper), str(diar))
+
+    assert [s["text"] for s in out] == [
+        "Speaker 1: morning all",
+        "Speaker 2: morning",
+        "Speaker 1: shipping today",
+    ]
+
+
+def test_diarized_numbering_follows_turns_not_segment_order(tmp_path):
+    # Speaker N is numbered by first appearance in the diarization TURNS (so it
+    # matches the speakers.json sidecar), NOT by which whisper segment lands
+    # first. SPEAKER_00's turn starts earliest even though its transcript line
+    # comes second → it must be Speaker 1.
+    whisper = tmp_path / "mic.json"
+    whisper.write_text(json.dumps({"transcription": [
+        _seg("second speaker talks", 700, 1000),   # SPEAKER_01 (segment appears first)
+        _seg("first speaker talks", 1200, 1500),    # SPEAKER_00
+    ]}), encoding="utf-8")
+    diar = tmp_path / "mic.diar.json"
+    diar.write_text(json.dumps({"turns": [
+        _turn(0, 500, "SPEAKER_00"),     # earliest turn → Speaker 1
+        _turn(600, 1050, "SPEAKER_01"),
+        _turn(1100, 1600, "SPEAKER_00"),
+    ]}), encoding="utf-8")
+
+    out = merge_streams.load_diarized(str(whisper), str(diar))
+
+    assert [s["text"] for s in out] == [
+        "Speaker 2: second speaker talks",
+        "Speaker 1: first speaker talks",
+    ]
+
+
+def test_diarized_missing_turns_degrades_to_plain_text(tmp_path):
+    # Soft-failed diarizer (no turns file) → labels omitted, not a crash.
+    whisper = tmp_path / "mic.json"
+    whisper.write_text(json.dumps({"transcription": [_seg("hello", 0, 500)]}), encoding="utf-8")
+
+    out = merge_streams.load_diarized(str(whisper), None)
+
+    assert [s["text"] for s in out] == ["hello"]
+
+
+def test_diarized_gap_segment_takes_nearest_turn(tmp_path):
+    # A whisper segment landing in a diarization gap still gets a speaker
+    # (nearest turn by start), never an unlabelled orphan mid-transcript.
+    whisper = tmp_path / "mic.json"
+    whisper.write_text(json.dumps({"transcription": [_seg("uh", 5000, 5200)]}), encoding="utf-8")
+    diar = tmp_path / "mic.diar.json"
+    diar.write_text(json.dumps({"turns": [_turn(0, 1000, "SPEAKER_00")]}), encoding="utf-8")
+
+    out = merge_streams.load_diarized(str(whisper), str(diar))
+
+    assert out[0]["text"] == "Speaker 1: uh"
