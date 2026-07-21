@@ -48,7 +48,7 @@ WC = Path(__file__).resolve().parents[2]
 STATE = WC / "state" / "meeting_signals.json"
 DB = WC / "index" / "events.db"
 
-KINDS = ("commitments", "asks", "untracked", "actions")
+KINDS = ("commitments", "asks", "untracked", "actions", "suggestions")
 
 
 def _load() -> dict:
@@ -84,7 +84,8 @@ def cmd_add(path: str) -> None:
     for kind in KINDS:
         existing = {it["id"] for it in data[kind]}
         for it in incoming.get(kind, []):
-            text = it.get("promise") or it.get("ask") or it.get("work") or it.get("action") or ""
+            text = (it.get("promise") or it.get("ask") or it.get("work")
+                    or it.get("action") or it.get("suggestion") or "")
             person = it.get("person") or it.get("assignee") or "(unattributed)"
             if not text:
                 continue
@@ -164,7 +165,8 @@ def cmd_list(show_all: bool = False) -> None:
             continue
         print(f"# {kind} ({len(items)})")
         for it in items:
-            text = it.get("promise") or it.get("ask") or it.get("work") or it.get("action") or ""
+            text = (it.get("promise") or it.get("ask") or it.get("work")
+                    or it.get("action") or it.get("suggestion") or "")
             who = it.get("person") or it.get("assignee") or "?"
             print(f"  [{it['id']}] ({it.get('status')}) {who} — {text}")
 
@@ -247,10 +249,75 @@ def owner_untracked() -> list[dict]:
     ]
 
 
+def _evidence_hint(cur, person: str, since_iso: str, ticket: str | None) -> str:
+    """One-line said-vs-done hint for a follow-up: has the person actually moved
+    on it since they said so? Deterministic — reads their jira/github events."""
+    if not person or person in UNASSIGNED:
+        return ""
+    rows = _person_activity(cur, person, since_iso, ticket, limit=1)
+    if not rows:
+        return "no activity since"
+    ts, src, et, sub, status, title = rows[0]
+    if status:
+        return f"→ {status} ({ts[:10]})"
+    return f"{src}:{et} ({ts[:10]})"
+
+
+def follow_up_items(owner_handle: str | None, status: str = "open",
+                    with_evidence: bool = False) -> list[dict]:
+    """Things OTHERS owe the owner — teammate-assigned actions + teammate
+    commitments (someone said they'd do X; the owner tracks it). The inverse of
+    owner_facing_todos: an item is a follow-up iff its owner is a *named* person
+    who is NOT the owner (so "(unassigned)" and owner items are excluded).
+
+    with_evidence attaches a said-vs-done hint per row (opens events.db once).
+    """
+    data = _load()
+
+    def teammate(v) -> bool:
+        return v not in UNASSIGNED and not _is_owner(v, owner_handle)
+
+    out: list[dict] = []
+    for it in data["actions"]:
+        if it.get("status") == status and teammate(it.get("assignee")):
+            out.append({"id": it["id"], "kind": "action", "text": it.get("action", ""),
+                        "who": it.get("assignee"), "subject": it.get("subject", ""),
+                        "due": it.get("due", ""), "ts": it.get("ts", ""),
+                        "ticket": it.get("ticket", "")})
+    for it in data["commitments"]:
+        if it.get("status") == status and teammate(it.get("person")):
+            out.append({"id": it["id"], "kind": "commitment", "text": it.get("promise", ""),
+                        "who": it.get("person"), "subject": it.get("subject", ""),
+                        "due": it.get("due", ""), "ts": it.get("ts", ""),
+                        "ticket": it.get("ticket", "")})
+    if with_evidence and out:
+        try:
+            cur = sqlite3.connect(str(DB)).cursor()
+            cur.connection.execute("PRAGMA busy_timeout = 5000")
+            for r in out:
+                r["evidence"] = _evidence_hint(cur, r["who"], r.get("ts", ""), r.get("ticket") or None)
+        except Exception:
+            pass
+    return out
+
+
+def owner_suggestions(status: str = "open") -> list[dict]:
+    """AI-inferred owner to-dos (STEP 5 `suggestions`) — proactive nudges beyond
+    the explicit action items. Owner-facing by construction."""
+    return [
+        {"id": it["id"], "kind": "suggestion", "text": it.get("suggestion", ""),
+         "who": "owner", "subject": it.get("subject", ""),
+         "ts": it.get("ts", ""), "rationale": it.get("rationale", "")}
+        for it in _load()["suggestions"] if it.get("status") == status
+    ]
+
+
 def cmd_todos(owner_handle: str | None) -> None:
     """Owner-facing to-dos as JSON (for /ask + the Steno To-do view)."""
     print(json.dumps({
         "items": owner_facing_todos(owner_handle),
+        "follow_up": follow_up_items(owner_handle, with_evidence=True),
+        "suggestions": owner_suggestions(),
         "done": owner_facing_todos(owner_handle, status="done"),
         "untracked": owner_untracked(),
     }, indent=2))

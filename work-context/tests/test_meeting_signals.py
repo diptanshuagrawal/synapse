@@ -48,6 +48,11 @@ def _seed(tmp_path, monkeypatch):
             {"id": "u-1", "person": MATE, "work": "flaky test cleanup",
              "subject": "meeting:2026-07-18:review", "status": "open"},
         ],
+        "suggestions": [
+            {"id": "s-1", "suggestion": "prep the migration rollback plan",
+             "rationale": "no owner named it but it's the obvious next step",
+             "subject": "meeting:2026-07-20:sync", "status": "open"},
+        ],
     }
     state.write_text(json.dumps(data))
     return state
@@ -88,6 +93,28 @@ def test_normalized_shape_and_untracked(tmp_path, monkeypatch):
     assert rows["k-1"]["kind"] == "ask"
     unt = sg.owner_untracked()
     assert [u["id"] for u in unt] == ["u-1"] and unt[0]["kind"] == "untracked"
+
+
+def test_follow_up_is_teammate_owned_only(tmp_path, monkeypatch):
+    _seed(tmp_path, monkeypatch)
+    fu = {i["id"]: i for i in sg.follow_up_items(OWNER)}
+    # teammate-assigned action + teammate commitment — the things others owe me
+    assert set(fu) == {"a-mate", "c-mate"}
+    # never the owner's own items or unassigned (those are MY to-dos, not follow-ups)
+    assert "a-own" not in fu and "a-tok" not in fu and "a-un" not in fu
+    assert fu["a-mate"]["who"] == MATE and fu["a-mate"]["kind"] == "action"
+    assert fu["c-mate"]["kind"] == "commitment"
+
+
+def test_suggestions_surface_as_owner_facing(tmp_path, monkeypatch):
+    _seed(tmp_path, monkeypatch)
+    sug = sg.owner_suggestions()
+    assert [s["id"] for s in sug] == ["s-1"]
+    assert sug[0]["kind"] == "suggestion" and sug[0]["rationale"]
+    # a resolved suggestion drops out of the open list
+    sg.cmd_resolve("s-1")
+    assert sg.owner_suggestions() == []
+    assert [s["id"] for s in sg.owner_suggestions(status="done")] == ["s-1"]
 
 
 def test_done_status_filter_and_reopen_roundtrip(tmp_path, monkeypatch):

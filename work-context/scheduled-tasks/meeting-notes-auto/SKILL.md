@@ -23,7 +23,8 @@ If it prints "idle" → STOP NOW, end the run with no further work.
 Run the /meeting-notes skill (the SAME skill at `.claude/commands/meeting-notes.md`) for the
 pending subjects and/or MoM requests only. Follow it exactly: template by classified
 category, scratchpad merge if present, attached-links resolution (STEP 2.4), attribution
-honesty ((unattributed) over guessing), STEP 5 signal persistence via signals.py, STEP 5.5
+honesty ((unattributed) over guessing), STEP 5 signal persistence via signals.py for EVERY
+meeting (not standups only — the Steno To-do view + standup gather both read this store), STEP 5.5
 MoM generation for each `.mom.request` marker (formal shareable minutes; delete the marker
 after writing), note file to `management/meetings/<date>-<slug>.md`.
 

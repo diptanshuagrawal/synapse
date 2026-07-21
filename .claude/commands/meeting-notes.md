@@ -149,10 +149,17 @@ Category definitions (owner-calibrated 2026-07-17 — follow these, not intuitio
 - These notes are PRIVATE (management/ is gitignored, never published). Do not
   redact; do capture candid content faithfully.
 
-## STEP 5 — Persist signals (standup template only)
+## STEP 5 — Persist signals (EVERY meeting)
 
-Feed the durable signal state (said-vs-done / Your-queue / ticketize pickups
-read this via `# STANDUP CALL` in the standup gather):
+Run for **every** meeting, not just standups — the note already produces the
+Action items / Asks / Untracked sections for all templates (STEP 6), and the
+Steno "My Action Items" (To-do) view + the standup gather both read this store.
+A meeting that skips STEP 5 is invisible to the To-do view. (Commitments +
+said-vs-done are most common in standups but valid anywhere; actions/asks/
+untracked apply to every meeting.)
+
+Feed the durable signal state (Steno To-do view + said-vs-done / Your-queue /
+ticketize pickups read this, the latter via `# STANDUP CALL` in the standup gather):
 
 1. Compose `/tmp/meeting_signals_<slug>.json`:
        {"commitments": [{"person": "<canonical people.yaml handle or (unattributed)>",
@@ -163,6 +170,8 @@ read this via `# STANDUP CALL` in the standup gather):
         "untracked":   [{"person": "...", "work": "...", "subject": "...", "offset": "..."}],
         "actions":     [{"assignee": "<canonical handle | owner | (unassigned)>",
                          "action": "...", "due": "YYYY-MM-DD or omit",
+                         "subject": "...", "offset": "..."}],
+        "suggestions": [{"suggestion": "...", "rationale": "<why, ≤1 line>",
                          "subject": "...", "offset": "..."}]}
    - `asks` = someone asked the OWNER to do/decide something.
    - `actions` = concrete action items AGREED in the meeting, each with an
@@ -171,9 +180,15 @@ read this via `# STANDUP CALL` in the standup gather):
      transcript names no clear owner. This is what feeds the standup Your-queue
      (owner-assigned) and route/delegate (teammate-assigned) buckets — the
      "I discussed X with someone and one of us must action it" case.
-   Only explicit items — the same ones in the note's Action items / Asks /
-   Untracked sections. person/assignee MUST be a canonical handle, `owner`,
-   or `(unattributed)`/`(unassigned)` — never a guess.
+   - `suggestions` = 0-3 PROACTIVE owner to-dos you INFER that were NOT stated
+     as explicit action items — the assistant layer ("you should also…"): an
+     obvious prep/follow-through step, a risk to chase, a stakeholder to loop in,
+     a decision the owner left dangling. Grounded in what was actually discussed
+     (cite the reason in `rationale`); never invent commitments or facts. Omit
+     the array if nothing genuine surfaces — do NOT pad.
+   `actions`/`asks`/`untracked` are EXPLICIT items only — the same ones in the
+   note's Action items / Asks / Untracked sections. person/assignee MUST be a
+   canonical handle, `owner`, or `(unattributed)`/`(unassigned)` — never a guess.
 2. `python3 work-context/derive/meetings/signals.py add /tmp/meeting_signals_<slug>.json`
    (idempotent — re-running a meeting dedups by content hash).
 3. When the owner says a commitment/ask is handled:
