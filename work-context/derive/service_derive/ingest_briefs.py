@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import os
 import re
 import sqlite3
 import sys
@@ -36,6 +37,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVICES_DIR = REPO_ROOT / "derived" / "services"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+# Unattended fires resolve bare `python3` to the yaml-less system interpreter;
+# ingest.common needs yaml, so re-exec under the repo venv before importing it.
+try:
+    import yaml  # noqa: F401
+except ModuleNotFoundError:
+    _venv_py = REPO_ROOT / ".venv" / "bin" / "python3"
+    if _venv_py.exists() and Path(sys.executable).resolve() != _venv_py.resolve():
+        os.execv(str(_venv_py), [str(_venv_py), str(Path(__file__).resolve()), *sys.argv[1:]])
+    raise
 
 from ingest.common import delete_events  # noqa: E402  shared deleter (events+refs+fts)
 

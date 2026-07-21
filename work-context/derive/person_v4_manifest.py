@@ -37,6 +37,12 @@ Usage
 
 Emits one JSON manifest to stdout. Re-runs person_v3 + person_deepread under the
 hood (or reads supplied --v3-json / --deep-json for fast iteration).
+
+With --bundle-dir <dir>, additionally persists all three JSONs in ONE call —
+<dir>/<canonical>_manifest.json, _v3.json, _deep.json — and prints a small
+summary instead of the manifest. This is the /ask person_range fast path: the
+chat session runs one command and Reads the files it needs, instead of
+re-running person_v3/person_deepread as separate subprocesses.
 """
 
 from __future__ import annotations
@@ -715,12 +721,42 @@ def main():
     ap.add_argument("--until", required=True)
     ap.add_argument("--v3-json", help="path to pre-computed person_v3 JSON (skip subprocess)")
     ap.add_argument("--deep-json", help="path to pre-computed person_deepread JSON")
+    ap.add_argument("--bundle-dir",
+                    help="write <dir>/<canonical>_{manifest,v3,deep}.json in one "
+                         "call and print a path summary instead of the manifest")
     args = ap.parse_args()
 
     v3 = json.load(open(args.v3_json)) if args.v3_json else None
     deep = json.load(open(args.deep_json)) if args.deep_json else None
 
+    if args.bundle_dir:
+        if v3 is None:
+            v3 = _run_json("person_v3.py", args.name, args.since, args.until)
+        if deep is None:
+            deep = _run_json("person_deepread.py", args.name, args.since, args.until)
+
     manifest = build_manifest(args.name, args.since, args.until, v3=v3, deep=deep)
+
+    if args.bundle_dir:
+        if "error" in manifest:
+            sys.stdout.write(json.dumps(manifest, indent=2))
+            sys.exit(1)
+        d = Path(args.bundle_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        canon = manifest["person"]
+        written = {}
+        for key, obj in (("manifest", manifest), ("v3", v3), ("deep", deep)):
+            p = d / f"{canon}_{key}.json"
+            p.write_text(json.dumps(obj, indent=1, default=str))
+            written[key] = str(p)
+        sys.stdout.write(json.dumps({
+            "bundle": written,
+            "person": canon,
+            "window": {"since": args.since, "until": args.until},
+            "verify_items": len(manifest.get("verify_manifest", [])),
+        }, indent=2))
+        return
+
     sys.stdout.write(json.dumps(manifest, indent=2, default=str))
 
 

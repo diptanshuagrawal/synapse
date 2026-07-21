@@ -45,7 +45,7 @@ Parse the question. Pick exactly ONE intent. Resolve required parameters from th
 | Intent          | Trigger phrases                                                   | Required params              | Route                         |
 |---|---|---|---|
 | **summarize**   | "summarize X", "what's happening with X", "what did we do for X"  | topic string                 | `ask_engine.py search`        |
-| **person_range**| "what did <person> work on in <range>", "<person>'s work in <range>" | person, since, until         | `ask_engine.py person` + `person_profile.py` |
+| **person_range**| "what did <person> work on in <range>", "<person>'s work in <range>" | person, since, until         | `person_v4_manifest.py --bundle-dir /tmp` (one call: manifest+v3+deep) |
 | **team_range**  | "what did the team do in <range>", "team narrative for <range>", "engineering retro narrative <range>" | since, until                 | loop `person_range` over `config/people.yaml` |
 | **attention**   | "anything from yesterday / last N days I should care about", "what needs my attention" | since, until, optional me=owner | `ask_engine.py window`        |
 | **ticket_gaps** | "tasks needing jira ticket", "untracked decisions", "unlinked work" | optional since/until         | `ask_engine.py gaps`          |

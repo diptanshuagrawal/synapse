@@ -92,6 +92,17 @@ Read its output, then go straight to formatting (§7). Only fall back to ad-hoc 
 detail from a ticket body or slack thread — which is judgement work, not bulk gather.
 ONE tool call (the gather), not ten.
 
+**BATCH every follow-up read (speed — serial thread-opens are the run's long pole):**
+- The shared chunks this skill references (`date-range-grammar.md`,
+  `roster-identity.md`, `render-rules.md`, `evidence-grounding.md`,
+  `plain-language.md`) — Read ALL of them in ONE parallel tool block at the start,
+  not one-by-one as each section mentions them.
+- Thread-opens for enrichment (§7b queue items, §6 on-call incidents, §8 blockers/
+  thread refs): first COLLECT every `link=`/ts you intend to open across ALL
+  members and sections, then issue the `slack_read_thread` calls as parallel
+  batches (independent reads go out in one message) — never one thread per turn.
+  Ad-hoc SQL enrichment lookups likewise combine into one script call per batch.
+
 If the script errors or the roster/identity model changed, fall back to the manual
 queries below.
 
@@ -443,6 +454,14 @@ scans. Group as short bullets under bold headers; each item carries its link:
 - **Unowned / stalled** — tickets needing a picker (unassigned / bounced to To-Do),
   untriaged alerts. (Moved here from the retired Team-summary message, 2026-07-13.)
 - **Cross-team** — notable asks/decisions from sister teams touching this team's surface.
+- **Said vs done** — ONLY when the gather emits a `# STANDUP CALL` block (recorded-meeting
+  signals; absent until the owner records meetings). For each `OPEN COMMITMENT`: judge the
+  listed evidence candidates against the member's actual day — kept promises get a ✅ line
+  (then `signals.py resolve <id>` it), promises with `evidence? NONE` past their stated due
+  get a gentle delta line ("said X by <due>, no movement seen"). Verbal blockers from the
+  block that have NO matching Slack/Jira item are invisible-blocker callouts — surface
+  them, they're exactly what the data-only digest misses. Never shame-frame; this is a
+  drift detector, not a scoreboard.
 
 Keep it tight but complete; this is FYI awareness, so don't duplicate Message 2's action
 items here. If a whole group is empty, drop the header. **Each fact appears ONCE across
@@ -497,7 +516,9 @@ first:
     and getting more urgent — rank these to the TOP, and state the chase count + age ("chased
     3× since 17 Jun, still pending").
 - **🔀 To route / delegate** — `via=subteam-dev` asks (someone pinged the dev team handle and
-  no one has answered in-thread). These are the owner's to ROUTE, not to personally answer:
+  no one has answered in-thread) **PLUS teammate-assigned `MEETING ACTION ITEMS` from the
+  `# STANDUP CALL` block** (something the owner agreed a teammate would do in a discussion —
+  `(meeting)` tag + which dev owns it + slug). These are the owner's to ROUTE, not to personally answer:
   for each, name the likely dev owner (by domain — §4) and frame it as "delegate to <@dev>",
   with the ask + who's waiting + age + thread link. Drop ones a teammate has already picked up
   in-thread. If a dev-group ping genuinely needs the owner himself (a real decision/approval),
@@ -509,6 +530,17 @@ first:
 - **Reviews awaiting you** — PRDs / TRDs / API contracts shared for the owner's review
   (slack "review this @owner" + subteam "please review" pings + `OWNER confluence
   @-mentions` on a doc + In-Review items assigned to him).
+- **Asked in a meeting** — `OPEN MEETING ASKS→OWNER` rows from the gather's `# STANDUP
+  CALL` block (verbal asks captured from recorded calls; block absent until recordings
+  exist). Render with a `(meeting)` tag + the meeting slug — there is no thread link, the
+  transcript is the source. Drop any the owner has visibly actioned since (a matching
+  approval/reply on the board or in slack), and `signals.py resolve <id>` the dropped ones.
+- **From your meetings** — `MEETING ACTION ITEMS` rows where `assignee=owner` (or
+  `(unassigned)` — surface those to the owner too, since no one else owns them). These are
+  things the owner agreed to DO in a discussion, not asked of him — "I'll follow up with
+  X", "I'll get the sign-off". Render with a `(meeting)` tag + slug + due if stated. Same
+  drop-if-done + `resolve` rule. Teammate-assigned action items DON'T belong here — they go
+  to **To route / delegate** below (or the dev's §7c).
 - **Decisions / escalations** — team blockers needing a *manager* call (timeline crunch,
   ownership gaps, unowned incidents, an unresolved LEAVE×ONCALL rota swap), framed as the
   decision he owns. **This INCLUDES a dev-escalated "should we do X?" proposal directed at
@@ -614,7 +646,8 @@ body/slack enrichment clause, and standup's own pre-save check.
   thread_ts). Copy that `link=` value verbatim — never hand-construct or drop it.
 - **Thread refs must be self-summarizing** — per shared §3. Standup specifics: the
   gather's one-line `::` preview is rarely enough; OPEN the thread (`slack_read_thread`
-  on the row's ch + ts) and distil one clause of real context. (Validated 2026-06-19: a
+  on the row's ch + ts — batched with the run's other thread-opens, per §"gather"'s
+  BATCH rule) and distil one clause of real context. (Validated 2026-06-19: a
   blocker rendered as a bare "chasing X" forced the owner to open the thread to learn it
   was an account-balance data-lag.)
 - **Pre-save check (mandatory):** run the shared pre-save link check

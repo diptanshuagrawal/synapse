@@ -59,35 +59,36 @@ Print computed window before proceeding:
 Retro window: <START_TS> → <END_TS> (<N> days)
 ```
 
-## Phase 0 — load shared Jira-metrics module (REQUIRED)
+## Phase 0+1 — ONE gather call (census + every enrich signal)
 
-**Single source of truth: `derive/jira_metrics.py`.** Do NOT re-implement attribution / dedup / ops-detection / ownership inline. Skills consume the module; if a metric needs to change, change the module.
-
-```python
-import sys; sys.path.insert(0, '$HOME/work-context')
-from derive.jira_metrics import (
-    load_people_lookup, get_aliases_for, all_team_canonicals,
-    compute_done_credits, filter_credits_for,
-    aggregate_velocity_by_actor, aggregate_velocity_by_sprint,
-    attribution_source_summary, team_velocity_baseline,
-    compute_pr_author_ownership,
-    detect_ops_tickets, OPS_PATTERNS,
-    strip_epic_prefix,
-)
-import sqlite3
-conn = sqlite3.connect('$HOME/work-context/index/events.db')
-people = load_people_lookup()
+```bash
+cd $HOME/context/work-context
+.venv/bin/python derive/retro_gather.py \
+    --since "<START_TS>" --until "<END_TS>"
 ```
 
-Module contracts in `ask.md` Phase 0 (same module). Key for retro:
-- `team_velocity_baseline(conn, start, end)` → for retro's "Metrics" + "Lows" sections (top deliverers, sprint pacing).
-- `compute_done_credits(...)` → use for shipped epic / per-domain SP totals.
-- `detect_ops_tickets(...)` per top actor → ops-incident-response items per-person.
-- `compute_pr_author_ownership(...)` per top actor → for "Owned" framing in retro Per-person notes.
+This single call (2026-07-18; replaces the old ~12 sequential commands — census
+×2, 7 sqlite heredocs, 3 ask_engine runs, mom_extractor, alerts/projects/people
+file reads) runs everything concurrently and writes the full bundle to
+`/tmp/retro_gather.json` (+ the legacy per-piece files:
+`/tmp/retro_census.json`, `/tmp/retro_active_clusters.json`,
+`/tmp/retro_root_causes.json`, `/tmp/retro_projects.json`,
+`/tmp/retro_moms.json`). Stdout is a compact summary — check its
+`coverage_ok` / `errors`, then Read the bundle. Do NOT re-run
+`retro_census.py`, the 1a-1h SQL, `ask_engine.py`, or `mom_extractor.py`
+individually — their outputs are already in the bundle under the keys named
+in the sections below.
 
-**Never inline SQL for these computations.** If retro needs a new metric, add it to the module.
+**Jira-metrics single source of truth: `derive/jira_metrics.py`.** The bundle's
+`team_velocity` / `ops_by_person` / `ownership_by_person` keys are computed by
+that module inside the gather. Do NOT re-implement attribution / dedup /
+ops-detection / ownership inline; if a metric needs to change, change the
+module (contracts in `ask.md` Phase 0). Uses in retro:
+- `team_velocity` → "Metrics" + "Lows" framing (top deliverers, sprint pacing).
+- `ops_by_person` → ops-incident-response items per person.
+- `ownership_by_person` → "Owned" framing in per-person context.
 
-## Phase 1 — CENSUS (REQUIRED, primary discovery — run FIRST)
+### Census (bundle key `census` — REQUIRED, primary discovery)
 
 **Recall is guaranteed by census, not by sampling feeds.** Synthesising from
 clusters + MoM alone silently misses anything not in those feeds (proven: a
@@ -95,14 +96,6 @@ clusters + MoM alone silently misses anything not in those feeds (proven: a
 noise; a zero-downtime year-end close mis-attributed to a sister team via its
 broadcast-channel author). The census enumerates EVERY window subject and
 partitions it exhaustively, so discovery is complete + auditable.
-
-```bash
-cd $HOME/context/work-context
-.venv/bin/python derive/retro_census.py \
-    --since "<START_TS>" --until "<END_TS>" > /tmp/retro_census.json
-.venv/bin/python derive/retro_census.py \
-    --since "<START_TS>" --until "<END_TS>" --format summary   # eyeball
-```
 
 **Coverage gate — HARD STOP.** Read `coverage_ok` + `totals.unclassified`.
 If `coverage_ok != true` OR `unclassified > 0`, STOP and surface the gap — the
@@ -125,156 +118,39 @@ Detectors only ROUTE (structural: channel role, jira issue_type, source;
 keywords as fallback). They are HINTS — the irreducible signal-type judgement
 is yours, applied over the COMPLETE candidate set, not over curated feeds.
 
-## Phase 1-enrich — gather supporting signals (cluster/MoM/per-person framing)
+## Phase 1-enrich — supporting signals (ALL already in the bundle)
 
 These ENRICH the census candidates with framing + measured impact. They are NOT
-the discovery mechanism (the census is). Run these queries from
-`$HOME/work-context/`. DB path is `index/events.db`.
+the discovery mechanism (the census is). Every signal below is a KEY in
+`/tmp/retro_gather.json` — read it there; run NO further queries:
 
-### 1a. Event volume + cycle time per source
-
-```bash
-sqlite3 -header -column index/events.db <<SQL
-SELECT source, event_type, COUNT(*) AS n
-FROM events
-WHERE ts BETWEEN '<START_TS>' AND '<END_TS>'
-GROUP BY source, event_type
-ORDER BY source, n DESC;
-SQL
-```
-
-### 1b. PR cycle time (opened → merged, hours)
-
-```bash
-sqlite3 -header -column index/events.db <<SQL
-WITH opens AS (
-  SELECT subject, MIN(ts) AS opened_ts FROM events
-  WHERE event_type = 'pr_opened' AND ts BETWEEN '<START_TS>' AND '<END_TS>'
-  GROUP BY subject
-),
-merges AS (
-  SELECT subject, MIN(ts) AS merged_ts FROM events
-  WHERE event_type = 'pr_merged' AND ts BETWEEN '<START_TS>' AND '<END_TS>'
-  GROUP BY subject
-)
-SELECT
-  COUNT(*) AS n_merged,
-  ROUND(AVG((julianday(merged_ts) - julianday(opened_ts)) * 24), 1) AS avg_hours,
-  ROUND(MIN((julianday(merged_ts) - julianday(opened_ts)) * 24), 1) AS min_hours,
-  ROUND(MAX((julianday(merged_ts) - julianday(opened_ts)) * 24), 1) AS max_hours
-FROM merges m JOIN opens o USING (subject)
-WHERE m.merged_ts >= o.opened_ts;
-SQL
-```
-
-### 1c. Per-person activity counts
-
-```bash
-sqlite3 -header -column index/events.db <<SQL
-SELECT actor, event_type, COUNT(*) AS n
-FROM events
-WHERE ts BETWEEN '<START_TS>' AND '<END_TS>'
-  AND actor IS NOT NULL
-  AND actor NOT LIKE '%[bot]%'
-  AND actor != 'matterai'
-GROUP BY actor, event_type
-ORDER BY actor, n DESC;
-SQL
-```
-
-### 1d. Shipped epics (status_change → Done within window)
-
-```bash
-sqlite3 -header -column index/events.db <<SQL
-SELECT subject, actor, title, ts
-FROM events
-WHERE source = 'jira'
-  AND event_type = 'status_change'
-  AND ts BETWEEN '<START_TS>' AND '<END_TS>'
-  AND title LIKE '%→ Done%'
-ORDER BY ts;
-SQL
-```
-
-### 1e. Sprint composition (active sprints overlapping window)
-
-```bash
-sqlite3 -header -column index/events.db <<SQL
-SELECT sprint_name, sprint_state,
-       COUNT(DISTINCT subject) AS tickets,
-       ROUND(SUM(story_points), 1) AS total_points
-FROM events
-WHERE source = 'jira'
-  AND event_type = 'issue_created'
-  AND sprint_name IS NOT NULL
-  AND sprint_name != ''
-GROUP BY sprint_name, sprint_state
-ORDER BY tickets DESC
-LIMIT 10;
-SQL
-```
-
-(Note: sprint membership is point-in-time-of-ingest, not point-in-time-of-window. For an exact in-window roster, cross-reference `sprint_change` events.)
-
-### 1f. Risk-flagged subjects (security/data-loss/panic/race/migration/breaking-api)
-
-```bash
-sqlite3 -header -column index/events.db <<SQL
-SELECT s.subject, s.summary, s.risk_flags, s.confidence
-FROM subject_summary s
-JOIN events e ON e.subject = s.subject
-WHERE e.ts BETWEEN '<START_TS>' AND '<END_TS>'
-  AND s.risk_flags != '[]'
-  AND s.risk_flags != ''
-GROUP BY s.subject
-ORDER BY s.confidence DESC
-LIMIT 30;
-SQL
-```
-
-### 1g. Stale + drive-by anti-patterns in window
-
-Read `derived/alerts.md` (always whole-file — small). Note: the file reflects the latest rollup, not the retro window. Use it as a *current state* snapshot, not for in-window-only attribution.
-
-### 1h. Domain volume (top 10 by subject count in window)
-
-```bash
-sqlite3 -header -column index/events.db <<SQL
-WITH win_subjects AS (
-  SELECT DISTINCT subject FROM events
-  WHERE ts BETWEEN '<START_TS>' AND '<END_TS>' AND subject IS NOT NULL
-)
-SELECT domain.value AS domain, COUNT(*) AS subjects
-FROM subject_summary,
-     json_each(subject_summary.domains) AS domain
-WHERE subject IN (SELECT subject FROM win_subjects)
-GROUP BY domain.value
-ORDER BY subjects DESC
-LIMIT 10;
-SQL
-```
-
-### 1i. Read per-domain rollups for top 5 domains
-
-For each of the top 5 domain slugs from 1h: read `$HOME/work-context/derived/projects/<slug>.md` and extract:
-- "Recent items" section (gives MatterAI summaries of top PRs in the domain)
-- Contributor leaderboard
-
-### 1j. Read per-person profiles for active actors
-
-From 1c: identify top 5-8 contributors by total activity in window. For each, read `$HOME/work-context/derived/people/<handle>.md` — extract `## Activity summary` + `## Narrative` sections.
+- **1a `event_volume`** — per source/event_type counts.
+- **1b `pr_cycle`** — opened→merged hours (n_merged / avg / min / max).
+- **1c `person_activity`** — per-actor event counts (bots + matterai excluded;
+  actors are RAW ids — the bundle's `people_profiles` / `team_velocity` keys
+  are already canonicalised).
+- **1d `shipped_done`** — jira `status_change → Done` rows in window.
+- **1e `sprints`** — sprint composition, top 10. (Membership is
+  point-of-ingest, not point-in-window; cross-reference `sprint_change`
+  events for an exact roster.)
+- **1f `risk_flags`** — risk-flagged subjects, top 30 by confidence.
+- **1g `alerts_md`** — `derived/alerts.md` text. Reflects the LATEST rollup,
+  not the retro window — a current-state snapshot, never in-window-only
+  attribution.
+- **1h `domain_volume`** — top 10 domains by window subject count.
+- **1i `project_rollups`** — `derived/projects/<slug>.md` text for the top-5
+  domains (extract "Recent items" + contributor leaderboard). Files are capped
+  at ~8K chars in the bundle; a truncation note names the file to Read if you
+  need the rest.
+- **1j `people_profiles`** — profile md text for the top 5-8 window
+  contributors (extract `## Activity summary` + `## Narrative`). Same 8K cap.
 
 ### 1k. Topic clusters active in window (Phase D — cluster-grained framing)
 
-The `topic_brief` table provides cluster-grained workstream framing on top of raw events. Query it for both highs (ACTIVE clusters with new decisions in window) and lows (clusters whose `root_cause` is non-null + recent activity).
+The `topic_brief` table provides cluster-grained workstream framing on top of raw events — highs (ACTIVE clusters with new decisions in window) and lows (clusters whose `root_cause` is non-null + recent activity).
 
-```bash
-cd $HOME/context/work-context
-.venv/bin/python derive/ask_engine.py window \
-    --since "<START_TS>" --until "<END_TS>" > /tmp/retro_active_clusters.json
-.venv/bin/python derive/ask_engine.py rootcauses \
-    --since "<START_TS>" --until "<END_TS>" > /tmp/retro_root_causes.json
-```
+Bundle keys **`active_clusters`** + **`root_causes`** (the gather also wrote the
+legacy `/tmp/retro_active_clusters.json` + `/tmp/retro_root_causes.json`).
 
 Each cluster carries `label`, `status`, `decisions_json`, `blockers_json`, `root_cause`, `participants_json`, `member_count`, `source_breakdown_json`, `first_ts`, `last_activity_ts`.
 
@@ -285,12 +161,7 @@ Use these for:
 
 ### 1k-bis. Project-level rollup (prefer this over cluster lists)
 
-HDBSCAN splits big initiatives across multiple clusters (e.g. Revamp lives in clusters 352 + 297 + 281). Aggregate via `cluster_project_map` to surface project-level deliveries:
-
-```bash
-.venv/bin/python derive/ask_engine.py projects-window \
-    --since "<START_TS>" --until "<END_TS>" > /tmp/retro_projects.json
-```
+HDBSCAN splits big initiatives across multiple clusters (e.g. Revamp lives in clusters 352 + 297 + 281). The bundle key **`projects_window`** (legacy `/tmp/retro_projects.json`) aggregates via `cluster_project_map` to surface project-level deliveries.
 
 Each entry: `project_slug`, `cluster_count`, `member_count_total`, `top_cluster_labels[]`, `linked_cluster_ids[]`, `status_distribution`. **Use this as the primary scoping for the Highs section.** For each top project_slug:
 
@@ -322,13 +193,10 @@ For each top contributor from 1c, scan `/tmp/retro_active_clusters.json` + `/tmp
 
 Cluster-grained framing favours sustained workstreams over point-in-time announcements. Concrete go-live dates + measured impact (% rollout, ₹ revenue, branch counts) live in weekly-sync MoM threads, which often DON'T form their own cluster — they're status callouts inside larger threads. Without this step, the retro misses real team deliveries (e.g. "instant-pay ATM live <date> ~₹X day-one charges").
 
-```bash
-.venv/bin/python derive/mom_extractor.py \
-    --since "<START_TS>" --until "<END_TS>" \
-    > /tmp/retro_moms.json
-```
-
-Default scrape channel: `C0EXAMPLE` (service-c-internal / service-c Weekly Sync). Override via `--channels` if the team uses a different MoM venue.
+Bundle key **`moms`** (legacy `/tmp/retro_moms.json`). Default scrape channel:
+`C0EXAMPLE` (service-c-internal / service-c Weekly Sync) — if the team uses a
+different MoM venue, re-run `derive/mom_extractor.py --since … --until …
+--channels <ids>` manually (the only case where a separate command is needed).
 
 Each MoM entry contains: `ts`, `title`, `root_actor`, `root_body` (full text), `replies[]` (top 8 chronological replies with actor + body), and `subject_url` (slack permalink for citation).
 
@@ -385,6 +253,10 @@ framing + MoM dates/impact. Then:
    per `.claude/shared/evidence-grounding.md`. For every High AND Low, open the source body
    (rollout/MoM thread, incident thread, ticket) and pull its MEASURED numbers; a generic
    impact line ("improves reliability") is INSUFFICIENT when the thread carries numbers.
+   **Batch the opens (speed):** first decide the full High/Low candidate list, THEN
+   issue the source-body reads (slack threads, tickets, pages) as parallel tool
+   blocks — several independent reads per message, never one open per turn. This
+   loop is the retro's dominant wall-clock; keep it wide.
    Example: the instant-pay 100% go-live thread states "RPS dropped to ~0" + "N lakh accounts,
    NN RPS peak, p99 NN ms" — all of that belongs in the impact line.
 4. **Reconciliation appendix (REQUIRED)** — after Highs/Lows, append a
@@ -437,157 +309,13 @@ _From `derive/retro_census.py` over <window>. Every subject partitioned; nothing
 
 **Stakeholder body = Highs + Lows ONLY.** No TL;DR, Metrics table, per-person notes, "Open threads", or "Inputs" footer in the stakeholder section. The owner's Feb + March stakeholder messages in slack are the precedent — copy that voice. The **reconciliation appendix below the `---` is REQUIRED** (the recall-audit proof) but is explicitly NOT stakeholder copy — it stays below the divider.
 
-The internal engineering signals below are for SYNTHESIS — they help identify highs/lows. They do NOT appear in the output verbatim.
-
----
-
-### Internal signals (for synthesis only — do NOT render directly)
-
-The legacy retro shape (with Metrics / TL;DR / Per-person notes) is deprecated for /ask highs_lows + /retro. Keep these signals as inputs to Phase 2 synthesis. Below table is for HISTORICAL reference of what signals exist:
-
-| Metric | Value | Notes |
-|--------|-------|-------|
-| PRs opened | <n> | from 1a |
-| PRs merged | <n> | from 1a |
-| Jira tickets created | <n> | from 1a |
-| Confluence pages touched | <n> | from 1a |
-| PR cycle time (avg) | <hours>h | from 1b |
-| PR cycle time (max) | <hours>h | from 1b |
-| Active contributors | <n> | from 1c, count of distinct actors with ≥1 pr_opened OR ≥3 review |
-| Risk-flagged subjects | <n> | from 1f |
-| Domains touched | <n> | from 1h |
-
-| Metric | Value | Notes |
-|--------|-------|-------|
-| PRs opened | <n> | from 1a |
-| PRs merged | <n> | from 1a |
-| Jira tickets created | <n> | from 1a |
-| Confluence pages touched | <n> | from 1a |
-| PR cycle time (avg) | <hours>h | from 1b |
-| PR cycle time (max) | <hours>h | from 1b |
-| Active contributors | <n> | from 1c, count of distinct actors with ≥1 pr_opened OR ≥3 review |
-| Risk-flagged subjects | <n> | from 1f |
-| Domains touched | <n> | from 1h |
-
----
-
-## Highs
-
-### Workstreams active in window (cluster-grained — primary signal)
-
-From 1k `/tmp/retro_active_clusters.json`: for each cluster with `status='ACTIVE'` and `last_activity_ts` in window, produce ONE bullet:
-
-```
-**<label>** — <synthesised from top 2 decisions_json entries>. <member_count> items across <source_breakdown_json>. Led by <top participant by contribution_count, with role if non-null>.
-```
-
-Sort by `member_count` desc. Cap at 8 bullets.
-
-Skip clusters with `status='RECURRING'` (templates — not work). Skip `STALE` here (covered in stale-themes follow-up).
-
-Cite evidence: include 1-2 `evidence_subject` URLs per cluster (slack/jira/page/github URL conventions from `derive/validate_embeddings.py:subject_url`).
-
-### Shipped this window (event-grained — supplement, not replacement)
-
-For each shipped epic from 1d: one bullet — `[<key>](<url>) — <title>` (strip `[Epic …]` prefix from title).
-
-For each of top 5 domains in 1h not already covered by a cluster above: one bullet per domain. Format: `**<domain-slug>** — <one-line synthesis of recent items section>. <count> PRs, <count> contributors.` (Avoids double-counting workstreams that the cluster section already named.)
-
-### Person highlights
-
-For each of the top 3-5 actors from 1j: one bullet — `**<handle>** (<role from team.md if known>) — <one-sentence synthesis of their narrative + recent PRs section>.`
-
-Be specific. Reference actual PR numbers when surfaced by MatterAI. Avoid generic praise ("did great work") — use the concrete signal.
-
-### Domain ramp / new ownership
-
-If any person × domain pair in window shows substantially higher activity than their 240d baseline (inferable from per-person profile), call it out. Skip section if no clear signal.
-
----
-
-## Lows
-
-### Incident themes (cluster-grained — primary signal)
-
-From 1k `/tmp/retro_root_causes.json`: for each cluster with non-null `root_cause` AND `status != 'RECURRING'` AND `last_activity_ts` in window, produce ONE entry:
-
-```
-**<label>** — <root_cause>. Blockers: <comma-list of top 2 blockers_json[].text> (if any). <member_count> incidents.
-```
-
-Sort by `last_activity_ts` desc. Cap at 6 entries. For each, include 1-2 evidence URLs from `blockers_json[].evidence_subject` or top member.
-
-This section replaces the old per-incident drilldown — it tells you *what kept failing as a real workstream*, not just *what individual templates fired*.
-
-### Recurring noise (collapsed)
-
-For RECURRING clusters with `root_cause` and activity in window: collapse to one summary line. Format: `<N> recurring alert clusters fired in window: <comma-list of top 3 labels (truncated)>. See cluster details via /ask if specific patterns matter.`
-
-This is a noise-suppression block — explicitly does NOT enumerate individual recurring alerts.
-
-### Anti-patterns
-
-- **Drive-by merges (current state from alerts.md):** <count>. Top mergers: <list>. If a single name dominates: flag.
-- **Stale PRs (current state from alerts.md):** <count>. Average age: <X> days. Names of owners: <list>.
-- **Long cycle-time outliers:** PRs in window with merge time >max threshold (>72h or >2× window-avg). Subject + actor + hours.
-
-### Risk surfaces
-
-For each risk_flag in 1f, group by flag:
-
-- **security** (<count>): one bullet per subject — `[<subject>](<url>) — <summary>`. Skip if none.
-- **race**: same format.
-- **data-loss / panic / migration / breaking-api**: same.
-
-### Concentration risk
-
-From 1c: if any single person's activity is >40% of total team activity, flag as bus-factor concern. Skip if balanced.
-
-### Sprint underdelivery (optional, requires sprint context)
-
-From 1e: if any closed sprint in window has `total_points` set but most of the tickets in it ended outside the window (status_change → Done after END_TS), flag. Best-effort only — sprint boundaries aren't stored exactly.
-
----
-
-## Per-person notes
-
-Sectioned narrative (NOT a table) per person — bullets covering authored/shipped/ops items only. Reviews go in the activity table, not narrative. Significant ops items (DR drill, incident, deployment) get their own bullet, not parenthetical. (Format per `feedback_people_summary_format` + `feedback_people_summary_doneitems` memory.)
-
-For each active contributor (≥1 PR opened or merged in window):
-
-### <name from team.md, fallback to handle>
-
-- Activity table:
-  | event_type | count |
-  |---|---|
-  | pr_opened | <n> |
-  | pr_merged | <n> |
-  | review | <n> |
-  | jira issue_created | <n> |
-  | comment | <n> |
-- **Led / drove**: one line per cluster from 1l where person has role in (AUTHOR, RESOLVER, DECIDER). Format: `<cluster label> — <role> · <contribution_count> events`. Skip if no led/drove rows.
-- **Responded to**: one line listing cluster labels where person is RESPONDER/REVIEWER, comma-separated. Skip if empty.
-- Narrative: 3-5 bullets of authored/shipped/ops work, with PR numbers + MatterAI risk keywords if surfaced.
-
----
-
-## Open threads (forward-looking)
-
-- Stale PRs needing owner attention (top 5 from alerts.md).
-- Risk flags not yet resolved (any open `pr_opened` from 1f with no `pr_merged`).
-- Domains with concentration risk (bus-factor < 2).
-
----
-
-_Inputs:_
-- `index/events.db` (events + subject_summary + person_narrative + `topic_brief` + `topic_brief_member`)
-- `derived/alerts.md`, `derived/projects/*.md`, `derived/people/*.md`
-- `config/people.yaml`, `config/projects.yaml`
-- `management/context/team.md` for role lookup
-- `derive/ask_engine.py` primitives: `window`, `rootcauses` (Phase D cluster-grained framing)
-
-_Window:_ `<START_TS>` to `<END_TS>` (<N> days)
-```
+(The legacy internal-signals template — metrics table, cluster-bullet Highs/Lows
+shapes, per-person notes, open-threads, inputs footer — was DELETED 2026-07-18.
+It was ~150 lines of deprecated output shape that the synthesis contract above
+fully supersedes, re-read on every run for nothing; it also carried a
+verbatim-duplicated metrics table. Phase 1's numbered gathers (1a-1l) remain the
+synthesis INPUTS; none of them render verbatim. Git history has the old template
+if ever needed.)
 
 ## Hard constraints
 

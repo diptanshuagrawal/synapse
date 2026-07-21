@@ -53,6 +53,9 @@ work-context/raw/
 # Derived artifacts (regenerable from events.db via /rollup + skills)
 # ──────────────────────────────────────────────────────────────────────
 work-context/derived/
+# Root-level derived/ — confidential local material (CBS audit prep,
+# architecture diagrams, program spreadsheets). NEVER ship to the public repo.
+/derived/
 
 # ──────────────────────────────────────────────────────────────────────
 # Drafts (scratch per PRD discipline; narratives/ + retros/ stay tracked)

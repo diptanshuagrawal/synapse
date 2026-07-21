@@ -562,13 +562,19 @@ def reconcile_window(
     # raw ts after the channel prefix — easier to derive ts from id).
     try:
         with conn:
-            # Pull every undeleted slack row for this channel in window.
+            # Pull undeleted TOP-LEVEL slack rows for this channel in window.
+            # Thread replies are excluded: api_msgs comes from
+            # conversations.history, which never returns replies, so
+            # comparing reply rows against it falsely tombstones every
+            # reply in the window. Reply deletes are handled by the
+            # Phase 2.5 stale-thread drift pass.
             rows = conn.execute(
                 """SELECT id, ts FROM events
                     WHERE source = 'slack'
                       AND channel_id = ?
                       AND ts >= ?
-                      AND deleted_ts IS NULL""",
+                      AND deleted_ts IS NULL
+                      AND event_type = 'thread_started'""",
                 (channel_id, window_start_iso),
             ).fetchall()
 

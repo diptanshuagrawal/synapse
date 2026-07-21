@@ -179,27 +179,59 @@ def gather_oncall(roster):
 RISK_HORIZON_DAYS = 28
 
 
+_FORECAST_CACHE = os.path.join(ROOT, "work-context/state/oncall_forecast_cache.json")
+
+
 def gather_oncall_forecast(roster, date_str, days=RISK_HORIZON_DAYS):
     """Forecast the on-call primary for each of the next `days` days (rolling, = the risk
     horizon, 4 weeks). Returns (lines, forecast) where forecast={iso_date: canonical|email|None}.
-    One on-calls?date= query per day (noon UTC); each is independently fail-soft so a
-    single dead day degrades to None rather than killing the whole forecast."""
+    One on-calls?date= query per day (noon UTC), fetched CONCURRENTLY — the previous
+    serial loop was 28 sequential HTTP round-trips and dominated gather wall-clock.
+    Same-day cache: the rota changes at most weekly but standup/ticketize/retries call
+    this several times a day — a clean fetch is cached per (anchor, days) and reused
+    for the rest of the day. A fetch with failed days is NOT cached, so a later fire
+    repairs the holes. Each day stays independently fail-soft."""
     by_email = {v.get("email", ""): k for k, v in roster.items()}
     forecast, lines = {}, []
+    today = datetime.date.today().isoformat()
+    try:
+        c = json.load(open(_FORECAST_CACHE))
+        if (c.get("fetched") == today and c.get("anchor") == date_str
+                and c.get("days") == days):
+            forecast = c["forecast"]
+            return ([f"  {d} {forecast[d] or '?(lookup failed)'}"
+                     for d in sorted(forecast)], forecast)
+    except Exception:
+        pass
     try:
         sched, idtype, key = _opsgenie_cfg()
     except Exception as e:
         return [f"  ⚠️ forecast unavailable: {e}"], forecast
     d0 = datetime.date.fromisoformat(date_str)
-    for i in range(days):
-        day = (d0 + datetime.timedelta(days=i)).isoformat()
+    day_list = [(d0 + datetime.timedelta(days=i)).isoformat() for i in range(days)]
+
+    def _one(day):
         try:
             emails = _oncall_at(sched, idtype, key, f"{day}T12:00:00Z")
-            who = by_email.get(emails[0], emails[0]) if emails else None
+            return day, (by_email.get(emails[0], emails[0]) if emails else None), True
         except Exception:
-            who = None  # leave a hole; don't abort the rest of the sprint
+            return day, None, False  # leave a hole; don't abort the rest
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        results = list(ex.map(_one, day_list))  # preserves day order
+    for day, who, _ in results:
         forecast[day] = who
         lines.append(f"  {day} {who or '?(lookup failed)'}")
+    if all(ok for _, _, ok in results):
+        try:
+            tmp = f"{_FORECAST_CACHE}.tmp{os.getpid()}"
+            with open(tmp, "w") as f:
+                json.dump({"fetched": today, "anchor": date_str, "days": days,
+                           "forecast": forecast}, f)
+            os.replace(tmp, _FORECAST_CACHE)
+        except Exception:
+            pass
     return lines, forecast
 
 
@@ -624,6 +656,22 @@ def main():
     out.extend(fc_lines)
     out.append("# RISKS (28d rolling = 4 weeks: LEAVE×ONCALL collisions + COVERAGE gaps; surface in Day update §A)")
     out.extend(gather_risks(cur, roster, date_str, forecast))
+    # STANDUP CALL — signals from recorded meeting transcripts (meeting-intelligence
+    # pipeline, prd/meeting-intelligence.md P4). Delegated to signals.py so the state
+    # format has one owner; said-vs-done judging happens in-session, this is facts only.
+    # Emitted only when there is something to say (recordings for the day / open signals)
+    # so pre-adoption standups carry zero extra noise.
+    try:
+        import subprocess
+        blk = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "work-context/derive/meetings/signals.py"),
+             "gather-block", date_str],
+            capture_output=True, text=True, timeout=30).stdout.rstrip()
+        if blk and "(no meeting signals)" not in blk:
+            out.append("# STANDUP CALL (recorded-meeting signals: said-vs-done candidates, meeting asks→Your queue, untracked→/ticketize)")
+            out.append(blk)
+    except Exception as e:
+        out.append(f"# STANDUP CALL  ⚠️ signals unavailable: {e}")
     # PR INDEX — copy these descriptors VERBATIM when rendering any PR; never guess.
     out.append("# PR INDEX (deterministic: author=pr_opened actor→canonical, title+desc from events.db — COPY VERBATIM, never re-derive)")
     for n in sorted(pr_index, key=lambda x: int(x) if x.isdigit() else 0):
