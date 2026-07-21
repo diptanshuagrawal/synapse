@@ -214,6 +214,7 @@ def _meetings_rows(q: str = "") -> list[dict]:
             "time": ordered[0]["time"],
             "has_note": any(s["has_note"] for s in segs),
             "transcribed": True,
+            "starred": any((NOTES_DIR / f"{s['id']}.star").exists() for s in segs),
             "n": len(segs),
             "segs": [s["id"] for s in ordered],
         })
@@ -274,6 +275,7 @@ def meeting_detail(mid: str) -> dict:
         "id": mid,
         "cat": cat,
         "participants": participants,
+        "starred": (NOTES_DIR / f"{mid}.star").exists(),
         "transcribed": txt.exists(),
         "transcript": txt.read_text(errors="replace") if txt.exists() else "(not transcribed yet)",
         "note": note.read_text(errors="replace") if note.exists() else "",
@@ -532,7 +534,7 @@ async function load(){
  }
  if(!sel) renderLib();
 }
-async function showLib(){sel=null;detail=null;await renderLib()}
+async function showLib(){sel=null;detail=null;try{localStorage.removeItem('stenoView')}catch(e){}await renderLib()}
 async function renderLib(){
  const ms=await (await fetch('/api/meetings?q='+encodeURIComponent(mq)+'&limit=500')).json();
  const cats=[...new Set(ms.map(m=>m.cat).filter(Boolean))].sort();
@@ -560,7 +562,7 @@ function chipRow(cats){
 }
 function cardHtml(m){
  return `<div class="mcard" onclick='open_("${m.id}",${JSON.stringify(m.segs)})'>
-   <div style="font-weight:650;font-size:14px;text-transform:capitalize;line-height:1.35">${m.title}<span class="dot ${m.has_note?'note':'raw'}" style="margin-left:6px"></span></div>
+   <div style="font-weight:650;font-size:14px;text-transform:capitalize;line-height:1.35">${m.starred?'<span style="color:var(--accent)">★</span> ':''}${m.title}<span class="dot ${m.has_note?'note':'raw'}" style="margin-left:6px"></span></div>
    <div style="font-size:11.5px;color:var(--muted);margin-top:6px">${[new Date(m.date+'T00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short'}),m.time,m.n>1?m.n+' parts':''].filter(Boolean).join(' · ')}</div>
    ${m.transcribed===false?`<div style="margin-top:8px"><span style="font-size:10px;color:var(--accent);border:1px solid var(--accent);border-radius:6px;padding:1px 7px">● not transcribed</span> <button onclick='event.stopPropagation();transcribe("${m.id}",event)' style="font-size:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:6px;padding:1px 8px;cursor:pointer;margin-left:4px">Transcribe</button></div>`:''}
    ${(m.cat||m.proj)?`<div style="margin-top:8px;display:flex;gap:4px;flex-wrap:wrap">${[m.cat,m.proj].filter(Boolean).map(x=>`<span style="font-size:10.5px;border:1px solid var(--line);border-radius:6px;padding:1px 7px;color:var(--muted)">${x}</span>`).join('')}</div>`:''}</div>`;
@@ -694,6 +696,9 @@ applyTheme();
 let segs=[];
 async function open_(id,ss){
  sel=id; segs=ss||[id]; detail=await (await fetch('/api/meeting/'+id)).json(); tab=detail.note?'note':'transcript';
+ // Remember the open meeting so Cmd-R (a full WebView reload) restores THIS view
+ // instead of dropping back to the Library.
+ try{localStorage.stenoView=JSON.stringify({sel,segs,tab})}catch(e){}
  render(); load();
 }
 async function seg_(id){sel=id;detail=await (await fetch('/api/meeting/'+id)).json();render()}
@@ -707,7 +712,8 @@ function render(){
      onkeydown="if(event.key==='Enter'&&this.value){fetch('/api/links/'+sel,{method:'POST',body:this.value}).then(()=>seg_(sel));}"></div>`;
  const TAXO=['standup','1-1','prd-handover','design-review','incident-review','planning','interview','vendor','townhall','other'];
  $('view').innerHTML=`<button class="back" onclick="showLib()">← library</button>
- <h1>${sel.slice(11).replace(/-\d+$/,'').replaceAll('-',' ')}</h1>
+ <div style="display:flex;align-items:center;gap:8px"><h1 style="margin:0">${sel.slice(11).replace(/-\d+$/,'').replaceAll('-',' ')}</h1>
+   <button onclick="toggleStar()" title="Star — protected, never auto-deleted" style="border:none;background:none;font-size:22px;line-height:1;cursor:pointer;color:${detail.starred?'var(--accent)':'var(--muted)'}">${detail.starred?'★':'☆'}</button></div>
  <div class="date" style="display:flex;align-items:center;gap:10px">${sel.slice(0,10)}
    <select onchange="setCat(this.value)" style="border:1px solid var(--line);background:var(--card);color:var(--muted);border-radius:7px;padding:2px 6px;font-size:11.5px">
      <option value="">${detail.cat?detail.cat+' ▾':'set category…'}</option>
@@ -741,6 +747,8 @@ function regen(){
 }
 function setCat(c){if(!c)return;
  fetch('/api/cat/'+sel,{method:'POST',body:c}).then(()=>{seg_(sel);load()})}
+// Star = pin: protected from the audio-retention auto-delete.
+function toggleStar(){fetch('/api/star/'+sel,{method:'POST'}).then(()=>{seg_(sel);load()})}
 // Custom confirm — WKWebView (Steno.app) silently ignores native confirm().
 function confirmModal(title, body){
  return new Promise(resolve=>{
@@ -791,7 +799,12 @@ document.addEventListener('keydown',e=>{
    if(sel){e.preventDefault();showLib()}
  }
 });
-(async()=>{await poll();await load();
+(async()=>{await poll();
+ // Restore the last-open meeting on reload (Cmd-R) so the current page refreshes
+ // in place rather than resetting to the Library. Falls back to Library.
+ let _sv=null; try{_sv=JSON.parse(localStorage.stenoView||'null')}catch(e){}
+ if(_sv&&_sv.sel){ await open_(_sv.sel,_sv.segs); if(_sv.tab){tab=_sv.tab;render()} }
+ else { await load(); }
  const s=await (await fetch('/api/scratchpad')).json(); $('pad').value=s.text||'';
  setInterval(poll,5000); setInterval(load,30000);
  setInterval(()=>{if(recOn){recEl++;$('recmeta').textContent='recording · '+fmt(recEl)+recSuffix}},1000)})();
@@ -1090,6 +1103,22 @@ class H(BaseHTTPRequestHandler):
                     _CACHE.pop("meetings", None)
                     ok = True
             self._json({"ok": ok})
+        elif p.startswith("/api/star/"):
+            # Star = pin: a <mid>.star sidecar marks the meeting protected. The
+            # audio-retention prune skips any meeting with this marker (never
+            # auto-deleted). Toggle on/off.
+            mid = re.sub(r"[^a-zA-Z0-9_-]", "", p.rsplit("/", 1)[1])
+            starred = False
+            if mid:
+                NOTES_DIR.mkdir(parents=True, exist_ok=True)
+                star = NOTES_DIR / f"{mid}.star"
+                if star.exists():
+                    star.unlink(missing_ok=True)
+                else:
+                    star.touch()
+                    starred = True
+                _CACHE.pop("meetings", None)
+            self._json({"ok": bool(mid), "starred": starred})
         else:
             self._json({"error": "not found"}, 404)
 
