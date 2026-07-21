@@ -88,3 +88,17 @@ def test_normalized_shape_and_untracked(tmp_path, monkeypatch):
     assert rows["k-1"]["kind"] == "ask"
     unt = sg.owner_untracked()
     assert [u["id"] for u in unt] == ["u-1"] and unt[0]["kind"] == "untracked"
+
+
+def test_done_status_filter_and_reopen_roundtrip(tmp_path, monkeypatch):
+    _seed(tmp_path, monkeypatch)
+    # a-done is the only resolved owner-facing item → Completed view shows it.
+    done = sg.owner_facing_todos(OWNER, status="done")
+    assert {i["id"] for i in done} == {"a-done"}
+    # reopen flips it back to open; it leaves Completed and joins the live list.
+    sg.cmd_reopen("a-done")
+    assert {i["id"] for i in sg.owner_facing_todos(OWNER, status="done")} == set()
+    assert "a-done" in {i["id"] for i in sg.owner_facing_todos(OWNER)}
+    # resolve puts it back; idempotent.
+    sg.cmd_resolve("a-done")
+    assert {i["id"] for i in sg.owner_facing_todos(OWNER, status="done")} == {"a-done"}

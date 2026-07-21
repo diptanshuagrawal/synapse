@@ -499,24 +499,36 @@ def todos() -> dict:
     owner = _owner_handle()
     try:
         items = _sig().owner_facing_todos(owner)
+        done = _sig().owner_facing_todos(owner, status="done")
         untracked = _sig().owner_untracked()
     except Exception:
-        items, untracked = [], []
+        items, done, untracked = [], [], []
     idx = _todo_meeting_map()
-    for it in items + untracked:
+    for it in items + done + untracked:
         it["meeting"] = _enrich_meeting(it.get("subject", ""), idx)
-    return {"items": items, "untracked": untracked,
-            "count": len(items), "owner_resolved": bool(owner)}
+    # Completed view = most-recently-resolved first.
+    done.sort(key=lambda it: it.get("resolved_ts", ""), reverse=True)
+    return {"items": items, "done": done, "untracked": untracked,
+            "count": len(items), "done_count": len(done),
+            "owner_resolved": bool(owner)}
 
 
-def todo_resolve(iid: str) -> dict:
+def _todo_action(iid: str, verb: str) -> dict:
     iid = re.sub(r"[^a-zA-Z0-9-]", "", iid)
     if not iid:
         return {"ok": False}
     r = subprocess.run(
-        [_venv_py(), str(WC / "derive" / "meetings" / "signals.py"), "resolve", iid],
+        [_venv_py(), str(WC / "derive" / "meetings" / "signals.py"), verb, iid],
         capture_output=True, text=True)
     return {"ok": r.returncode == 0}
+
+
+def todo_resolve(iid: str) -> dict:
+    return _todo_action(iid, "resolve")
+
+
+def todo_reopen(iid: str) -> dict:
+    return _todo_action(iid, "reopen")
 
 
 PAGE = r"""<!doctype html><html><head><meta charset="utf-8">
@@ -900,7 +912,7 @@ function closePop(){const p=document.getElementById('daypop');if(p)p.remove();
 function calNav(d){const [y,m]=calMonth.split('-').map(Number);
  const nd=new Date(y,m-1+d,1);calMonth=`${nd.getFullYear()}-${String(nd.getMonth()+1).padStart(2,'0')}`;calDay=null;load()}
 let mq='', mqT=null, libTab='recent', libCat='', calDay=null,
-    calMonth=new Date().toISOString().slice(0,7), mainView='lib', untOpen=false;
+    calMonth=new Date().toISOString().slice(0,7), mainView='lib', untOpen=false, doneOpen=false;
 // ── To-do (My action items) view ──────────────────────────────────────────
 async function renderTodos(td){
  if(!td) td=await (await fetch('/api/todos')).json();
@@ -926,6 +938,13 @@ async function renderTodos(td){
      <div onclick="untOpen=!untOpen;renderTodos(window._todos)" style="cursor:pointer;font-size:12.5px;font-weight:600;color:var(--muted);user-select:none">
        ${untOpen?'▾':'▸'} Mentioned, not tracked · ${unt.length} <span style="font-weight:400">— /ticketize candidates, not personal to-dos</span></div>
      ${untOpen?'<div style="margin-top:10px">'+unt.map(untRow).join('')+'</div>':''}</div>`;
+ }
+ const done=td.done||[];
+ if(done.length){
+   body+=`<div style="margin-top:22px;max-width:820px">
+     <div onclick="doneOpen=!doneOpen;renderTodos(window._todos)" style="cursor:pointer;font-size:12.5px;font-weight:600;color:var(--good);user-select:none">
+       ${doneOpen?'▾':'▸'} Completed · ${done.length} <span style="font-weight:400;color:var(--muted)">— click ↩ to un-check</span></div>
+     ${doneOpen?'<div style="margin-top:10px">'+done.map(doneRow).join('')+'</div>':''}</div>`;
  }
  $('view').innerHTML=`<h1 style="font-size:22px;margin-bottom:4px">My action items</h1>
    <div style="color:var(--muted);font-size:13px;margin-bottom:6px">Open to-dos across your meetings — asks to you, your commitments, and actions you own or that are unassigned.</div>${body}`;
@@ -955,9 +974,23 @@ function untRow(it){
    <button class="tddone" title="Dismiss (mark handled)" onclick='resolveTodo(${JSON.stringify(it.id)})'>✓</button>
    <div class="txt">${esc(it.text)}<div class="sub">${kbadge('untracked')}${src?'<span>· '+src+'</span>':''}</div></div></div>`;
 }
+function doneRow(it){
+ const src=meetingSrc(it.meeting);
+ return `<div class="todorow" style="opacity:.7">
+   <button class="tddone" title="Un-check (reopen)" onclick='reopenTodo(${JSON.stringify(it.id)})'>↩</button>
+   <div class="txt"><span style="text-decoration:line-through">${esc(it.text)}</span>
+     <div class="sub">${kbadge(it.kind)}${src?'<span>· '+src+'</span>':''}</div>
+   </div></div>`;
+}
 async function resolveTodo(id){
  const x=await (await fetch('/api/todo/resolve/'+id,{method:'POST'})).json();
  if(!x.ok){alert('Could not mark it done.');return;}
+ const td=await (await fetch('/api/todos')).json();
+ renderTodos(td);
+}
+async function reopenTodo(id){
+ const x=await (await fetch('/api/todo/reopen/'+id,{method:'POST'})).json();
+ if(!x.ok){alert('Could not reopen it.');return;}
  const td=await (await fetch('/api/todos')).json();
  renderTodos(td);
 }
@@ -1303,6 +1336,9 @@ class H(BaseHTTPRequestHandler):
             # ✓ Done — routes through signals.py resolve (idempotent; the
             # content-hash id means a resolved item never resurrects on re-add).
             self._json(todo_resolve(p.rsplit("/", 1)[1]))
+        elif p.startswith("/api/todo/reopen/"):
+            # Un-check from the Completed view — flip a done item back to open.
+            self._json(todo_reopen(p.rsplit("/", 1)[1]))
         elif p.startswith("/api/links/"):
             mid = re.sub(r"[^a-zA-Z0-9_-]", "", p.rsplit("/", 1)[1])
             u = _valid_link(body)

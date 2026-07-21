@@ -30,6 +30,7 @@ CLI:
   todos [--owner H]       owner-facing open to-dos as JSON (asks + owner's
                           actions/commitments + unassigned actions) + untracked
   resolve <id> [note]     mark a commitment/ask/untracked item done
+  reopen <id>             flip a done item back to open (To-do un-check)
   gather-block <date>     the `# STANDUP CALL` block for standup_gather
 """
 
@@ -185,8 +186,8 @@ def _is_owner(value, owner_handle: str | None) -> bool:
     return value == OWNER_TOKEN or (owner_handle is not None and value == owner_handle)
 
 
-def owner_facing_todos(owner_handle: str | None) -> list[dict]:
-    """Open items the OWNER personally has to act on, across all meetings.
+def owner_facing_todos(owner_handle: str | None, status: str = "open") -> list[dict]:
+    """Items the OWNER personally has to act on, across all meetings.
 
     Attribution-honest — includes only:
       - actions whose assignee IS the owner ("owner" sentinel or canonical
@@ -197,7 +198,9 @@ def owner_facing_todos(owner_handle: str | None) -> list[dict]:
     are dropped here. `owner_handle` None (no people.yaml / unresolved) → owner
     matches nothing, so only unassigned actions + asks surface (never guessed).
 
-    Returns normalized rows: {id, kind, text, who, subject, due, ts, offset}.
+    `status` selects which items to return ("open" for the live list; "done" for
+    the Completed view). Returns normalized rows:
+    {id, kind, text, who, subject, due, ts, offset, resolved_ts}.
     """
     data = _load()
     out: list[dict] = []
@@ -212,21 +215,22 @@ def owner_facing_todos(owner_handle: str | None) -> list[dict]:
             "due": it.get("due", ""),
             "ts": it.get("ts", ""),
             "offset": it.get("offset", ""),
+            "resolved_ts": it.get("resolved_ts", ""),
         }
 
     for it in data["actions"]:
-        if it.get("status") != "open":
+        if it.get("status") != status:
             continue
         assignee = it.get("assignee")
         if assignee in UNASSIGNED or _is_owner(assignee, owner_handle):
             out.append(row(it, "action", "action", "assignee"))
     for it in data["commitments"]:
-        if it.get("status") != "open":
+        if it.get("status") != status:
             continue
         if _is_owner(it.get("person"), owner_handle):
             out.append(row(it, "commitment", "promise", "person"))
     for it in data["asks"]:
-        if it.get("status") != "open":
+        if it.get("status") != status:
             continue
         out.append(row(it, "ask", "ask", "person"))
     return out
@@ -247,6 +251,7 @@ def cmd_todos(owner_handle: str | None) -> None:
     """Owner-facing to-dos as JSON (for /ask + the Steno To-do view)."""
     print(json.dumps({
         "items": owner_facing_todos(owner_handle),
+        "done": owner_facing_todos(owner_handle, status="done"),
         "untracked": owner_untracked(),
     }, indent=2))
 
@@ -262,6 +267,22 @@ def cmd_resolve(iid: str, note: str = "") -> None:
                     it["resolved_note"] = note
                 _save(data)
                 print(f"OK resolved {iid} ({kind})")
+                return
+    sys.exit(f"ERROR: id not found: {iid}")
+
+
+def cmd_reopen(iid: str) -> None:
+    """Un-resolve: flip a done item back to open (the To-do Completed view's
+    un-check). Idempotent; clears the resolved_ts/note stamps."""
+    data = _load()
+    for kind in KINDS:
+        for it in data[kind]:
+            if it["id"] == iid:
+                it["status"] = "open"
+                it.pop("resolved_ts", None)
+                it.pop("resolved_note", None)
+                _save(data)
+                print(f"OK reopened {iid} ({kind})")
                 return
     sys.exit(f"ERROR: id not found: {iid}")
 
@@ -342,6 +363,8 @@ def main() -> None:
         cmd_todos(owner)
     elif cmd == "resolve" and len(sys.argv) >= 3:
         cmd_resolve(sys.argv[2], " ".join(sys.argv[3:]))
+    elif cmd == "reopen" and len(sys.argv) == 3:
+        cmd_reopen(sys.argv[2])
     elif cmd == "gather-block" and len(sys.argv) == 3:
         cmd_gather_block(sys.argv[2])
     else:
