@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.transcripts-watch</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO__/bin/transcripts_process.sh</string>
+  </array>
+  <!-- Fires on any inbox change (new recording lands) ... -->
+  <key>WatchPaths</key>
+  <array>
+    <string>__REPO__/work-context/transcripts/inbox</string>
+  </array>
+  <!-- ... and every 10 min as a backstop: the sweep skips files <60s old
+       (still copying), so the WatchPaths fire right at file-creation is a
+       no-op and a later pass must pick it up. Sweep is idempotent + locked. -->
+  <key>StartInterval</key>
+  <integer>600</integer>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <!-- The sweep detaches its real work into a background session and the kicker
+       exits at once. AbandonProcessGroup=true stops launchd from SIGTERM-ing that
+       backgrounded group when the kicker exits (macOS has no setsid, so this is
+       what keeps a long whisper/ffmpeg run alive across an agent relaunch). Run-
+       to-completion job, never a daemon -> KeepAlive off. -->
+  <key>AbandonProcessGroup</key>
+  <true/>
+  <key>KeepAlive</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>/tmp/transcripts-watch.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/transcripts-watch.log</string>
+</dict>
+</plist>

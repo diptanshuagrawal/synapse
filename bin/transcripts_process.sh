@@ -28,6 +28,37 @@ LOCK="$WC/transcripts/.process.lock"
 
 mkdir -p "$INBOX" "$ARCHIVE"
 
+# --- detach from launchd's lifecycle (fixes recurring `Terminated: 15`) ------
+# launchd tracks this job's WHOLE process group. On a long recording the sweep
+# runs far past the agent's 10-min StartInterval (57-min audio × dual-stream ×
+# the -mc 0 loop-guard retry), AND the sweep mutates the WatchPaths-watched
+# inbox as it runs (rm of the .me/.them wavs, mv of the m4a out). Either one
+# re-fires the agent; launchd then tears down / relaunches the running job and
+# SIGTERMs its process group — killing whisper/ffmpeg mid-file (the ffmpeg child
+# itself gets `Terminated: 15`, not the shell). Running detached by hand escapes
+# that group and survives — the tell that the killer is launchd, not the code.
+#
+# Fix: the launchd-invoked process becomes a thin kicker that re-execs the real
+# sweep as a detached background job and exits 0 immediately. launchd's job then
+# completes at once (nothing long-lived left to signal); the detached copy holds
+# the single-flight lock and runs to completion, immune to any relaunch/kill.
+# setsid (a clean new session) is used when present; macOS ships without it, so
+# the agent plist's AbandonProcessGroup=true is what actually stops launchd from
+# reaping the backgrounded group when the kicker exits. FORCE_TRANSCRIBE (Steno's
+# on-demand "Transcribe" button) stays synchronous — it isn't under launchd and
+# its caller may wait on the result.
+if [ "${FORCE_TRANSCRIBE:-}" != "1" ] && [ "${TRANSCRIPTS_DETACHED:-}" != "1" ]; then
+  _log="$WC/transcripts/.capture/sweep.log"; mkdir -p "$WC/transcripts/.capture"
+  if command -v setsid >/dev/null 2>&1; then
+    TRANSCRIPTS_DETACHED=1 setsid nohup "$0" "$@" >>"$_log" 2>&1 </dev/null &
+  else
+    TRANSCRIPTS_DETACHED=1 nohup "$0" "$@" >>"$_log" 2>&1 </dev/null &
+  fi
+  disown 2>/dev/null || true
+  echo "transcripts_process: detached sweep started (pid $!) → $_log"
+  exit 0
+fi
+
 # --- transcription pause toggle (owner: "pause transcription for now") ------
 # While this flag exists, auto-sweeps no-op — recording a call costs no
 # whisper/battery, the audio still lands in the inbox and shows on Steno
@@ -66,16 +97,21 @@ if [ "${FORCE_TRANSCRIBE:-}" != "1" ] \
   exit 0
 fi
 
-# --- single-flight lock (mkdir is atomic; stale >45 min self-expires) -------
+# --- single-flight lock (mkdir is atomic; stale >3 h self-expires) ----------
+# TTL is 3 h (was 45 min): a real 60-min recording, dual-stream, with the -mc 0
+# loop-guard retry can legitimately run well over an hour. At 45 min a still-live
+# sweep looked "stale" to a fresh fire, which rm'd the lock and started a SECOND,
+# competing sweep. 3 h covers the max realistic recording so only ONE sweep ever
+# runs. (Kickers relaunched by launchd detach, hit this valid lock, and exit.)
 if ! mkdir "$LOCK" 2>/dev/null; then
   age=$(( $(date +%s) - $(stat -f %m "$LOCK" 2>/dev/null || echo 0) ))
-  if [ "$age" -lt 2700 ]; then echo "LOCKED: another sweep in progress — exit"; exit 0; fi
+  if [ "$age" -lt 10800 ]; then echo "LOCKED: another sweep in progress — exit"; exit 0; fi
   rm -rf "$LOCK"; mkdir "$LOCK" || exit 0
 fi
 trap 'rm -rf "$LOCK"' EXIT
 # A killed sweep must still drop the lock. An untrapped SIGTERM/SIGINT kills the
 # shell WITHOUT firing the EXIT trap → stale lock blocks the next sweep until the
-# 45-min self-expiry. Convert the signal into a normal exit so EXIT cleans up.
+# 3-h self-expiry. Convert the signal into a normal exit so EXIT cleans up.
 trap 'exit 143' TERM
 trap 'exit 130' INT
 
