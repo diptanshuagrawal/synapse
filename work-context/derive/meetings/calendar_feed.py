@@ -19,6 +19,8 @@ CLI (all output is compact `HH:MM-HH:MM | title | teams? | uid` lines, IST):
   day <YYYY-MM-DD>           that day's meetings
   upcoming [N]               next N days (default 3)
   next                       the next meeting from now (for the record nudge)
+  soon [MIN]                 machine-readable: meetings starting within MIN
+                             minutes (default 5) — the PRE-CALL record nudge
   refresh                    force re-fetch now
 """
 
@@ -227,6 +229,30 @@ def main() -> None:
         _, w1 = _day_window(now.date() + timedelta(days=7))
         fut = [o for o in _occurrences(events, now, w1) if not o["allday"]]
         _render(fut[:1])
+    elif cmd == "soon":
+        # Machine-readable UPCOMING state for the pre-call record nudge:
+        #   SOON|<slug>|<start-epoch>|<end-epoch>|<uid-tail>|<mins-until>|<title>
+        # (one line per meeting, soonest first) or NONE. Non-all-day events only
+        # (skips Lunch/Busy blocks); includes IN-PERSON meetings (no Teams link)
+        # — that is exactly the case the auto-recorder can't detect and the
+        # reminder matters most for. Window spans today+tomorrow so a horizon
+        # crossing midnight still resolves.
+        mins = int(sys.argv[2]) if len(sys.argv) > 2 else 5
+        w0, _ = _day_window(now.date())
+        _, w1 = _day_window(now.date() + timedelta(days=1))
+        horizon = now + timedelta(minutes=mins)
+        up = [o for o in _occurrences(events, w0, w1)
+              if not o["allday"] and now < o["start"] <= horizon]
+        if not up:
+            print("NONE")
+            return
+        up.sort(key=lambda x: x["start"])
+        for o in up:
+            slug = re.sub(r"[^a-z0-9]+", "-", o["summary"].lower()).strip("-")[:48] or "meeting"
+            end = o["end"] or o["start"] + timedelta(hours=1)
+            mleft = int((o["start"] - now).total_seconds() // 60)
+            print(f"SOON|{slug}|{int(o['start'].timestamp())}|{int(end.timestamp())}|"
+                  f"{o['uid'][-12:]}|{mleft}|{o['summary']}")
     elif cmd == "now":
         # Machine-readable current-meeting state for the auto-recorder:
         #   ACTIVE|<slug>|<end-epoch>|<uid-tail>|<title>   or   NONE
