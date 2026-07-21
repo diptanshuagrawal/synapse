@@ -422,6 +422,103 @@ def signals() -> dict:
         return {"commitments": [], "asks": [], "untracked": []}
 
 
+# ── "My action items" (To-do) ────────────────────────────────────────────────
+# The signal STORE and its owner-facing filter live in derive/meetings/signals.py
+# — we load that module by path (derive/ has no package __init__) and REUSE its
+# logic rather than reimplementing the JSON shape or the attribution rules here.
+_MODS: dict = {}
+
+
+def _load_mod(path: Path, name: str):
+    import importlib.util
+    if name not in _MODS:
+        spec = importlib.util.spec_from_file_location(name, str(path))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        _MODS[name] = mod
+    return _MODS[name]
+
+
+def _sig():
+    return _load_mod(WC / "derive" / "meetings" / "signals.py", "meet_signals")
+
+
+def _owner_handle() -> str | None:
+    """Owner's canonical handle: config org.owner_email → people.yaml canonical —
+    the same identity resolution ingest uses. None if unresolved (no people.yaml
+    or no match); the filter then never guesses an item is the owner's."""
+    def resolve():
+        try:
+            sc = _load_mod(WC / "derive" / "sources_config.py", "meet_sources_config")
+            email = sc.owner_email()
+        except Exception:
+            return None
+        try:
+            import yaml
+            ppl = (yaml.safe_load((WC / "config" / "people.yaml").read_text()) or {}).get("people", [])
+        except Exception:
+            return None
+        for p in ppl:
+            if p.get("email") == email and p.get("canonical"):
+                return p["canonical"]
+        return None
+    return _cached("owner_handle", 300, resolve)
+
+
+def _todo_meeting_map() -> dict:
+    """stem/base → {title, open, segs} for every listed meeting, so a signal's
+    subject (meeting:<date>:<slug>) resolves to a display title + a clickable id."""
+    def build():
+        idx: dict = {}
+        for r in meetings():
+            info = {"title": r["title"], "open": r["id"], "segs": r["segs"]}
+            for stem in r["segs"]:
+                idx[stem] = info
+                idx.setdefault(re.sub(r"-\d{4,6}$", "", stem), info)  # base (no -HHMM)
+        return idx
+    return _cached("todo_mmap", 8, build)
+
+
+def _enrich_meeting(subject: str, idx: dict) -> dict:
+    if not subject.startswith("meeting:"):
+        return {"title": "", "open": "", "segs": []}
+    key = subject[len("meeting:"):].replace(":", "-", 1)  # meeting:D:S → D-S
+    info = idx.get(key)
+    if not info:
+        for k, v in idx.items():
+            if k.startswith(key + "-") or key.startswith(k):
+                info = v
+                break
+    if info:
+        return {"title": info["title"], "open": info["open"], "segs": info["segs"]}
+    slug = key[11:] if re.match(r"\d{4}-\d\d-\d\d-", key) else key  # drop date prefix
+    return {"title": slug.replace("-", " ").strip(), "open": "", "segs": []}
+
+
+def todos() -> dict:
+    owner = _owner_handle()
+    try:
+        items = _sig().owner_facing_todos(owner)
+        untracked = _sig().owner_untracked()
+    except Exception:
+        items, untracked = [], []
+    idx = _todo_meeting_map()
+    for it in items + untracked:
+        it["meeting"] = _enrich_meeting(it.get("subject", ""), idx)
+    return {"items": items, "untracked": untracked,
+            "count": len(items), "owner_resolved": bool(owner)}
+
+
+def todo_resolve(iid: str) -> dict:
+    iid = re.sub(r"[^a-zA-Z0-9-]", "", iid)
+    if not iid:
+        return {"ok": False}
+    r = subprocess.run(
+        [_venv_py(), str(WC / "derive" / "meetings" / "signals.py"), "resolve", iid],
+        capture_output=True, text=True)
+    return {"ok": r.returncode == 0}
+
+
 PAGE = r"""<!doctype html><html><head><meta charset="utf-8">
 <title>Steno</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -501,9 +598,31 @@ a{color:var(--accent)}
 .mcard:hover{border-color:var(--muted)}
 .back{border:none;background:none;color:var(--muted);cursor:pointer;font-size:13px;padding:0;margin-bottom:10px}
 .back:hover{color:var(--accent)}
+/* To-do nav (sidebar) + rows */
+#todonav{display:flex;align-items:center;gap:7px;padding:7px 10px;border-radius:9px;cursor:pointer;
+font-size:13px;font-weight:600;margin-bottom:14px;border:1px solid var(--line);background:var(--paper)}
+#todonav:hover{border-color:var(--muted)}
+#todonav.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+#todocount{margin-left:auto;background:var(--accent);color:#fff;border-radius:11px;
+padding:0 8px;font-size:11px;font-weight:700;min-width:20px;text-align:center;display:none}
+.tdgrp{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;
+color:var(--muted);margin:22px 0 9px}
+.tdgrp.over{color:#b91c1c}
+.todorow{display:flex;align-items:flex-start;gap:12px;background:var(--card);border:1px solid var(--line);
+border-radius:12px;padding:11px 14px;margin-bottom:8px;max-width:820px}
+.todorow .txt{flex:1;font-size:14px;line-height:1.4}
+.todorow .sub{font-size:11.5px;color:var(--muted);margin-top:5px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.kbadge{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+border-radius:6px;padding:1px 7px;border:1px solid currentColor}
+.tddone{border:1px solid var(--line);background:var(--paper);color:var(--good);border-radius:9px;
+width:30px;height:30px;flex-shrink:0;font-size:15px;cursor:pointer;line-height:1}
+.tddone:hover{background:var(--good);color:#fff;border-color:var(--good)}
+.tdsrc{color:var(--accent);text-decoration:none}.tdsrc:hover{text-decoration:underline}
 </style></head><body>
 <div id="side">
   <h1><svg width="20" height="20" viewBox="0 0 1024 1024" style="vertical-align:-4px;margin-right:6px"><rect width="1024" height="1024" rx="232" fill="#1f1d1a"/><g stroke="#c2410c" stroke-width="58" stroke-linecap="round" fill="none"><path d="M 232 547 v -70"/><path d="M 340 607 v -190"/><path d="M 448 572 v -120"/></g><g stroke="#faf6ee" stroke-width="58" stroke-linecap="round" fill="none"><path d="M 560 392 h 232"/><path d="M 560 512 h 232"/><path d="M 560 632 h 150"/></g></svg>Steno <span style="color:var(--muted);font-weight:400">· local</span><button id="theme" onclick="cycleTheme()">auto</button></h1>
+  <div id="todonav" onclick="showTodos()" title="Your open action items across meetings">
+    <span>✓ To-do</span><span id="todocount"></span></div>
   <h2>Today</h2><div id="today" style="margin-bottom:14px"></div>
   <div id="sidecal" style="margin-bottom:16px"></div>
   <h2 style="display:flex;align-items:center">Search
@@ -552,6 +671,9 @@ a{color:var(--accent)}
 <script>
 let sel=null, tab='note', padTimer=null, detail=null, recEl=0, recSuffix='', recOn=false;
 const $=id=>document.getElementById(id);
+// HTML-escape for values dropped into innerHTML (to-do text + titles come from
+// LLM-extracted transcript content — never trust them in markup).
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function fmt(s){const m=Math.floor(s/60);return m+':'+String(s%60).padStart(2,'0')}
 function md(t){return t.replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(/^## (.*)$/gm,'<h3>$1</h3>')
  .replace(/^- (.*)$/gm,'<li>$1</li>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>')
@@ -618,9 +740,19 @@ async function load(){
  } else {
    $('list').innerHTML='<div style="color:var(--muted);font-size:12px;padding:4px 6px">Type to search — or <a href="#" onclick="showLib();return false" style="color:var(--accent)">browse all</a> in the main panel.</div>';
  }
+ // To-do count badge (kept fresh even when the To-do view isn't open).
+ try{
+   const td=await (await fetch('/api/todos')).json();
+   window._todos=td; setTodoBadge(td.count||0);
+   if(!sel && mainView==='todo'){ renderTodos(td); return; }
+ }catch(e){}
  if(!sel) renderLib();
 }
-async function showLib(){sel=null;detail=null;try{localStorage.removeItem('stenoView')}catch(e){}await renderLib()}
+function setTodoBadge(n){const b=$('todocount');if(!b)return;
+ b.textContent=n||'';b.style.display=n?'inline-block':'none'}
+async function showLib(){sel=null;detail=null;mainView='lib';syncTodoNav();try{localStorage.removeItem('stenoView')}catch(e){}await renderLib()}
+async function showTodos(){sel=null;detail=null;mainView='todo';syncTodoNav();try{localStorage.removeItem('stenoView')}catch(e){}await renderTodos()}
+function syncTodoNav(){const n=$('todonav');if(n)n.className=(mainView==='todo'&&!sel)?'on':''}
 async function renderLib(){
  const ms=await (await fetch('/api/meetings?q='+encodeURIComponent(mq)+'&limit=500')).json();
  const cats=[...new Set(ms.map(m=>m.cat).filter(Boolean))].sort();
@@ -768,7 +900,70 @@ function closePop(){const p=document.getElementById('daypop');if(p)p.remove();
 function calNav(d){const [y,m]=calMonth.split('-').map(Number);
  const nd=new Date(y,m-1+d,1);calMonth=`${nd.getFullYear()}-${String(nd.getMonth()+1).padStart(2,'0')}`;calDay=null;load()}
 let mq='', mqT=null, libTab='recent', libCat='', calDay=null,
-    calMonth=new Date().toISOString().slice(0,7);
+    calMonth=new Date().toISOString().slice(0,7), mainView='lib', untOpen=false;
+// ── To-do (My action items) view ──────────────────────────────────────────
+async function renderTodos(td){
+ if(!td) td=await (await fetch('/api/todos')).json();
+ window._todos=td; setTodoBadge(td.count||0); syncTodoNav();
+ const items=td.items||[], unt=td.untracked||[];
+ const today=new Date().toISOString().slice(0,10);
+ const in7=new Date(Date.now()+7*864e5).toISOString().slice(0,10);
+ const b={overdue:[],week:[],later:[],nodue:[]};
+ items.forEach(it=>{
+   if(!it.due) b.nodue.push(it);
+   else if(it.due<today) b.overdue.push(it);
+   else if(it.due<=in7) b.week.push(it);
+   else b.later.push(it);
+ });
+ const srt=a=>a.sort((x,y)=>(x.due||'').localeCompare(y.due||'')||(y.ts||'').localeCompare(x.ts||''));
+ Object.values(b).forEach(srt);
+ const grp=(cls,label,arr)=>arr.length?`<div class="tdgrp ${cls}">${label} · ${arr.length}</div>`+arr.map(todoRow).join(''):'';
+ let body=grp('over','Overdue',b.overdue)+grp('','This week',b.week)
+   +grp('','Later',b.later)+grp('','No due date',b.nodue);
+ if(!items.length) body=`<div class="empty">🎉 Nothing on your plate — no open action items from your meetings.${td.owner_resolved?'':'<div style="font-size:12px;margin-top:8px">(owner identity unresolved — showing unassigned items + asks only)</div>'}</div>`;
+ if(unt.length){
+   body+=`<div style="margin-top:30px;max-width:820px">
+     <div onclick="untOpen=!untOpen;renderTodos(window._todos)" style="cursor:pointer;font-size:12.5px;font-weight:600;color:var(--muted);user-select:none">
+       ${untOpen?'▾':'▸'} Mentioned, not tracked · ${unt.length} <span style="font-weight:400">— /ticketize candidates, not personal to-dos</span></div>
+     ${untOpen?'<div style="margin-top:10px">'+unt.map(untRow).join('')+'</div>':''}</div>`;
+ }
+ $('view').innerHTML=`<h1 style="font-size:22px;margin-bottom:4px">My action items</h1>
+   <div style="color:var(--muted);font-size:13px;margin-bottom:6px">Open to-dos across your meetings — asks to you, your commitments, and actions you own or that are unassigned.</div>${body}`;
+}
+function kbadge(kind){
+ const col=kind==='ask'?'var(--accent)':kind==='commitment'?'var(--good)':'var(--muted)';
+ return `<span class="kbadge" style="color:${col}">${kind}</span>`;
+}
+function meetingSrc(m){
+ if(!m||!m.title) return '';
+ const t=esc(m.title);
+ if(m.open) return `<a href="#" class="tdsrc" onclick='openFromTodo(${JSON.stringify(m.open)},${JSON.stringify(m.segs||[])});return false'>${t}</a>`;
+ return `<span style="text-transform:capitalize">${t}</span>`;
+}
+function todoRow(it){
+ const due=it.due?`<span style="color:${it.due<new Date().toISOString().slice(0,10)?'#b91c1c':'var(--muted)'}">due ${esc(it.due)}</span>`:'';
+ const src=meetingSrc(it.meeting);
+ return `<div class="todorow">
+   <button class="tddone" title="Mark done" onclick='resolveTodo(${JSON.stringify(it.id)})'>✓</button>
+   <div class="txt">${esc(it.text)}
+     <div class="sub">${kbadge(it.kind)}${src?'<span>· '+src+'</span>':''}${due?'<span>· '+due+'</span>':''}</div>
+   </div></div>`;
+}
+function untRow(it){
+ const src=meetingSrc(it.meeting);
+ return `<div class="todorow" style="opacity:.85">
+   <button class="tddone" title="Dismiss (mark handled)" onclick='resolveTodo(${JSON.stringify(it.id)})'>✓</button>
+   <div class="txt">${esc(it.text)}<div class="sub">${kbadge('untracked')}${src?'<span>· '+src+'</span>':''}</div></div></div>`;
+}
+async function resolveTodo(id){
+ const x=await (await fetch('/api/todo/resolve/'+id,{method:'POST'})).json();
+ if(!x.ok){alert('Could not mark it done.');return;}
+ const td=await (await fetch('/api/todos')).json();
+ renderTodos(td);
+}
+// Open the source meeting from a to-do row (leaves the To-do view active so the
+// back button / re-click returns here).
+function openFromTodo(id,segs){open_(id,segs&&segs.length?segs:[id])}
 document.addEventListener('DOMContentLoaded',()=>{});
 
 function applyTheme(){const pref=localStorage.theme||'auto';
@@ -785,7 +980,7 @@ async function open_(id,ss){
  // Remember the open meeting so Cmd-R (a full WebView reload) restores THIS view
  // instead of dropping back to the Library.
  try{localStorage.stenoView=JSON.stringify({sel,segs,tab})}catch(e){}
- render(); load();
+ syncTodoNav(); render(); load();
 }
 async function seg_(id){sel=id;detail=await (await fetch('/api/meeting/'+id)).json();render()}
 function render(){
@@ -1058,6 +1253,8 @@ class H(BaseHTTPRequestHandler):
             self._json(today())
         elif p == "/api/signals":
             self._json(signals())
+        elif p == "/api/todos":
+            self._json(todos())
         elif p == "/api/live":
             self._json(live_events())
         elif p == "/api/scratchpad":
@@ -1102,6 +1299,10 @@ class H(BaseHTTPRequestHandler):
                 with open(CAP / "live.links", "a") as f:
                     f.write(u + "\n")
             self._json({"ok": bool(u)})
+        elif p.startswith("/api/todo/resolve/"):
+            # ✓ Done — routes through signals.py resolve (idempotent; the
+            # content-hash id means a resolved item never resurrects on re-add).
+            self._json(todo_resolve(p.rsplit("/", 1)[1]))
         elif p.startswith("/api/links/"):
             mid = re.sub(r"[^a-zA-Z0-9_-]", "", p.rsplit("/", 1)[1])
             u = _valid_link(body)
