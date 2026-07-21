@@ -27,6 +27,8 @@ CLI:
   add <signals.json>      merge new signals (session-written file; dedup by id)
   check [--days N]        open commitments + evidence candidates since each
   list [--all]            current state (default: open items only)
+  todos [--owner H]       owner-facing open to-dos as JSON (asks + owner's
+                          actions/commitments + unassigned actions) + untracked
   resolve <id> [note]     mark a commitment/ask/untracked item done
   gather-block <date>     the `# STANDUP CALL` block for standup_gather
 """
@@ -166,6 +168,77 @@ def cmd_list(show_all: bool = False) -> None:
             print(f"  [{it['id']}] ({it.get('status')}) {who} — {text}")
 
 
+# Assignee/person values that mean "nobody owns this yet" — an owner-facing
+# to-do surfaces these (the owner still has to route them) but never guesses
+# they belong to the owner.
+UNASSIGNED = ("(unassigned)", "(unattributed)", "", None)
+
+
+def owner_facing_todos(owner_handle: str | None) -> list[dict]:
+    """Open items the OWNER personally has to act on, across all meetings.
+
+    Attribution-honest — includes only:
+      - actions whose assignee IS the owner, or is unassigned (owner must route)
+      - commitments the owner made (person == owner)
+      - asks (every ask is directed at the owner by construction)
+    Teammate-assigned actions and teammate commitments are NOT owner to-dos and
+    are dropped here. `owner_handle` None (no people.yaml / unresolved) → owner
+    matches nothing, so only unassigned actions + asks surface (never guessed).
+
+    Returns normalized rows: {id, kind, text, who, subject, due, ts, offset}.
+    """
+    data = _load()
+    out: list[dict] = []
+
+    def row(it: dict, kind: str, text_key: str, who_key: str) -> dict:
+        return {
+            "id": it["id"],
+            "kind": kind,
+            "text": it.get(text_key, ""),
+            "who": it.get(who_key) or "(unassigned)",
+            "subject": it.get("subject", ""),
+            "due": it.get("due", ""),
+            "ts": it.get("ts", ""),
+            "offset": it.get("offset", ""),
+        }
+
+    for it in data["actions"]:
+        if it.get("status") != "open":
+            continue
+        assignee = it.get("assignee")
+        if assignee in UNASSIGNED or (owner_handle and assignee == owner_handle):
+            out.append(row(it, "action", "action", "assignee"))
+    for it in data["commitments"]:
+        if it.get("status") != "open":
+            continue
+        if owner_handle and it.get("person") == owner_handle:
+            out.append(row(it, "commitment", "promise", "person"))
+    for it in data["asks"]:
+        if it.get("status") != "open":
+            continue
+        out.append(row(it, "ask", "ask", "person"))
+    return out
+
+
+def owner_untracked() -> list[dict]:
+    """Open untracked-work mentions — /ticketize fodder, NOT owner to-dos. Shown
+    in the To-do view under a separate collapsed 'mentioned, not tracked' section."""
+    return [
+        {"id": it["id"], "kind": "untracked", "text": it.get("work", ""),
+         "who": it.get("person") or "?", "subject": it.get("subject", ""),
+         "ts": it.get("ts", "")}
+        for it in _load()["untracked"] if it.get("status") == "open"
+    ]
+
+
+def cmd_todos(owner_handle: str | None) -> None:
+    """Owner-facing to-dos as JSON (for /ask + the Steno To-do view)."""
+    print(json.dumps({
+        "items": owner_facing_todos(owner_handle),
+        "untracked": owner_untracked(),
+    }, indent=2))
+
+
 def cmd_resolve(iid: str, note: str = "") -> None:
     data = _load()
     for kind in KINDS:
@@ -252,6 +325,9 @@ def main() -> None:
         cmd_check(days)
     elif cmd == "list":
         cmd_list("--all" in sys.argv)
+    elif cmd == "todos":
+        owner = sys.argv[sys.argv.index("--owner") + 1] if "--owner" in sys.argv else None
+        cmd_todos(owner)
     elif cmd == "resolve" and len(sys.argv) >= 3:
         cmd_resolve(sys.argv[2], " ".join(sys.argv[3:]))
     elif cmd == "gather-block" and len(sys.argv) == 3:
