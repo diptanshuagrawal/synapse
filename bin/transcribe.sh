@@ -24,7 +24,7 @@ command -v ffmpeg      >/dev/null || { echo "ERROR: ffmpeg not found" >&2; exit 
 # whisper.cpp wants 16 kHz mono wav. Keep the intermediate next to the output
 # (same filesystem) and clean it up on exit.
 WAV="$(mktemp -t transcribe_XXXX).wav"
-trap 'rm -f "$WAV"' EXIT
+trap 'rm -f "$WAV" "${WAV%.wav}"' EXIT
 ffmpeg -y -loglevel error -i "$AUDIO" -ar 16000 -ac 1 "$WAV"
 
 # SILENCE GATE — a near-silent track makes Whisper hallucinate training-data

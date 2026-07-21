@@ -9,10 +9,11 @@ Whole-team narrative. Loop `person_range` over every entry in
 `config/people.yaml::people` whose `canonical` is in the core team (Tier-0
 ICs — those with a `role` field set, e.g. SDE1/SDE2/SDE3). For each person:
 
-1. Run `derive/person_profile.py --name <canonical> --since X --until Y` and
-   capture JSON.
-2. Run `derive/ask_engine.py person --name <canonical> --since X --until Y`
-   for cluster material.
+1. Run the person_range bundle call (the ONLY script call per person):
+   `derive/person_v4_manifest.py --name <canonical> --since X --until Y
+   --bundle-dir /tmp` — writes `/tmp/<canonical>_{manifest,v3,deep}.json`.
+2. Follow `person-range.md`'s render flow from those on-disk files (manifest
+   = selection authority; v3/deep for phrasing fields + citation quotes).
 3. Render a per-person section using the same person_range template
    (TL;DR + Signals + Confirmed + Data silent on + Novel + Gaps +
    Interventions + Detail) — but trimmed: TL;DR + Signals + 1-paragraph
@@ -21,9 +22,12 @@ ICs — those with a `role` field set, e.g. SDE1/SDE2/SDE3). For each person:
 ## Parallel fan-out (speed — REQUIRED for ≥3 people)
 
 Do NOT run the per-person loop sequentially in the main thread. Fan out one
-subagent per person, 3–4 concurrently (matches the slack-backfill concurrency
-lesson: ramp only if the first batch succeeds). Each subagent prompt must be
-self-contained:
+subagent per person — ALL people in ONE message (a single batch of concurrent
+Agent calls), no ramp-up. The old 3–4-at-a-time cap was borrowed from the
+slack-backfill lesson, but that limit protects the Slack **API**; these
+subagents only read local sqlite (events.db is fine with many concurrent
+readers) and run local scripts. Full-width fan-out makes team_range wall-clock
+≈ one person's time. Each subagent prompt must be self-contained:
 
 - Tell it to Read `.claude/ask/person-range.md`, `.claude/ask/narrative-style.md`,
   and `.claude/ask/person-template.md` first.

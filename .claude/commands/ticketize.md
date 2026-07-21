@@ -70,11 +70,15 @@ It already emits, per roster report: window jira (assignee-resolved), window
 github (PRs/commits), confluence, current board state, Slack authored in window,
 and open @-asks over 7d. That is the full raw surface — read it, don't re-query.
 
-**Resolve the on-call (config-driven, same source as `/standup` §6).** Read
-`work-context/config/oncall.yaml`, query Opsgenie for the current on-call, map the
-email → roster `canonical`. The on-call already carries a **standing 5-SP placeholder
-ticket** that absorbs their ops/triage/CMR load — so their work is pre-tracked. Hold
-the on-call canonical for the §1c suppression.
+**Resolve the on-call from the gather output — do NOT re-query Opsgenie.** The
+gather you just ran already emits an `# ONCALL` block with the current on-call
+mapped to roster `canonical` (same config-driven source as `/standup` §6 —
+querying Opsgenie again here was a duplicate HTTP round-trip, removed 2026-07-18).
+Only if that block shows a `⚠️ opsgenie lookup failed` warning, fall back to the
+manual path: read `work-context/config/oncall.yaml`, query Opsgenie, map email →
+canonical. The on-call carries a **standing 5-SP placeholder ticket** that absorbs
+their ops/triage/CMR load — so their work is pre-tracked. Hold the on-call
+canonical for the §1c suppression.
 
 ### 1b. Detect ticketable gaps (judgement — this is the model's job)
 Scan the gather output for work that has **no Jira ticket**. Four signal classes
@@ -94,6 +98,18 @@ Scan the gather output for work that has **no Jira ticket**. Four signal classes
   Before proposing one, cross-check the on-call member's `ON-CALL OPS` block (same thread
   `link=`) — if the thread is an on-call incident there, it's covered by the standing
   on-call ticket (§1c), so DROP it even if the participant isn't the on-call assignee.
+
+**A2. Untracked work spoken in a recorded meeting.**
+- When the gather emits a `# STANDUP CALL` block (meeting-intelligence pipeline; absent
+  until the owner records meetings), its `UNTRACKED WORK MENTIONS` rows are first-class
+  class-A/B candidates: work someone described doing (→ class A) or committed to
+  (→ class B) in a call, with no ticket reference in the transcript.
+- Evidence for the approval card = the transcript quote + meeting subject + `[mm:ss]`
+  offset (there is no Slack permalink). The evidence AUTHOR is the attributed speaker —
+  `(unattributed)` rows are proposed WITHOUT an assignee guess, per the attribution rule.
+- Apply the same §1c dedup pass as every other candidate; if it survives to a created
+  ticket OR is ruled out, `python3 work-context/derive/meetings/signals.py resolve <id>`
+  so the row stops resurfacing in future gathers.
 
 **B. Future ask / commitment, no ticket.**
 - A Slack message directed at the member (`<@their_id>` or subteam ping) asking them to
@@ -188,6 +204,9 @@ For each surviving gap, rule it out if ANY holds:
   and by the 3–4 strongest keywords from the gap:
   - `mcp__plugin_atlassian_atlassian__searchJiraIssuesUsingJql` with a `summary ~`
     / `text ~` JQL, scoped `project = EX`.
+  - **Batch these (speed):** the searches are independent — issue the JQL calls for
+    ALL surviving gaps (and any per-CMR `issuelinks` reads from §1b-C) as parallel
+    tool blocks, several per message. Never one search per turn.
   - If a plausible match exists, DROP the candidate (note it as "already: EX-NNNN").
 - It is ops noise already covered by a CMR (TB-diff/rectification threads → CMRs exist).
 
@@ -404,9 +423,10 @@ Owner-invoked: `/ticketize apply <date>`.
    owner-ask re-pointed from the owner to a dev), that override wins over the candidate's
    `assignee`.
 5. **Discover required fields first** (don't hardcode IDs — projects differ and this
-   file is org-generic). Call `getJiraIssueTypeMetaWithFields` for the project + the
-   candidate's issue type and honor every `required: true` field. Common gotchas seen
-   in practice:
+   file is org-generic). Call `getJiraIssueTypeMetaWithFields` ONCE per DISTINCT
+   project + issue type across the approved batch (usually 1-2 calls total), NOT per
+   candidate — the metadata is identical for candidates sharing a type. Honor every
+   `required: true` field. Common gotchas seen in practice:
    - a **mandatory parent Epic** on Bugs/Tasks → set `parent` to the candidate `epic`;
      if `epic` is blank/guess, use the **Tech-Misc fallback epic `EX-2882`** (never
      block, never invent a feature epic).
@@ -430,24 +450,11 @@ Owner-invoked: `/ticketize apply <date>`.
    - **Sprint**: for `placement: active-sprint`, set `customfield_10010` = the active sprint
      id from §6 (via `additional_fields`). For `placement: backlog`, OMIT the sprint field.
    - description = the candidate's `desc` block verbatim if present (the maker already
-     authored the dev-facing spec); otherwise synthesize one. NEVER use the maker `why`
-     as the body (it's owner-facing rationale). Either way the body is a complete,
-     self-contained spec a dev can pick up cold, in markdown (`contentFormat: "markdown"`),
-     and **ADHD-friendly — ALWAYS** (scannable structure, zero data/link loss):
-       - **TL;DR:** one line first — the bottom line, what must happen — before any heading.
-       - **Context** — 1–3 short lines: what this is and why, in product/engineering terms
-         (no "you", no owner name, no detection/standup language).
-       - **Requirements** — a `- [ ]` checkbox list, one action per line. Pull the exact
-         action items from the evidence (Slack ask, PR, or CMR). Note anything already in
-         flight so the dev verifies-and-ticks rather than redoes it.
-       - **References** — every supporting link: the originating **Slack thread
-         permalink(s)**, PR/commit URLs, CMR keys, and any doc/tracker links named in the
-         evidence. Devs must reach the source without asking — drop NOTHING to be brief.
-       - **Acceptance criteria** — bullet list, the observable done-state.
-     One idea per line; blank line between sections. End with a one-line provenance footer:
-     `Auto-proposed by /ticketize on <date> (<source>); parent <epic> — reattach to the
-     right epic + add story points at planning.` Resolve `<@U…>`/`<!subteam^…>` mentions
-     into plain names where it aids the dev; keep raw Slack URLs intact so they stay clickable.
+     authored the dev-facing spec); otherwise synthesize one **per §1e's desc format
+     exactly** (TL;DR-first / Context / Requirements checkboxes / References with every
+     link lossless / Acceptance criteria / provenance footer / mentions resolved, raw
+     Slack URLs intact — the full spec lives ONCE, in §1e). NEVER use the maker `why`
+     as the body (it's owner-facing rationale). `contentFormat: "markdown"`.
    - Do NOT set story points — devs add at planning.
    - **Class C (`cmr-no-ticket`)**: after create, link the new issue to each `links_cmr`
      key. Discover the link type first (`getIssueLinkTypes`) and use the neutral

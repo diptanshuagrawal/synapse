@@ -59,11 +59,15 @@ If `OUT_PATH` unset, set it to `/tmp/validate_${N}.txt` where `N` = the count ab
     --out "$OUT_PATH"
 ```
 
-The wrapper prints to stdout AND writes the report. Capture stdout in full — every printed subject carries a clickable URL (slack/jira/confluence/github).
+The wrapper prints to stdout AND writes the identical report to `$OUT_PATH` —
+do NOT ingest it twice. Work from the captured stdout (every printed subject
+carries a clickable URL); do NOT Read `$OUT_PATH` afterwards — the file exists
+for the owner to open later, and re-reading it doubles a 3-50KB report in
+context for nothing.
 
 ## Phase 3 — Interpret + summarize
 
-After the wrapper completes, surface a one-screen verdict. Read `OUT_PATH` and extract:
+From the captured stdout, surface a one-screen verdict — extract:
 
 1. **Intra-source coherence** (section 1):
    - Healthy: 0.20 ≤ mean ≤ 0.55 per source.

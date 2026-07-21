@@ -15,8 +15,10 @@ Triggered by `/rollup` when `derive/manual-rollup.sh dump` detects unmapped epic
 
 ## Procedure
 
-1. Read the rules.md first — confirm the verdict schema and slug constraints.
-2. Read the pending_slug_creation.json. Each entry has `epic_key`, `epic_title`, `epic_body_snippet`, and a `children` list of recent child tickets (title + body snippet).
+1. Read the rules.md AND the pending_slug_creation.json in ONE parallel Read
+   block (independent files — never two turns). rules.md confirms the verdict
+   schema + slug constraints; each pending entry has `epic_key`, `epic_title`,
+   `epic_body_snippet`, and a `children` list of recent child tickets.
 3. For each epic, synthesise:
    - `slug`: kebab-case, 2-5 tokens, drawn from the **dominant child-ticket theme** (not the epic title alone). Never `epic-<key>`.
    - `name`: ~60 char human-readable label.
@@ -41,13 +43,8 @@ Write the complete verdict array to:
 ]
 ```
 
-## Apply
+## Apply + resume (ONE chained call)
 
 ```bash
-cd $HOME/context/work-context && derive/manual-rollup.sh apply-slugs
-```
-
-Then resume rollup:
-```bash
-cd $HOME/context/work-context && derive/manual-rollup.sh dump
+cd $HOME/context/work-context && derive/manual-rollup.sh apply-slugs && derive/manual-rollup.sh dump
 ```

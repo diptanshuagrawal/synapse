@@ -85,23 +85,46 @@ says "use your judgment"). A short clarifying round beats a confidently-wrong pl
      schedule into genuinely free days; if there's no spare capacity, still return the
      top candidates to pull first, each marked `fit:"if room frees"`.
 
-3. **Write Plan A (as-specified)** to `work-context/derived/sprint-plan.json`,
-   matching the dump's `_output_schema`:
+3. **Write ONE compact spec, not the cell grids.** Do NOT hand-type the
+   `cells` arrays — that's ~90% mechanical output and the old slow path. Write
+   `work-context/derived/sprint-plan-spec.json`:
    ```
    {
-     "_generated": "<today> (as-specified)",
-     "people":  [{ "name", "cells": [{ "date", "kind", "label" }] }],   // one cell per day in `days` order
-     "backlogPicks": [{ "key", "title", "sp", "priority", "score", "category", "suggestedAssignee", "fit", "reason" }],
-     "signals": [{ "level": "danger|warn|ok|info", "text" }],           // text may contain light <b> HTML
-     "rationale": "2-5 sentences on the key calls + how comments/spillover/backlog were applied"
+     "A": {
+       "assignments": {
+         "<person name or canonical>": [
+           { "from": "YYYY-MM-DD", "to": "YYYY-MM-DD", "label": "≤24 chars" },
+           { "from": "…", "to": "…", "label": "…", "oncall": true }   // only for comment-driven on-call work
+         ]
+       },
+       "backlogPicks": [{ "key", "title", "sp", "priority", "score", "category", "suggestedAssignee", "fit", "reason" }],
+       "signals": [{ "level": "danger|warn|ok|info", "text" }],       // text may contain light <b> HTML
+       "rationale": "2-5 sentences on the key calls + how comments/spillover/backlog were applied"
+     },
+     "B": { same shape }
    }
    ```
-   `cells[].kind` ∈ `work|leave|oncall|wfh|holiday|weekend|idle`; `label` is what they
-   work on for `work`/shared-`oncall` cells (≤24 chars), else `""`.
+   Spans are date-inclusive and CLIP automatically: leave/holiday/weekend days
+   inside a span are skipped by the expander (so "first week on X" is one span,
+   not five per-day entries). A span only lands on an `O` day when it carries
+   `"oncall": true`. Overlaps resolve to the later span (with a warning) — avoid
+   them. People with no assignments still render (their available days = idle).
 
-4. **Build Plan B (manager rebalance)** and write it to
-   `work-context/derived/sprint-plan-brain.json` (same schema). Here you act as the
-   EM, not a transcriber:
+   Then expand + materialize BOTH plan files in one call:
+   ```bash
+   cd work-context && .venv/bin/python derive/sprint_expand.py
+   ```
+   It writes Plan A → `derived/sprint-plan.json` and Plan B →
+   `derived/sprint-plan-brain.json` in the page's exact `_output_schema`
+   (`cells[].kind` ∈ `work|leave|oncall|wfh|holiday|weekend|idle`, one cell per
+   day in `days` order, labels ≤24 chars) and prints per-person work/idle
+   counts + warnings. **Read that summary**: sanity-check work-day counts
+   against each person's `net` capacity, and resolve every warning (fix the
+   spec, re-run) before telling the owner to load. Warnings are the expander
+   telling you a span didn't land where you thought.
+
+4. **Plan B (manager rebalance)** is the `"B"` key of the same spec. Here you
+   act as the EM, not a transcriber:
    - **Rebalance load.** If one person is execution-overloaded (e.g. on 3 initiatives)
      or one reviewer is a bottleneck (reviewing most of the work), move work/reviews to
      even it out — respecting role/tier (SDE1/2/3 from `people`).
@@ -122,6 +145,8 @@ says "use your judgment"). A short clarifying round beats a confidently-wrong pl
    (as-specified + your rebalance, side by side).
 
 ## Notes
-- Keep `cells` aligned to `days` order, one per day, for every person in `people`.
-- Mirror the engine's status codes exactly; the page colors cells by `kind`.
-- This is read-dump → write-plan only. Don't touch the engine, server, or page.
+- Cell alignment (`days` order, one per day, every person) and status-code
+  mirroring are the EXPANDER's job now — never hand-edit the two plan JSONs;
+  fix the spec and re-run `derive/sprint_expand.py`.
+- This is read-dump → write-spec → expand only. Don't touch the engine, server,
+  or page.

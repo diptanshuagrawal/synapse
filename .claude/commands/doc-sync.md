@@ -42,7 +42,8 @@ First classify the input:
 
 **Resolver (concept → candidate docs):**
 
-1. Search Confluence two ways and pool the hits:
+1. Search Confluence two ways IN ONE PARALLEL TOOL BLOCK (independent queries —
+   never two turns) and pool the hits:
    - `searchConfluenceUsingCql` `title ~ "<x>" AND type = page`
    - `searchConfluenceUsingCql` `text ~ "<x>" AND type = page ORDER BY lastmodified DESC`
 2. Optionally corroborate with the events pipeline — `ask_engine.py search --query "<x>"`

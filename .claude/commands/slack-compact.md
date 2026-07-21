@@ -37,9 +37,16 @@ Output JSON contains `{"dumped": N, "path": "..."}`. If `dumped == 0`, print don
 
 ## Phase 2 — Read pending threads
 
+Check the size FIRST — never `cat` the whole file blind (a 365-day dump floods
+context before the batching rule below can help):
+
 ```bash
-cat state/slack_compact_pending.json
+python3 -c "import json;d=json.load(open('state/slack_compact_pending.json'));print(len(d),'threads')"
 ```
+
+≤20 threads → read the whole file. More → Read it in ~20-thread slices from the
+start (offset/limit or a python slice dump per batch), classifying + writing
+verdicts per slice before reading the next.
 
 File is a JSON list of thread objects:
 
@@ -66,7 +73,7 @@ File is a JSON list of thread objects:
 ]
 ```
 
-If too large to fit in chat context, **process in batches of ~20 threads**. Read first 20 → produce verdicts → write to verdicts.json → loop.
+(Batching mechanics per Phase 2 above: slice reads of ~20 threads → verdicts → write → next slice.)
 
 ## Phase 3 — Classify each thread
 

@@ -73,6 +73,11 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   rm -rf "$LOCK"; mkdir "$LOCK" || exit 0
 fi
 trap 'rm -rf "$LOCK"' EXIT
+# A killed sweep must still drop the lock. An untrapped SIGTERM/SIGINT kills the
+# shell WITHOUT firing the EXIT trap → stale lock blocks the next sweep until the
+# 45-min self-expiry. Convert the signal into a normal exit so EXIT cleans up.
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 # --- resolve a python that can import yaml (mirrors refresh-skeletons fix) --
 PY=""

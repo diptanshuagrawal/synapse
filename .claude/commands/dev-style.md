@@ -28,26 +28,16 @@ If invoked with `help`, `-h`, or `--help` as the argument: print this Usage bloc
 
 If `$ARGUMENTS` is empty: print the top-10 leaderboard by `threads_touched` and stop.
 
-## Phase 1 — Setup + report freshness
+## Phase 1+2 — rebuild + show in ONE call
+
+The rebuild is cheap (a few seconds at ~30k-subject corpus scale) and always safe
+to rerun — so do NOT spend tool round-trips on a freshness check (stat + sqlite
+probe cost more than the rebuild they'd skip). Chain both steps unconditionally:
 
 ```bash
-cd $HOME/context/work-context
-```
-
-Check `state/actor_behavior_report.json` exists. If missing OR older than the most recent `topic_brief.computed_at`, rebuild:
-
-```bash
-.venv/bin/python derive/actor_behavior.py report
-```
-
-The rebuild is cheap (a few seconds at ~30k-subject corpus scale). Always safe to rerun.
-
-## Phase 2 — Resolve person
-
-Run substring match via the show subcommand:
-
-```bash
-.venv/bin/python derive/actor_behavior.py show --person "$ARGUMENTS"
+cd $HOME/context/work-context && \
+  .venv/bin/python derive/actor_behavior.py report && \
+  .venv/bin/python derive/actor_behavior.py show --person "$ARGUMENTS"
 ```
 
 The script:

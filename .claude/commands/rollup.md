@@ -60,6 +60,10 @@ For each subject, triage signal strength first:
   gh pr diff <pr-num> --repo <owner/repo>
   ```
   Subject format `<owner/repo>#<num>` (e.g. `gh pr diff 587 --repo example-org/service-a`). Read enough of the diff to identify touched modules/paths, then classify.
+  **Batch the fetches (speed):** collect ALL thin-PR subjects first, then fetch
+  several diffs per tool call — parallel Bash blocks or one chained command
+  (`gh pr diff A --repo R1 | head -150; gh pr diff B --repo R2 | head -150; …`).
+  Never one diff per turn.
 - Sync/conflict-resolve PRs (title literally "sync" / "merge main" / similar): do NOT fetch diff. Use `domains: [], confidence: 0.80` per rules.md.
 
 After triage, produce one verdict per subject:
