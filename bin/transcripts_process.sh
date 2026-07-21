@@ -89,7 +89,18 @@ done
 NOW=$(date +%s)
 processed=0 failed=0 skipped=0
 
+# --- PHASE 1: build a PRIORITY QUEUE (order, not parallelism) --------------
+# Blind glob (alphabetical) order once let a single 57-min recording sit at the
+# front and block six short meetings behind it for 30+ min. whisper is GPU-bound
+# so we still transcribe ONE at a time — the win is the ORDER we drain in:
+#   STARRED first  → owner-pinned meetings never wait.
+#   then SHORTEST first (duration asc) → many small meetings clear in minutes;
+#        the one giant file goes LAST instead of blocking everything.
+#   newest-first as a tiebreak → recent meetings usually matter more.
+# Freshness + speaker-half skips happen HERE so they don't inflate the backlog
+# count that drives model tiering below.
 shopt -s nullglob nocaseglob
+_queue_keys=""   # one sortable line per item: <star_rank>\t<dur>\t<neg_mtime>\t<path>
 for audio in "$INBOX"/*.{m4a,wav,mp3,mp4,aac,aiff,webm,ogg,flac}; do
   name="$(basename "$audio")"
   stem="${name%.*}"
@@ -102,6 +113,67 @@ for audio in "$INBOX"/*.{m4a,wav,mp3,mp4,aac,aiff,webm,ogg,flac}; do
   if [ $(( NOW - mtime )) -lt 60 ]; then
     echo "SKIP (too fresh): $name"; skipped=$((skipped+1)); continue
   fi
+
+  # Duration (seconds) is the ordering key. ffprobe is authoritative; if it
+  # can't read the container, estimate from size (~16 KB/s for compressed
+  # meeting audio) so a probe-less file still sorts roughly right.
+  dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$audio" 2>/dev/null | cut -d. -f1)
+  if ! [ "${dur:-}" -ge 0 ] 2>/dev/null; then
+    bytes=$(stat -f %z "$audio" 2>/dev/null || echo 0); dur=$(( bytes / 16000 ))
+  fi
+
+  # Starred? Mirror meet_retention._meeting_stem: id = <IST-date-of-mtime>-<slug>,
+  # star sidecar = management/meetings/<id>.star (the /api/star pin).
+  slug=$(echo "$stem" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')
+  [ -n "$slug" ] || slug="meeting"
+  mid="$(TZ=Asia/Kolkata date -r "$mtime" +%Y-%m-%d)-$slug"
+  star_rank=1
+  [ -f "$REPO/management/meetings/$mid.star" ] && star_rank=0
+
+  _queue_keys+="$star_rank	$dur	$((-mtime))	$audio
+"
+done
+
+# star_rank asc (0=starred first), dur asc (shortest first), neg_mtime asc (newest first).
+QUEUE=()
+while IFS=$'\t' read -r _sr _du _nm _path; do
+  [ -n "$_path" ] && QUEUE+=("$_path")
+done < <(printf '%s' "$_queue_keys" | sort -t$'\t' -k1,1n -k2,2n -k3,3n)
+qcount=${#QUEUE[@]}
+
+# --- catch-up model tiering ------------------------------------------------
+# Backlog of 1 (single fresh meeting) → large-v3, the owner's 2026-07-18 A/B
+# pick (best accuracy, quality matters most here). Backlog > threshold →
+# large-v3-turbo (~4-6x faster) so the whole queue — even a loop-guard -mc 0
+# retry — drains fast. All three knobs are env-overridable; an explicit
+# WHISPER_MODEL from the caller (e.g. Steno's Transcribe button) wins outright.
+THRESH="${TURBO_BACKLOG_THRESHOLD:-1}"
+MODEL_QUALITY="${WHISPER_MODEL_QUALITY:-$HOME/.whisper-models/ggml-large-v3.bin}"
+MODEL_TURBO="${WHISPER_MODEL_TURBO:-$HOME/.whisper-models/ggml-large-v3-turbo.bin}"
+if [ -n "${WHISPER_MODEL:-}" ]; then
+  _model_why="caller override"
+elif [ "$qcount" -gt "$THRESH" ]; then
+  export WHISPER_MODEL="$MODEL_TURBO"; _model_why="turbo (backlog $qcount > $THRESH)"
+else
+  export WHISPER_MODEL="$MODEL_QUALITY"; _model_why="quality (backlog $qcount <= $THRESH)"
+fi
+
+echo "QUEUE: $qcount file(s), model=$(basename "${WHISPER_MODEL:-large-v3}") [$_model_why]"
+_i=0; for _q in ${QUEUE[@]+"${QUEUE[@]}"}; do _i=$((_i+1)); echo "  $_i. $(basename "$_q")"; done
+
+# Dry-run: print the plan (order + model) and stop, so "why is X still pending"
+# is answerable without transcribing anything.
+if [ "${TRANSCRIPTS_DRY_RUN:-}" = "1" ]; then
+  echo "DRY RUN — not transcribing"; exit 0
+fi
+
+# --- PHASE 2: drain the queue in priority order ----------------------------
+# ${arr[@]+…} guard: an empty array under `set -u` is an unbound-var error on
+# macOS bash 3.2 — an empty inbox must be a clean no-op, not a crash.
+for audio in ${QUEUE[@]+"${QUEUE[@]}"}; do
+  name="$(basename "$audio")"
+  stem="${name%.*}"
+  mtime=$(stat -f %m "$audio")
 
   slug=$(echo "$stem" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')
   [ -n "$slug" ] || slug="meeting"
