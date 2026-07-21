@@ -65,13 +65,14 @@ while true; do
   grep -Eq '^\s*auto_record:\s*true' "$WC/config/sources.yaml" 2>/dev/null || continue
 
   inuse="$("$MW" 2>/dev/null | grep -v 'meet-record-capture' | grep -E "$APPS" | head -3)"
+  NOW=$(date +%s)   # set for EVERY path — the not-recording nudge blocks read $NOW too;
+                    # under `set -u` an unset $NOW there crash-looped the daemon (no nudges).
 
   if is_recording; then
     oncnt=0
     [ -f "$AUTOF" ] || continue          # manual recording — hands off
     read -r auto_uid auto_end < "$AUTOF"
     if [ -n "$inuse" ]; then offcnt=0; else offcnt=$((offcnt+1)); fi
-    NOW=$(date +%s)
     started=$(cut -d' ' -f3 "$PIDF")
     voice_ts=$(stat -f %m "$CAP/voice_active" 2>/dev/null || echo "$started")
     quiet=$(( NOW - voice_ts ))
