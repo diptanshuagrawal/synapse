@@ -104,12 +104,29 @@ Category definitions (owner-calibrated 2026-07-17 — follow these, not intuitio
 - ATTRIBUTION HONESTY: name a speaker only when the transcript supports it;
   otherwise `(unattributed)`. Never invent names, reporters, or owners
   (same rule as ticketize evidence-author-must-match).
-- SPEAKER STREAMS: dual-stream transcripts prefix lines `Me:` (the owner's
-  mic) and `Them:` (everyone else) — ground truth, trust it over inference.
-  `Me:` IS the owner. Within `Them:` infer individual names per the rules
-  above. CAVEAT: if the owner was on speakers, the mic hears the remote side
-  too — a `Me:` line that duplicates an adjacent `Them:` line is the echo,
+- SPEAKER STREAMS: dual-stream (CALL) transcripts prefix lines `Me:` (the
+  owner's mic) and `Them:` (everyone else) — ground truth, trust it over
+  inference. `Me:` IS the owner. Within `Them:` infer individual names per the
+  rules above. CAVEAT: if the owner was on speakers, the mic hears the remote
+  side too — a `Me:` line that duplicates an adjacent `Them:` line is the echo,
   not the owner speaking; prefer the `Them:` copy.
+- SPEAKER N (in-person, diarized): meetings captured on ONE room mic are
+  diarized — lines are prefixed `Speaker 1:` / `Speaker 2:` / … These are
+  DISTINCT VOICES, not names, and the numbering is arbitrary per meeting
+  (Speaker 1 is just whoever spoke first). `Me:` never appears here — the owner
+  is one of the Speaker N. Attribute a Speaker to a real person ONLY with
+  transcript support: the `.people` participant set is the candidate pool, and
+  direct address ("hey Alex") / self-introduction / work uniquely matching one
+  person's events.db activity is the evidence. Never hard-map Speaker N → a name
+  without support — leave `(unattributed)` (same honesty rule as above). Consistency
+  helps: once Speaker 2 is confidently a person, treat all their lines as theirs.
+- SPEAKER IDENTITY SIDECAR: if `transcripts/archive/*/<stem>.speakers.json` exists,
+  any entry with a non-null `name` (or `handle`) is an OWNER-CONFIRMED identity —
+  that `Speaker N` (the entry's `display`) IS that person, GROUND TRUTH (same
+  status as Me:/Them:); use the name throughout and don't hedge it. Entries with
+  only an `auto` voice-match and NO confirmed name are a hint, not truth — treat
+  them like any other inference (needs transcript support). Confirmed names here
+  beat both diarization numbering and your own inference.
 - OFF-CALENDAR TITLES (`slack-huddle` / `teams-call` / `adhoc` slugs): infer
   the counterpart(s) from the transcript — direct address ("hey Alex"),
   self-introduction, or work uniquely matching one person's events.db

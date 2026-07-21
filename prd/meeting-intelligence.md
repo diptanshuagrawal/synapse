@@ -207,7 +207,19 @@ RCA template asks for (detection time, decisions, action items with owners).
 - **P4 — Signals:** said-vs-done, commitment tracker, owner-asks feed, ticketize feed,
   standup-gather integration.
 - **P5 — Sharing + analytics:** relay-bot share flow with redaction gate, decision log,
-  meeting hygiene lane on the dashboard, whisperX diarization upgrade.
+  meeting hygiene lane on the dashboard, diarization upgrade.
+  - **Diarization decision (2026-07-21):** implemented as a **pyannote-audio overlay**,
+    NOT a whisperX swap. whisper.cpp keeps doing the transcription (all its tuning:
+    silero VAD, vocab prompt, `-mc 0` loop recovery, silence gate); `diarize.py` runs
+    pyannote `speaker-diarization-3.1` on the mic wav for who-spoke-when, and
+    `merge_streams.py --single --diarize` maps each whisper segment onto the dominant
+    turn → `Speaker 1/2/…`. Rationale: whisperX would replace the tuned ASR and its
+    wav2vec2 alignment is English-only (bad for our Hinglish); pyannote is acoustic-only
+    (language-agnostic) and reuses whisper.cpp untouched. Only fires when the system-audio
+    ('them') stream is silent (= in-person, one room mic); CALLS keep ground-truth
+    Me:/Them:. Isolated torch venv (`~/.steno-diarize`), gated models side-loaded past the
+    Zscaler HF-CDN block (`bin/steno-diarize-setup.sh`), soft-dependency fallback. v1 =
+    anonymous Speaker N; name resolution stays synthesis-time (`.people` + direct address).
 
 ## Non-goals
 
@@ -225,7 +237,7 @@ RCA template asks for (detection time, decisions, action items with owners).
   but flag the pattern to the security channel once, for the inventory.)
 - **Diarization quality:** Whisper alone gives one stream. Mitigate: standup round-robin
   structure + name mentions + events.db cross-reference for attribution; confidence
-  threshold; whisperX in P5.
+  threshold; pyannote diarization overlay in P5 (single-mic in-person case).
 - **TCC/sandbox friction:** recorder needs Screen Recording permission; calendar needs
   Calendar access; watcher runs as user launchd agent (established pattern). Sandboxed
   app containers are avoided entirely — capture writes straight to the inbox.
