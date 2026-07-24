@@ -27,6 +27,37 @@ from ingest import common  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
+# Git-env isolation — strip inherited GIT_* so a test's `git -C <tmp_repo>`
+# subprocess can never escape into the real repository.
+# ---------------------------------------------------------------------------
+
+# A git pre-push / pre-commit hook runs its command (bin/run-tests.sh -> pytest)
+# with GIT_DIR (and friends) exported. Those env vars OVERRIDE `git -C <path>`,
+# so any test that shells out to git — the throwaway repos in
+# test_housekeeping_apply, and housekeeping_apply's own `git -C ROOT worktree
+# remove --force` / `ls-files` — would silently operate on the REAL repo instead
+# of its tmp_path sandbox. That once committed a stray "seed" commit onto HEAD
+# mid-push and could `worktree remove --force` the live tree. Unset them for
+# EVERY test (autouse) so git always honours `-C`/cwd. Nothing in this suite
+# legitimately needs an inherited git env — every test builds its own repo.
+_GIT_ENV_LEAK_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_git_env(monkeypatch):
+    for var in _GIT_ENV_LEAK_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
+# ---------------------------------------------------------------------------
 # Filesystem isolation — redirect every persistent path at tmp_path.
 # ---------------------------------------------------------------------------
 
