@@ -63,11 +63,16 @@ items are all already resolved. This keeps the digest cheap.
 ```
 
 The renderer groups the remaining OPEN comments per developer (most-open first) with
-comment links. If nothing is open, it emits a clean "no pending reviews 🎉" line.
+comment links.
 
-Post the rendered message to the Slack target (`slack_send_message`, `<@slack_id>`
-mentions) — `slack.digest_channel_id` (the team channel) for `--target channel`,
-`slack.dm_user_id` for `--target dm`. Skip the post on `--dry-run` (print instead).
+**No drift → no post.** If nothing is open, do NOT post to Slack — report the clean state
+in the chat reply only. (Previously a "no pending reviews 🎉" line was posted every run;
+that celebratory line is no longer sent to the channel.)
+
+When there IS ≥1 open thread, post the rendered message to the Slack target
+(`slack_send_message`, `<@slack_id>` mentions) — `slack.digest_channel_id` (the team channel)
+for `--target channel`, `slack.dm_user_id` for `--target dm`. Skip the post on `--dry-run`
+(print instead).
 
 ## Phase 3 — Chat reply
 
