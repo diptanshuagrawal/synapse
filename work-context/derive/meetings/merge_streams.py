@@ -50,6 +50,11 @@ except Exception:
     def _correct(s: str) -> str:
         return s
 
+try:
+    from loop_dedup import LoopCollapser  # run as script: sibling on sys.path[0]
+except ImportError:
+    from derive.meetings.loop_dedup import LoopCollapser  # imported as package (pytest)
+
 
 def load(path: str, tag: str) -> list[dict]:
     # whisper-cli can emit invalid UTF-8 on noisy/garbled audio — decode
@@ -58,11 +63,14 @@ def load(path: str, tag: str) -> list[dict]:
     with open(path, encoding="utf-8", errors="replace") as f:
         data = json.load(f)
     out = []
+    collapser = LoopCollapser()  # collapse whisper loops in THIS stream's json
     for seg in data.get("transcription", []):
         text = (seg.get("text") or "").strip()
         if not text or HALLU_RE.search(text):
             continue
         text = _correct(text)
+        if not collapser.keep(text):
+            continue
         offs = seg.get("offsets") or {}
         out.append({
             "timestamps": seg.get("timestamps", {}),
@@ -115,20 +123,16 @@ def load_diarized(single_path: str, diar_path: str | None) -> list[dict]:
         return cluster_display.get(best, best)
 
     out: list[dict] = []
-    prev_text, run = None, 0
+    collapser = LoopCollapser()  # consecutive-dup + total-cap loop collapse
     for seg in data.get("transcription", []):
         text = (seg.get("text") or "").strip()
         if not text or HALLU_RE.search(text):
             continue
         text = _correct(text)
-        # Collapse >2 consecutive identical lines (whisper loop artifact) — the
-        # single-stream path doesn't get transcribe.sh's dedup on this rewrite.
-        if text == prev_text:
-            run += 1
-            if run >= 2:
-                continue
-        else:
-            prev_text, run = text, 0
+        # Collapse whisper loop artifacts (the single-stream path doesn't get
+        # transcribe.sh's awk dedup on this rewrite of the json).
+        if not collapser.keep(text):
+            continue
         offs = seg.get("offsets") or {}
         frm, to = int(offs.get("from", 0)), int(offs.get("to", 0))
         tag = tag_for(frm, to)

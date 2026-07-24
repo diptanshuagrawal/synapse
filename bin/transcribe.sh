@@ -105,8 +105,22 @@ _run_whisper ""
 # on BOTH keeps an empty transcript a clean 0/0.
 _tot=$(grep -cvE '^[[:space:]]*$' "$OUT.txt" 2>/dev/null || true); _tot=${_tot:-0}
 _uniq=$(grep -vE '^[[:space:]]*$' "$OUT.txt" 2>/dev/null | sort -u | wc -l | tr -d ' ' || true); _uniq=${_uniq:-0}
+# ABSOLUTE-REPEAT trigger (2026-07-24): the ratio test alone is not enough. A
+# real in-person Hinglish meeting decoded with ONE line repeated 148x + another
+# 78x buried in otherwise-varied speech kept overall uniqueness at 34.6% > 30%,
+# so the ratio test never fired and the loop shipped. A single non-trivial line
+# repeated dozens of times is ALWAYS a decoder loop regardless of overall ratio.
+# Count the max occurrences of any non-trivial line (>12 chars, so genuine short
+# filler like "Okay." never trips it) and force the retry past the threshold.
+_LOOP_MAX_REPEAT="${WHISPER_LOOP_MAX_REPEAT:-12}"
+_maxrep=$(awk '{ l=$0; gsub(/^[[:space:]]+|[[:space:]]+$/,"",l);
+                 if (length(l) > 12) { n=++c[l]; if (n>m) m=n } }
+             END { print m+0 }' "$OUT.txt" 2>/dev/null || true); _maxrep=${_maxrep:-0}
 if [ "$_tot" -gt 30 ] && [ "$(( _uniq * 100 / _tot ))" -lt 30 ]; then
   echo "transcribe: repetition loop (${_uniq}/${_tot} unique) — retrying with -mc 0" >&2
+  _run_whisper "-mc 0"
+elif [ "$_maxrep" -gt "$_LOOP_MAX_REPEAT" ]; then
+  echo "transcribe: repetition loop (a line repeats ${_maxrep}x > ${_LOOP_MAX_REPEAT}) — retrying with -mc 0" >&2
   _run_whisper "-mc 0"
 fi
 
