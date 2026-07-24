@@ -58,6 +58,11 @@ except Exception:  # correction is best-effort — never block ingest on it
     def _correct(s: str) -> str:
         return s
 
+try:
+    from loop_dedup import LoopCollapser  # run as script: sibling on sys.path[0]
+except ImportError:
+    from derive.meetings.loop_dedup import LoopCollapser  # imported as package (pytest)
+
 
 def _load_owner_email() -> str:
     import yaml
@@ -114,7 +119,7 @@ def _read_segments(whisper_json: Path) -> list[dict]:
     with open(whisper_json) as f:
         data = json.load(f)
     out = []
-    prev_text, run = None, 0
+    collapser = LoopCollapser()  # consecutive-dup + total-cap loop collapse
     for seg in data.get("transcription", []):
         text = (seg.get("text") or "").strip()
         if not text:
@@ -124,14 +129,11 @@ def _read_segments(whisper_json: Path) -> list[dict]:
         if HALLU_RE.search(text):
             continue
         text = _correct(text)  # fuzzy-fix rare names/jargon (garbled name → real teammate)
-        # Collapse whisper hallucination loops (same line x18 on quiet audio):
-        # allow at most 2 consecutive identical segments.
-        if text == prev_text:
-            run += 1
-            if run >= 2:
-                continue
-        else:
-            prev_text, run = text, 0
+        # Collapse whisper repetition loops (same line x18..x148 on looped audio)
+        # so events.db chunks never carry the loop — shared with merge_streams +
+        # transcribe.sh's .txt collapse.
+        if not collapser.keep(text):
+            continue
         offs = seg.get("offsets") or {}
         out.append(
             {

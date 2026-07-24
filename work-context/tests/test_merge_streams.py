@@ -40,6 +40,52 @@ def test_load_tags_filters_and_keeps_offsets(tmp_path):
     assert out[0]["offsets"] == {"from": 0, "to": 500}
 
 
+def test_load_collapses_consecutive_loop(tmp_path):
+    # Regression (2026-07-24): whisper repetition loops survived into the merged
+    # .json because load() had NO dedup — only the display .txt was collapsed.
+    # >2 consecutive identical lines must collapse to the first 2 here too.
+    p = tmp_path / "them.json"
+    p.write_text(json.dumps({"transcription": [
+        _seg("No, I am going to dump it.", i * 100, i * 100 + 90) for i in range(148)
+    ]}), encoding="utf-8")
+
+    out = merge_streams.load(str(p), "Them")
+
+    assert [s["text"] for s in out] == ["Them: No, I am going to dump it."] * 2
+
+
+def test_load_caps_alternating_loop(tmp_path):
+    # Alternating A/B/A/B loop never trips the consecutive guard — the total-cap
+    # (6 occurrences) is what bounds it. 8 of each → 6 of each survive.
+    p = tmp_path / "them.json"
+    segs = []
+    for i in range(8):
+        segs.append(_seg("No, I am going to dump it.", i * 200, i * 200 + 90))
+        segs.append(_seg("No need to update the clearing batch.", i * 200 + 100, i * 200 + 190))
+    p.write_text(json.dumps({"transcription": segs}), encoding="utf-8")
+
+    texts = [s["text"] for s in merge_streams.load(str(p), "Them")]
+
+    assert texts.count("Them: No, I am going to dump it.") == 6
+    assert texts.count("Them: No need to update the clearing batch.") == 6
+
+
+def test_diarized_caps_total_repeats(tmp_path):
+    # The single-mic diarized path caps total repeats too (previously only the
+    # consecutive guard ran, so an alternating loop leaked into the merged json).
+    whisper = tmp_path / "mic.json"
+    segs = []
+    for i in range(8):
+        segs.append(_seg("dump it", i * 200, i * 200 + 90))
+        segs.append(_seg("clearing", i * 200 + 100, i * 200 + 190))
+    whisper.write_text(json.dumps({"transcription": segs}), encoding="utf-8")
+
+    texts = [s["text"] for s in merge_streams.load_diarized(str(whisper), None)]
+
+    assert texts.count("dump it") == 6
+    assert texts.count("clearing") == 6
+
+
 def test_load_tolerates_invalid_utf8(tmp_path):
     # Regression: whisper can emit invalid UTF-8 on noisy audio. A strict decode
     # raised UnicodeDecodeError and dropped the entire meeting (fixed 2026-07-20).
