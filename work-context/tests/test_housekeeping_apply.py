@@ -66,6 +66,19 @@ def repo(tmp_path, monkeypatch):
     return r
 
 
+def test_git_env_isolated_from_real_repo():
+    # Regression: under a git pre-push hook, GIT_DIR (and friends) are exported
+    # and OVERRIDE `git -C <tmp_repo>`, so this suite's throwaway-repo commits and
+    # hka's own `git -C ROOT worktree remove --force` escaped into the REAL repo
+    # (once committing a stray "seed" onto HEAD mid-push). The autouse
+    # _isolate_git_env fixture in conftest must strip them for every test.
+    # Keep this list in sync with conftest._GIT_ENV_LEAK_VARS.
+    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+                "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR",
+                "GIT_NAMESPACE", "GIT_PREFIX"):
+        assert var not in os.environ, f"{var} leaked into the test env"
+
+
 def test_refuses_tracked_file(repo):
     ok, why = hka._safe_target(str(repo.tracked))
     assert not ok and "git-tracked" in why
