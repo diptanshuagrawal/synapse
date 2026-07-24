@@ -21,5 +21,13 @@ for f in $FILES; do
   if ! "$PYBIN" -m "$mod"; then echo "   FAIL: $mod"; fail=1; fi
 done
 
+# Shell-level regression tests (bin/test_*.sh). These guard the transcription
+# sweep, which is bash, not Python — self-skip when their toolchain is absent.
+for t in "$REPO"/bin/test_*.sh; do
+  [ -f "$t" ] || continue
+  echo "==> $(basename "$t")"
+  if ! bash "$t"; then echo "   FAIL: $(basename "$t")"; fail=1; fi
+done
+
 if [ "$fail" -ne 0 ]; then echo ""; echo "run-selftests: FAILED"; exit 1; fi
 echo ""; echo "run-selftests: PASS"
