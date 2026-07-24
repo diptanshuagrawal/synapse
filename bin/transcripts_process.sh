@@ -224,31 +224,40 @@ for audio in ${QUEUE[@]+"${QUEUE[@]}"}; do
   # each and merge with Me:/Them: speaker labels; else single-file path.
   me_wav="$INBOX/$stem.me.wav"; them_wav="$INBOX/$stem.them.wav"
   if [ -s "$me_wav" ] && [ -s "$them_wav" ]; then
-    if bash "$REPO/bin/transcribe.sh" "$me_wav" "$prefix.me" \
-       && bash "$REPO/bin/transcribe.sh" "$them_wav" "$prefix.them"; then
-      # IN-PERSON: nobody dialed in → the 'them' (system-audio) stream is silent,
-      # so whisper's silence gate emits an empty transcript. Me:/Them: then gives
-      # no separation (everyone is on the ONE mic) — diarize the mic instead
-      # (Speaker 1/2/…). A real CALL has speech on 'them' → keep ground-truth
-      # Me:/Them:. Diarization is a SOFT overlay: if the diarizer is unavailable
-      # the in-person branch falls back to the plain Me:/Them: merge (today).
-      if grep -q '"text"' "$prefix.them.json" 2>/dev/null; then
-        "$PY" "$WC/derive/meetings/merge_streams.py" \
-          --me "$prefix.me.json" --them "$prefix.them.json" --out "$prefix"; merge_rc=$?
-      elif bash "$REPO/bin/diarize.sh" "$me_wav" "$prefix.diar.json"; then
-        "$PY" "$WC/derive/meetings/merge_streams.py" \
-          --single "$prefix.me.json" --diarize "$prefix.diar.json" --out "$prefix"; merge_rc=$?
-      else
-        "$PY" "$WC/derive/meetings/merge_streams.py" \
-          --me "$prefix.me.json" --them "$prefix.them.json" --out "$prefix"; merge_rc=$?
-      fi
-      if [ "$merge_rc" -ne 0 ]; then
-        echo "FAIL (merge): $name — left in inbox"; failed=$((failed+1)); continue
-      fi
-      rm -f "$me_wav" "$them_wav"   # m4a remains the audio archive
-    else
-      echo "FAIL (dual-stream): $name — left in inbox"; failed=$((failed+1)); continue
+    # The 'me' (mic) stream is the meeting: if IT fails to transcribe there's no
+    # content to save, so that's the only hard gate. The 'them' (system-audio)
+    # stream is EXPECTED to be silent/empty for an in-person meeting (nobody
+    # dialed in) — its transcribe must NEVER discard the meeting. If it fails or
+    # returns empty for ANY reason, synthesize an empty them.json and fall through
+    # to the in-person path below. (Historically an empty 'them' returning
+    # non-zero triggered FAIL (dual-stream) and threw the whole meeting away.)
+    if ! bash "$REPO/bin/transcribe.sh" "$me_wav" "$prefix.me"; then
+      echo "FAIL (dual-stream, me): $name — left in inbox"; failed=$((failed+1)); continue
     fi
+    if ! bash "$REPO/bin/transcribe.sh" "$them_wav" "$prefix.them"; then
+      echo "WARN (them transcribe failed — treating as in-person): $name" >&2
+      : > "$prefix.them.txt"; printf '{"transcription":[]}' > "$prefix.them.json"
+    fi
+    # IN-PERSON: nobody dialed in → the 'them' (system-audio) stream is silent,
+    # so it carries an empty transcript. Me:/Them: then gives no separation
+    # (everyone is on the ONE mic) — diarize the mic instead (Speaker 1/2/…).
+    # A real CALL has speech on 'them' → keep ground-truth Me:/Them:. Diarization
+    # is a SOFT overlay: if the diarizer is unavailable the in-person branch
+    # falls back to the plain Me:/Them: merge (today).
+    if grep -q '"text"' "$prefix.them.json" 2>/dev/null; then
+      "$PY" "$WC/derive/meetings/merge_streams.py" \
+        --me "$prefix.me.json" --them "$prefix.them.json" --out "$prefix"; merge_rc=$?
+    elif bash "$REPO/bin/diarize.sh" "$me_wav" "$prefix.diar.json"; then
+      "$PY" "$WC/derive/meetings/merge_streams.py" \
+        --single "$prefix.me.json" --diarize "$prefix.diar.json" --out "$prefix"; merge_rc=$?
+    else
+      "$PY" "$WC/derive/meetings/merge_streams.py" \
+        --me "$prefix.me.json" --them "$prefix.them.json" --out "$prefix"; merge_rc=$?
+    fi
+    if [ "$merge_rc" -ne 0 ]; then
+      echo "FAIL (merge): $name — left in inbox"; failed=$((failed+1)); continue
+    fi
+    rm -f "$me_wav" "$them_wav"   # m4a remains the audio archive
   elif bash "$REPO/bin/transcribe.sh" "$audio" "$prefix"; then
     # Lone file (AirDropped phone recording / rescued mono) — always single-mic,
     # so diarize best-effort and relabel with Speaker N. If the diarizer is

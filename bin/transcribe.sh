@@ -33,12 +33,26 @@ ffmpeg -y -loglevel error -i "$AUDIO" -ar 16000 -ac 1 "$WAV"
 # with no remote party. Real speech peaks near 0 dB; an empty track maxes below
 # -40 dB. If there's no real audio, emit an empty transcript instead of
 # inventing one. (Runs per-stream, so it only nulls the silent side of a pair.)
+#
+# PURE silence is reported by ffmpeg as "max_volume: -inf dB" — the number regex
+# captures nothing, leaving MAXVOL empty. That empty case MUST be treated as
+# silent too (it's the most common in-person 'them' stream); the old gate fell
+# through to whisper on a dead track, which then tripped set -e downstream and
+# discarded the whole meeting. Empty / -inf / <-40 dB all → empty transcript,
+# exit 0. Never let a silent stream fail. (regex requires ≥1 digit so "-inf"
+# yields no capture → the -z branch, not a broken awk expression.)
 MAXVOL=$(ffmpeg -i "$WAV" -af volumedetect -f null /dev/null 2>&1 \
-  | sed -n 's/.*max_volume: \(-*[0-9.]*\) dB.*/\1/p')
-if [ -n "$MAXVOL" ] && awk "BEGIN{exit !($MAXVOL < -40)}"; then
+  | sed -n 's/.*max_volume: *\(-*[0-9][0-9.]*\) dB.*/\1/p') || true
+_silent=0
+if [ -z "$MAXVOL" ]; then
+  _silent=1                                    # -inf / unreadable → pure silence
+elif awk "BEGIN{exit !($MAXVOL < -40)}" 2>/dev/null; then
+  _silent=1                                    # measured, below the speech floor
+fi
+if [ "$_silent" = 1 ]; then
   : > "$OUT.txt"
   printf '{"transcription":[]}' > "$OUT.json"
-  echo "OK (silent track ${MAXVOL}dB, skipped): $OUT.json"
+  echo "OK (silent track ${MAXVOL:--inf}dB, skipped): $OUT.json"
   exit 0
 fi
 
@@ -84,8 +98,13 @@ _run_whisper ""
 # the whole hour of discussion lost). Detect a pathological low-unique ratio and
 # re-run with -mc 0: no context-carry breaks the loop (some vocab-carry lost, but
 # post-ASR correct.py recovers names). Normal files skip this and keep the boost.
+# Both counts MUST tolerate an empty/all-blank .txt: grep exits 1 when it matches
+# nothing, and with `set -o pipefail` a bare `_uniq=$(grep … | …)` propagates that
+# 1 to the assignment → `set -e` exit. That was the exact regression that made a
+# silent 'them' stream return non-zero and get the meeting discarded. `|| true`
+# on BOTH keeps an empty transcript a clean 0/0.
 _tot=$(grep -cvE '^[[:space:]]*$' "$OUT.txt" 2>/dev/null || true); _tot=${_tot:-0}
-_uniq=$(grep -vE '^[[:space:]]*$' "$OUT.txt" 2>/dev/null | sort -u | wc -l | tr -d ' '); _uniq=${_uniq:-0}
+_uniq=$(grep -vE '^[[:space:]]*$' "$OUT.txt" 2>/dev/null | sort -u | wc -l | tr -d ' ' || true); _uniq=${_uniq:-0}
 if [ "$_tot" -gt 30 ] && [ "$(( _uniq * 100 / _tot ))" -lt 30 ]; then
   echo "transcribe: repetition loop (${_uniq}/${_tot} unique) — retrying with -mc 0" >&2
   _run_whisper "-mc 0"
@@ -101,13 +120,13 @@ fi
 # Collapse hallucination loops: >2 consecutive identical lines are never real
 # speech ("Virtual transactions." x18) — keep the first two, drop the rest.
 awk 'prev==$0 {c++; if (c<2) print; next} {c=0; prev=$0; print}' "$OUT.txt" > "$OUT.txt.dedup" \
-  && mv "$OUT.txt.dedup" "$OUT.txt"
+  && mv "$OUT.txt.dedup" "$OUT.txt" || rm -f "$OUT.txt.dedup"
 
 # Safety net for loops the consecutive-collapse misses (alternating A/B/A/B, the
 # audit's failure mode): cap any identical line to 6 occurrences total. A decoder
 # loop repeats a line hundreds of times; genuine filler ("Okay.") rarely exceeds
 # this over a meeting. The -mc 0 retry above is the real fix; this is belt-and-braces.
-awk '{ if (++seen[$0] <= 6) print }' "$OUT.txt" > "$OUT.txt.cap" && mv "$OUT.txt.cap" "$OUT.txt"
+awk '{ if (++seen[$0] <= 6) print }' "$OUT.txt" > "$OUT.txt.cap" && mv "$OUT.txt.cap" "$OUT.txt" || rm -f "$OUT.txt.cap"
 
 # Drop known Whisper silence-hallucination lines that leak past the gate.
 # These YouTube/caption artifacts essentially never occur in a bank meeting;
