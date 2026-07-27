@@ -9,9 +9,18 @@
   2. **Decisions** — one line each. Omit the whole section if none.
   3. **Your action items** — the OWNER's to-dos first: `action (due)`, one line
      each. Then others' actions under a sub-line. Omit if none.
+- **NOTHING above the TL;DR.** The very first content line after the H1 is
+  `**TL;DR**`. Any caveat (low-fidelity transcript, unattributed speaker, partial
+  audio) is a SINGLE short italic line at the very END — never a preamble. The
+  reader must hit the outcome first, not disclaimers.
 - THEN `## Details` — the supporting discussion, category-specific sections
-  below, SKIPPABLE. Depth lives here so the top stays scannable. Never repeat a
-  core point down here.
+  below, SKIPPABLE. Depth lives here so the top stays scannable.
+- **SAY EACH THING ONCE — no duplication.** The TL;DR is the only summary.
+  Decisions / actions state specifics NOT already in the TL;DR. `## Details`
+  adds ONLY what the core didn't say — a number, a nuance, who-argued-what. If a
+  Details bullet restates the TL;DR or a Decision, DELETE it. A fact appearing
+  twice at different zoom levels is the #1 thing that makes a note feel like a
+  chore to read.
 - **DISTILL, don't transcribe.** Capture the POINT, not the back-and-forth. Cut
   filler, pleasantries, tangents, restated context. If a line doesn't change a
   decision, an action, or the reader's understanding — drop it. Fewer, sharper
