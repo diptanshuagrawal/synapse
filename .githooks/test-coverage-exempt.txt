@@ -67,4 +67,5 @@ work-context/derive/meetings/diarize_fetch_models.py
 work-context/derive/meetings/ingest_transcript.py
 work-context/derive/meetings/live_asr_client.py
 work-context/derive/meetings/live_stream_daemon.py
+work-context/derive/meetings/rename_meeting.py
 work-context/derive/meetings/signals.py

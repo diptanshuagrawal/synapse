@@ -1105,6 +1105,7 @@ function render(){
    ${(!detail.mom&&!detail.mom_queued)?`<button style="border:1px solid var(--line);background:var(--card);border-radius:9px;padding:5px 14px;font-size:13px;cursor:pointer;color:var(--muted)" onclick="mom()">MoM</button>`:''}
    ${(detail.note||detail.mom)?`<button style="border:1px solid var(--line);background:var(--card);border-radius:9px;padding:5px 14px;font-size:13px;cursor:pointer;color:var(--muted)" onclick="share()">Share (redact)</button>`:''}
    ${detail.note?`<button style="border:1px solid var(--line);background:var(--card);border-radius:9px;padding:5px 14px;font-size:13px;cursor:pointer;color:var(--accent)" onclick="regen()">↻ regenerate</button>`:''}
+   <button style="border:1px solid var(--line);background:var(--card);border-radius:9px;padding:5px 14px;font-size:13px;cursor:pointer;color:var(--ink)" onclick="renameMeeting()">✎ rename</button>
    <button style="border:1px solid var(--line);background:var(--card);border-radius:9px;padding:5px 14px;font-size:13px;cursor:pointer;color:#b91c1c" onclick="del()">delete</button></span></div>
  <div id="content">${
    tab==='note' ? (detail.note?`<div class="md">${md(detail.note)}</div>`
@@ -1195,6 +1196,15 @@ async function del(){
  const x=await (await fetch('/api/delete',{method:'POST',body:(segs||[sel]).join(',')})).json();
  if(x.ok){sel=null;detail=null;showLib();load()}
  else confirmModal('Delete failed','Something went wrong — the meeting was not removed.');
+}
+async function renameMeeting(){
+ if(!sel) return;
+ const cur=sel.slice(11).replace(/-\d+$/,'').replaceAll('-',' ');
+ const to=prompt('Rename this meeting to:', cur);
+ if(!to || !to.trim()) return;
+ const x=await (await fetch('/api/rename/'+encodeURIComponent(sel)+'?to='+encodeURIComponent(to.trim()),{method:'POST'})).json();
+ if(x.ok){ sel=x.new_mid||sel; detail=null; load(); if(sel) seg_(sel); }
+ else confirmModal('Rename failed', x.error||'Something went wrong — the meeting was not renamed.');
 }
 function mom(){
  fetch('/api/mom/'+sel,{method:'POST'}).then(()=>{tab='MoM';seg_(sel)});
@@ -1608,6 +1618,28 @@ class H(BaseHTTPRequestHandler):
                     _CACHE.pop("meetings", None)
                     ok = True
             self._json({"ok": ok})
+        elif p.startswith("/api/rename/"):
+            # Relabel a mislabeled meeting (e.g. an ad-hoc huddle stamped with a
+            # concurrent scheduled call). Renames files + re-ingests events.db
+            # under the new subject + renames the note, via rename_meeting.py.
+            from urllib.parse import parse_qs, urlparse
+            mid = re.sub(r"[^a-zA-Z0-9_-]", "", p.rsplit("/", 1)[1])
+            to = (parse_qs(urlparse(self.path).query).get("to", [""])[0] or "").strip()
+            ok, new_mid, err = False, None, None
+            if mid and to:
+                r = subprocess.run(
+                    [str(WC / ".venv" / "bin" / "python3") if (WC / ".venv" / "bin" / "python3").exists() else "python3",
+                     str(WC / "derive" / "meetings" / "rename_meeting.py"), "--mid", mid, "--to", to],
+                    capture_output=True, text=True, cwd=str(WC),
+                )
+                if r.returncode == 0:
+                    new_mid = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else None
+                    ok = True
+                    _CACHE.pop("meetings", None)
+                else:
+                    err = (r.stderr or r.stdout).strip().splitlines()[-1:] or ["rename failed"]
+                    err = err[0]
+            self._json({"ok": ok, "new_mid": new_mid, "error": err})
         elif p.startswith("/api/star/"):
             # Star = pin: a <mid>.star sidecar marks the meeting protected. The
             # audio-retention prune skips any meeting with this marker (never
