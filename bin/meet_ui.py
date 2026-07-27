@@ -180,6 +180,15 @@ def _meetings_rows(q: str = "") -> list[dict]:
         cat_f = NOTES_DIR / f"{stem}.cat"
         if cat_f.exists():
             s["cat"], s["cat_manual"] = cat_f.read_text().strip(), True
+        # Owner's manual title override (<stem>.title sidecar) — beats the note
+        # H1 and the slug. Display-only: doesn't touch files/subject/events.db, so
+        # it survives re-transcribe/regenerate. (Rename = change identity/slug;
+        # this = just fix what it's called.)
+        title_f = NOTES_DIR / f"{stem}.title"
+        if title_f.exists():
+            tt = title_f.read_text(errors="replace").strip()
+            if tt:
+                s["title_manual"] = tt[:80]
         if s["has_note"]:
             try:
                 head = (NOTES_DIR / f"{stem}.md").read_text(errors="replace").lstrip()
@@ -213,6 +222,8 @@ def _meetings_rows(q: str = "") -> list[dict]:
                 g["cat"] = s["cat"]
             if s.get("note_title") and "note_title" not in g:
                 g["note_title"] = s["note_title"]
+            if s.get("title_manual") and "title_manual" not in g:
+                g["title_manual"] = s["title_manual"]
         return g
 
     buckets: dict = {}
@@ -246,14 +257,14 @@ def _meetings_rows(q: str = "") -> list[dict]:
         segs = sorted(g["segs"], key=lambda s: (s["has_note"], s["size"]), reverse=True)
         ordered = sorted(g["segs"], key=lambda s: s["id"])
         if stem_hits is not None:
-            title_all = (g.get("note_title") or "") + " " + g["title"]
+            title_all = (g.get("title_manual") or "") + " " + (g.get("note_title") or "") + " " + g["title"]
             if not (q.lower() in title_all.lower()
                     or any(s["id"] in stem_hits for s in g["segs"])):
                 continue
         rows.append({
             "id": segs[0]["id"],                    # best segment opens by default
             "date": g["date"],
-            "title": g.get("note_title") or g["title"],
+            "title": g.get("title_manual") or g.get("note_title") or g["title"],
             "cat": g.get("cat", ""),
             "proj": g.get("proj", ""),
             "time": ordered[0]["time"],
@@ -376,8 +387,23 @@ def meeting_detail(mid: str) -> dict:
         cat = cm.group(1) if cm else ""
     ppl_f = ARCHIVE / month / f"{mid}.people"
     participants = [l.strip() for l in ppl_f.read_text().splitlines() if l.strip()] if ppl_f.exists() else []
+    # Display title: manual override (<mid>.title) > note H1 > slug. The override
+    # is what the editable-title feature writes; it's display-only.
+    title_f = NOTES_DIR / f"{mid}.title"
+    title_manual = title_f.read_text(errors="replace").strip()[:80] if title_f.exists() else ""
+    disp_title = title_manual
+    if not disp_title and note.exists():
+        lines = note.read_text(errors="replace").lstrip().splitlines()
+        if lines and lines[0].startswith("#"):
+            t = lines[0].lstrip("# ").strip()
+            t = _re.sub(r"\s*[(\[—–-]*\s*\d{4}-\d{2}-\d{2}.*$", "", t)
+            disp_title = _re.sub(r"[-a-z0-9]*\d{4,6}\s*$", "", t).strip(" -—–(,")
+    if not disp_title:
+        disp_title = _re.sub(r"-\d{4,6}$", "", mid[11:]).replace("-", " ").strip()
     return {
         "id": mid,
+        "title": disp_title,
+        "title_manual": bool(title_manual),
         "cat": cat,
         "participants": participants,
         "starred": (NOTES_DIR / f"{mid}.star").exists(),
@@ -848,7 +874,7 @@ function chipRow(cats){
 }
 function cardHtml(m){
  return `<div class="mcard" onclick='open_("${m.id}",${JSON.stringify(m.segs)})'>
-   <div style="font-weight:650;font-size:14px;text-transform:capitalize;line-height:1.35">${m.starred?'<span style="color:var(--accent)">★</span> ':''}${m.title}<span class="dot ${m.has_note?'note':'raw'}" style="margin-left:6px"></span></div>
+   <div style="font-weight:650;font-size:14px;text-transform:capitalize;line-height:1.35">${m.starred?'<span style="color:var(--accent)">★</span> ':''}${esc(m.title)}<span class="dot ${m.has_note?'note':'raw'}" style="margin-left:6px"></span></div>
    <div style="font-size:11.5px;color:var(--muted);margin-top:6px">${[new Date(m.date+'T00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short'}),m.time,m.n>1?m.n+' parts':''].filter(Boolean).join(' · ')}</div>
    ${m.transcribed===false?`<div style="margin-top:8px"><span style="font-size:10px;color:var(--accent);border:1px solid var(--accent);border-radius:6px;padding:1px 7px">● not transcribed</span> <button onclick='event.stopPropagation();transcribe("${m.id}",event)' style="font-size:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:6px;padding:1px 8px;cursor:pointer;margin-left:4px">Transcribe</button></div>`:''}
    ${(m.cat||m.proj)?`<div style="margin-top:8px;display:flex;gap:4px;flex-wrap:wrap">${[m.cat,m.proj].filter(Boolean).map(x=>`<span style="font-size:10.5px;border:1px solid var(--line);border-radius:6px;padding:1px 7px;color:var(--muted)">${x}</span>`).join('')}</div>`:''}</div>`;
@@ -884,7 +910,7 @@ function bigCal(ms){
    const evs=byDate[ds]||[];
    h+=`<div onclick="dayPop(event,'${ds}')" style="min-height:92px;border:1px solid ${ds===today?'var(--accent)':'var(--line)'};border-radius:10px;background:var(--card);padding:6px 7px;overflow:hidden;cursor:${evs.length?'pointer':'default'}">
      <div style="font-size:11px;font-weight:${evs.length?'700':'400'};color:${ds===today?'var(--accent)':'var(--muted)'};margin-bottom:3px">${d}</div>
-     ${evs.slice(0,3).map(m=>`<div onclick='event.stopPropagation();open_("${m.id}",${JSON.stringify(m.segs)})' style="font-size:10.5px;line-height:1.3;padding:2px 4px;border-radius:5px;background:var(--sel);margin-bottom:2px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-transform:capitalize">${m.time?m.time+' ':''}${m.title}</div>`).join('')}
+     ${evs.slice(0,3).map(m=>`<div onclick='event.stopPropagation();open_("${m.id}",${JSON.stringify(m.segs)})' style="font-size:10.5px;line-height:1.3;padding:2px 4px;border-radius:5px;background:var(--sel);margin-bottom:2px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-transform:capitalize">${m.time?m.time+' ':''}${esc(m.title)}</div>`).join('')}
      ${evs.length>3?`<div style="font-size:9.5px;color:var(--accent);padding-left:4px;font-weight:600">+${evs.length-3} more</div>`:''}</div>`;
  }
  h+='</div>';
@@ -895,7 +921,7 @@ function bigCal(ms){
 }
 function rowHtml(m,withDate){
  return `<div class="mt${m.segs.includes(sel)?' sel':''}" onclick='open_("${m.id}",${JSON.stringify(m.segs)})'>
-   <div class="title"><span class="mtime">${m.time||''}</span><span class="tt">${m.title}</span><span class="dot ${m.has_note?'note':'raw'}"></span></div>
+   <div class="title"><span class="mtime">${m.time||''}</span><span class="tt">${esc(m.title)}</span><span class="dot ${m.has_note?'note':'raw'}"></span></div>
    <div class="sub">${[withDate?m.date:'',m.cat,m.proj,m.transcribed===false?'not transcribed':'',m.n>1?m.n+' parts':''].filter(Boolean).join(' · ')||''}</div></div>`;
 }
 function calHtml(ms){
@@ -956,7 +982,7 @@ function dayPop(ev,ds){
  const dl=new Date(ds+'T00:00').toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'});
  p.innerHTML=`<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:8px">${dl} · ${ms.length} meeting${ms.length===1?'':'s'}</div>`
    +ms.map(m=>`<div class="mcard" style="margin-bottom:8px" onclick='closePop();open_("${m.id}",${JSON.stringify(m.segs)})'>
-     <div style="font-weight:650;font-size:13.5px;text-transform:capitalize">${m.time?m.time+'  ':''}${m.title}<span class="dot ${m.has_note?'note':'raw'}" style="margin-left:6px"></span></div>
+     <div style="font-weight:650;font-size:13.5px;text-transform:capitalize">${m.time?m.time+'  ':''}${esc(m.title)}<span class="dot ${m.has_note?'note':'raw'}" style="margin-left:6px"></span></div>
      ${(m.cat||m.proj)?`<div style="margin-top:5px;display:flex;gap:4px;flex-wrap:wrap">${[m.cat,m.proj].filter(Boolean).map(x=>`<span style="font-size:10px;border:1px solid var(--line);border-radius:6px;padding:1px 7px;color:var(--muted)">${x}</span>`).join('')}</div>`:''}</div>`).join('');
  Object.assign(p.style,{position:'fixed',zIndex:50,width:'320px',maxHeight:'70vh',overflowY:'auto',
    background:'var(--card)',border:'1px solid var(--line)',borderRadius:'14px',padding:'14px 16px',
@@ -1123,7 +1149,9 @@ function render(){
      onkeydown="if(event.key==='Enter'&&this.value){fetch('/api/links/'+sel,{method:'POST',body:this.value}).then(()=>seg_(sel));}"></div>`;
  const TAXO=['standup','1-1','prd-handover','design-review','incident-review','planning','interview','vendor','townhall','other'];
  $('view').innerHTML=`<button class="back" onclick="showLib()">← library</button>
- <div style="display:flex;align-items:center;gap:8px"><h1 style="margin:0">${sel.slice(11).replace(/-\d+$/,'').replaceAll('-',' ')}</h1>
+ <div style="display:flex;align-items:center;gap:8px">
+   <h1 style="margin:0;cursor:text" title="Click to edit the display title" onclick="editTitle()">${esc(detail.title||sel.slice(11).replace(/-\d+$/,'').replaceAll('-',' '))}</h1>
+   <button onclick="editTitle()" title="Edit title" style="border:none;background:none;font-size:16px;line-height:1;cursor:pointer;color:var(--muted)">✎</button>
    <button onclick="toggleStar()" title="Star — protected, never auto-deleted" style="border:none;background:none;font-size:22px;line-height:1;cursor:pointer;color:${detail.starred?'var(--accent)':'var(--muted)'}">${detail.starred?'★':'☆'}</button></div>
  <div class="date" style="display:flex;align-items:center;gap:10px">${sel.slice(0,10)}
    <select onchange="setCat(this.value)" style="border:1px solid var(--line);background:var(--card);color:var(--muted);border-radius:7px;padding:2px 6px;font-size:11.5px">
@@ -1240,6 +1268,15 @@ async function renameMeeting(){
  const x=await (await fetch('/api/rename/'+encodeURIComponent(sel)+'?to='+encodeURIComponent(to.trim()),{method:'POST'})).json();
  if(x.ok){ sel=x.new_mid||sel; detail=null; load(); if(sel) seg_(sel); }
  else confirmModal('Rename failed', x.error||'Something went wrong — the meeting was not renamed.');
+}
+async function editTitle(){
+ if(!sel) return;
+ const cur=(detail&&detail.title)||sel.slice(11).replace(/-\d+$/,'').replaceAll('-',' ');
+ const to=prompt('Meeting title (display only — blank resets to auto):', cur);
+ if(to===null) return;  // cancelled
+ const x=await (await fetch('/api/title/'+encodeURIComponent(sel)+'?to='+encodeURIComponent(to.trim()),{method:'POST'})).json();
+ if(x.ok){ if(detail){ detail.title=to.trim()||sel.slice(11).replace(/-\d+$/,'').replaceAll('-',' '); detail.title_manual=!!to.trim(); } seg_(sel); load(); }
+ else confirmModal('Rename failed','Could not save the title.');
 }
 function mom(){
  fetch('/api/mom/'+sel,{method:'POST'}).then(()=>{tab='MoM';seg_(sel)});
@@ -1675,6 +1712,26 @@ class H(BaseHTTPRequestHandler):
                     err = (r.stderr or r.stdout).strip().splitlines()[-1:] or ["rename failed"]
                     err = err[0]
             self._json({"ok": ok, "new_mid": new_mid, "error": err})
+        elif p.startswith("/api/title/"):
+            # Editable display title: write a <mid>.title sidecar that overrides
+            # the shown title (library + detail) without touching files/subject/
+            # events.db — so it survives re-transcribe/regenerate. Empty value
+            # clears the override (revert to the note H1 / slug). Sibling of the
+            # .cat category override; much lighter than /api/rename (identity).
+            from urllib.parse import parse_qs, urlparse
+            mid = re.sub(r"[^a-zA-Z0-9_-]", "", p.rsplit("/", 1)[1])
+            to = (parse_qs(urlparse(self.path).query).get("to", [""])[0] or "").strip()[:80]
+            ok = False
+            if mid:
+                NOTES_DIR.mkdir(parents=True, exist_ok=True)
+                tf = NOTES_DIR / f"{mid}.title"
+                if to:
+                    tf.write_text(to + "\n")
+                else:
+                    tf.unlink(missing_ok=True)
+                _CACHE.pop("meetings", None)
+                ok = True
+            self._json({"ok": ok, "title": to})
         elif p.startswith("/api/star/"):
             # Star = pin: a <mid>.star sidecar marks the meeting protected. The
             # audio-retention prune skips any meeting with this marker (never
