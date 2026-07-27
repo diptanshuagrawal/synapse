@@ -1193,7 +1193,6 @@ function render(){
    ${(!detail.mom&&!detail.mom_queued)?`<button style="border:1px solid var(--line);background:var(--card);border-radius:9px;padding:5px 14px;font-size:13px;cursor:pointer;color:var(--muted)" onclick="mom()">MoM</button>`:''}
    ${(detail.note||detail.mom)?`<button style="border:1px solid var(--line);background:var(--card);border-radius:9px;padding:5px 14px;font-size:13px;cursor:pointer;color:var(--muted)" onclick="share()">Share (redact)</button>`:''}
    ${detail.note?`<button style="border:1px solid var(--line);background:var(--card);border-radius:9px;padding:5px 14px;font-size:13px;cursor:pointer;color:var(--accent)" onclick="regen()">↻ regenerate</button>`:''}
-   <button style="border:1px solid var(--line);background:var(--card);border-radius:9px;padding:5px 14px;font-size:13px;cursor:pointer;color:var(--ink)" onclick="renameMeeting()">✎ rename</button>
    <button style="border:1px solid var(--line);background:var(--card);border-radius:9px;padding:5px 14px;font-size:13px;cursor:pointer;color:#b91c1c" onclick="del()">delete</button></span></div>
  <div id="content">${
    tab==='note' ? (detail.note?`<div class="md">${md(detail.note)}</div>`
@@ -1313,15 +1312,6 @@ async function del(){
  const x=await (await fetch('/api/delete',{method:'POST',body:(segs||[sel]).join(',')})).json();
  if(x.ok){sel=null;detail=null;showLib();load()}
  else confirmModal('Delete failed','Something went wrong — the meeting was not removed.');
-}
-async function renameMeeting(){
- if(!sel) return;
- const cur=(detail&&detail.title)||sel.slice(11).replace(/-\d+$/,'').replaceAll('-',' ');
- const to=await promptModal('Rename meeting','Changes the meeting identity (renames its files + records). For a quick display-only change use ✎ Edit title.', cur, 'Rename');
- if(to===null || !to.trim()) return;
- const x=await (await fetch('/api/rename/'+encodeURIComponent(sel)+'?to='+encodeURIComponent(to.trim()),{method:'POST'})).json();
- if(x.ok){ sel=x.new_mid||sel; detail=null; load(); if(sel) seg_(sel); }
- else confirmModal('Rename failed', x.error||'Something went wrong — the meeting was not renamed.');
 }
 async function editTitle(){
  if(!sel) return;
