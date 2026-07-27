@@ -6,7 +6,10 @@ Reclaims disk by deleting heavy audio the pipeline no longer needs:
 
   1. Archived meeting audio (transcripts/archive/<month>/*.m4a) older than the
      retention window (default 14 days).
-  2. Orphaned raw capture streams (.wav) the recorder / processor left behind
+  2. Archived per-stream audio (<mid>.me.m4a / .them.m4a) older than the window —
+     kept only so the dual-stream pipeline can be re-run (re-transcribe / re-
+     diarize with a better model); star-exempt via the parent meeting.
+  3. Orphaned raw capture streams (.wav) the recorder / processor left behind
      (dual-stream speaker halves, crash-rescued buffers, dead capture files).
 
 Transcripts, notes, links, .people/.cat sidecars, and every events.db row are
@@ -109,6 +112,8 @@ def prune_archive(cutoff: float, apply: bool, log) -> tuple[int, int, int]:
     if not ARCHIVE.exists():
         return 0, 0, 0
     for m4a in sorted(ARCHIVE.glob("*/*.m4a")):
+        if m4a.name.endswith((".me.m4a", ".them.m4a")):
+            continue  # per-stream audio — handled by prune_perstream (parent-star aware)
         try:
             st = m4a.stat()
         except FileNotFoundError:
@@ -126,6 +131,45 @@ def prune_archive(cutoff: float, apply: bool, log) -> tuple[int, int, int]:
         if apply:
             try:
                 m4a.unlink()
+            except OSError as e:
+                log(f"  ERROR  could not delete {rel}: {e}")
+                continue
+        deleted += 1
+        freed += st.st_size
+    return deleted, skipped_starred, freed
+
+
+def prune_perstream(cutoff: float, apply: bool, log) -> tuple[int, int, int]:
+    """Delete archived per-stream audio (<mid>.me.m4a / <mid>.them.m4a) older
+    than cutoff. These are kept ONLY so the dual-stream pipeline can be re-run
+    (re-transcribe / re-diarize); the mixed .m4a stays the playable archive.
+    Star-aware via the PARENT meeting id (already date-prefixed on these files).
+
+    Returns (deleted, skipped_starred, freed_bytes).
+    """
+    deleted = skipped_starred = freed = 0
+    if not ARCHIVE.exists():
+        return 0, 0, 0
+    streams = sorted(list(ARCHIVE.glob("*/*.me.m4a")) + list(ARCHIVE.glob("*/*.them.m4a")))
+    for f in streams:
+        try:
+            st = f.stat()
+        except FileNotFoundError:
+            continue
+        if st.st_mtime > cutoff:
+            continue
+        suf = ".me.m4a" if f.name.endswith(".me.m4a") else ".them.m4a"
+        parent = f.name[: -len(suf)]  # date-prefixed meeting id → star sidecar name
+        rel = f.relative_to(WC)
+        if _is_starred(parent):
+            skipped_starred += 1
+            log(f"  SKIP  starred ★  {rel}  (id={parent})")
+            continue
+        age_d = int((time.time() - st.st_mtime) / 86400)
+        log(f"  {'DELETE' if apply else 'WOULD DELETE'}  {rel}  ({age_d}d, {_mb(st.st_size)})")
+        if apply:
+            try:
+                f.unlink()
             except OSError as e:
                 log(f"  ERROR  could not delete {rel}: {e}")
                 continue
@@ -217,14 +261,17 @@ def main(argv: list[str] | None = None) -> int:
         f"mode={'APPLY' if args.apply else 'DRY-RUN'}")
     log("archived audio (.m4a):")
     deleted, skipped, m4a_freed = prune_archive(cutoff, args.apply, log)
+    log("per-stream audio (.me/.them.m4a, re-run material):")
+    ps_deleted, ps_skipped, ps_freed = prune_perstream(cutoff, args.apply, log)
     log("orphan raw streams (.wav):")
     removed, wav_freed = prune_orphan_wavs(cutoff, args.apply, log)
 
     log("")
     verb = "deleted" if args.apply else "would delete"
-    log(f"SUMMARY  m4a {verb}={deleted}  skipped-starred={skipped}  "
+    log(f"SUMMARY  m4a {verb}={deleted}  per-stream {verb}={ps_deleted}  "
+        f"skipped-starred={skipped + ps_skipped}  "
         f"orphan-wav {'removed' if args.apply else 'would remove'}={removed}  "
-        f"freed={_mb(m4a_freed + wav_freed)}")
+        f"freed={_mb(m4a_freed + ps_freed + wav_freed)}")
 
     print("\n".join(lines))
     return 0
