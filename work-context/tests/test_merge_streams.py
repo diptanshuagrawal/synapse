@@ -193,3 +193,103 @@ def test_diarized_gap_segment_takes_nearest_turn(tmp_path):
     out = merge_streams.load_diarized(str(whisper), str(diar))
 
     assert out[0]["text"] == "Speaker 1: uh"
+
+
+# --- dual-stream CALL with the far-side ('them') diarized ---------------------
+
+
+def test_them_diarize_splits_far_side_speakers(tmp_path, monkeypatch):
+    # Two remote voices on one system-audio stream split into `Them · Speaker 1/2`
+    # by dominant overlap, numbered by first appearance; the mic stays `Me:`.
+    me = tmp_path / "me.json"
+    them = tmp_path / "them.json"
+    me.write_text(json.dumps({"transcription": [_seg("hi team", 0, 400)]}), encoding="utf-8")
+    them.write_text(json.dumps({"transcription": [
+        _seg("first remote", 500, 900),     # SPEAKER_00 (first far-side turn)
+        _seg("second remote", 1000, 1400),  # SPEAKER_01
+        _seg("first again", 1500, 1900),    # SPEAKER_00 again
+    ]}), encoding="utf-8")
+    diar = tmp_path / "them.diar.json"
+    diar.write_text(json.dumps({"turns": [
+        _turn(500, 950, "SPEAKER_00"),
+        _turn(1000, 1450, "SPEAKER_01"),
+        _turn(1460, 2000, "SPEAKER_00"),
+    ]}), encoding="utf-8")
+    out = tmp_path / "merged"
+
+    monkeypatch.setattr("sys.argv", [
+        "merge_streams", "--me", str(me), "--them", str(them),
+        "--them-diarize", str(diar), "--out", str(out),
+    ])
+    merge_streams.main()
+
+    data = json.loads((tmp_path / "merged.json").read_text(encoding="utf-8"))
+    assert [s["text"] for s in data["transcription"]] == [
+        "Me: hi team",
+        "Them · Speaker 1: first remote",
+        "Them · Speaker 2: second remote",
+        "Them · Speaker 1: first again",
+    ]
+
+
+def test_them_diarize_numbers_by_turn_first_appearance(tmp_path):
+    # Far-side numbering follows the TURNS (so it matches the speakers.json
+    # sidecar), not which whisper segment lands first. SPEAKER_00's turn starts
+    # earliest even though its line comes second → `Them · Speaker 1`.
+    them = tmp_path / "them.json"
+    them.write_text(json.dumps({"transcription": [
+        _seg("second speaker", 700, 1000),  # SPEAKER_01 (segment appears first)
+        _seg("first speaker", 1200, 1500),  # SPEAKER_00
+    ]}), encoding="utf-8")
+    diar = tmp_path / "them.diar.json"
+    diar.write_text(json.dumps({"turns": [
+        _turn(0, 500, "SPEAKER_00"),        # earliest turn → Speaker 1
+        _turn(600, 1050, "SPEAKER_01"),
+        _turn(1100, 1600, "SPEAKER_00"),
+    ]}), encoding="utf-8")
+
+    out = merge_streams.load_them_diarized(str(them), str(diar))
+
+    assert [s["text"] for s in out] == [
+        "Them · Speaker 2: second speaker",
+        "Them · Speaker 1: first speaker",
+    ]
+
+
+def test_them_without_diarize_stays_flat(tmp_path, monkeypatch):
+    # No --them-diarize → today's flat `Them:` (unchanged dual-stream behavior).
+    me = tmp_path / "me.json"
+    them = tmp_path / "them.json"
+    me.write_text(json.dumps({"transcription": [_seg("hi", 0, 400)]}), encoding="utf-8")
+    them.write_text(json.dumps({"transcription": [_seg("hello", 500, 900)]}), encoding="utf-8")
+    out = tmp_path / "merged"
+
+    monkeypatch.setattr("sys.argv", [
+        "merge_streams", "--me", str(me), "--them", str(them), "--out", str(out),
+    ])
+    merge_streams.main()
+
+    data = json.loads((tmp_path / "merged.json").read_text(encoding="utf-8"))
+    assert [s["text"] for s in data["transcription"]] == ["Me: hi", "Them: hello"]
+
+
+def test_them_diarize_empty_turns_degrades_to_flat_them(tmp_path):
+    # Soft-failed diarizer (a `{"turns":[]}` file) → flat `Them:`, never a crash.
+    them = tmp_path / "them.json"
+    them.write_text(json.dumps({"transcription": [_seg("hello", 0, 500)]}), encoding="utf-8")
+    diar = tmp_path / "them.diar.json"
+    diar.write_text(json.dumps({"turns": []}), encoding="utf-8")
+
+    out = merge_streams.load_them_diarized(str(them), str(diar))
+
+    assert [s["text"] for s in out] == ["Them: hello"]
+
+
+def test_them_diarize_missing_file_degrades_to_flat_them(tmp_path):
+    # Diarizer unavailable (exit 3/4 → no turns file written) → flat `Them:`.
+    them = tmp_path / "them.json"
+    them.write_text(json.dumps({"transcription": [_seg("hello", 0, 500)]}), encoding="utf-8")
+
+    out = merge_streams.load_them_diarized(str(them), str(tmp_path / "nope.diar.json"))
+
+    assert [s["text"] for s in out] == ["Them: hello"]
