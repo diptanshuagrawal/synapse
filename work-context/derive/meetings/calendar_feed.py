@@ -166,12 +166,18 @@ def _occurrences(events: list[dict], win_start: datetime, win_end: datetime) -> 
                 continue
             occs.append({**e, "start": h, "end": h + dur})
 
-    # Overrides whose ORIGINAL slot is out-of-window but whose NEW time is in it
-    # (meeting moved into today from another day).
+    # Moved/exception instances (RECURRENCE-ID) whose NEW time falls in-window.
+    # Append every such override directly; the final dedup drops any that path 1
+    # already added via its master. This is REQUIRED for the common Outlook case
+    # where the published feed carries ONLY the moved exception, not the master
+    # series — e.g. a recurring "Sprint Grooming" instance rescheduled 13:00->17:00
+    # the SAME day: path 1 can't fire without a master, and the old guard also
+    # skipped it because the original 13:00 slot was still in-window, so the
+    # meeting vanished from Steno entirely (2026-07-27).
     for (uid, rid), ov in overrides.items():
         if ov["status"] == "CANCELLED" or ov["start"] is None:
             continue
-        if win_start <= ov["start"] < win_end and not (win_start <= (rid or ov["start"]) < win_end):
+        if win_start <= ov["start"] < win_end:
             occs.append(ov)
 
     # Dedup (an override can be appended twice via both paths) + sort.

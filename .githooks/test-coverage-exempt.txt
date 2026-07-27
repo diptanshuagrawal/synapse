@@ -60,7 +60,6 @@ work-context/ingest/slack_mpim_oneshot.py
 # Steno meeting-intelligence pipeline — daemons + subprocess/CLI drivers, covered
 # by live runs not unit tests. (merge_streams.py + correct.py ARE unit-tested.)
 work-context/derive/meetings/build_vocab.py
-work-context/derive/meetings/calendar_feed.py
 work-context/derive/meetings/delete_meeting.py
 work-context/derive/meetings/diarize.py
 work-context/derive/meetings/diarize_fetch_models.py
