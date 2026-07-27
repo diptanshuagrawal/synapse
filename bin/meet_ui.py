@@ -911,9 +911,11 @@ async function transcribe(id,ev){
 async function retranscribe(lang){
  if(!sel)return;
  const L={auto:'Auto',en:'English',hi:'Hindi'}[lang]||lang;
- if(!confirm('Re-transcribe this recording as '+L+'? Runs whisper again in the background (~1-2 min); refresh to see the new transcript.'))return;
+ const yes=await confirmModal('Re-transcribe as '+L+'?','Runs whisper again in the background (~1-2 min). Reopen the meeting in a minute to see the new transcript.');
+ if(!yes)return;
  try{await fetch('/api/transcribe/'+encodeURIComponent(sel)+'?lang='+lang,{method:'POST'});
-   alert('Re-transcribing as '+L+'. Reopen the meeting in a minute to see it.');}catch(e){alert('Failed to start: '+e);}
+   confirmModal('Re-transcribing as '+L,'Started in the background. Reopen the meeting in a minute.');}
+ catch(e){confirmModal('Failed to start', String(e));}
 }
 function bigCal(ms){
  const byDate={};ms.forEach(m=>{(byDate[m.date]=byDate[m.date]||[]).push(m)});
@@ -1280,6 +1282,29 @@ function confirmModal(title, body){
    ov.onclick=e=>{if(e.target===ov)done(false)};
  });
 }
+// Custom text prompt — WKWebView also ignores native prompt(). Resolves to the
+// entered string (may be empty) on OK/Enter, or null on Cancel/Esc/backdrop.
+function promptModal(title, body, def, okLabel){
+ return new Promise(resolve=>{
+   const ov=document.createElement('div');
+   ov.style.cssText='position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center';
+   ov.innerHTML=`<div style="background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px 24px;max-width:440px;width:90%;box-shadow:0 16px 50px rgba(0,0,0,.35)">
+     <div style="font-size:15px;font-weight:700;margin-bottom:8px">${title}</div>
+     ${body?`<div style="font-size:13px;color:var(--muted);line-height:1.5;margin-bottom:12px">${body}</div>`:''}
+     <input id="_pi" style="width:100%;box-sizing:border-box;border:1px solid var(--line);background:var(--paper);color:var(--ink);border-radius:9px;padding:9px 12px;font-size:14px;outline:none;margin-bottom:18px">
+     <div style="display:flex;gap:8px;justify-content:flex-end">
+       <button id="_cx" style="border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:9px;padding:7px 16px;font-size:13px;cursor:pointer">Cancel</button>
+       <button id="_ok" style="border:none;background:var(--accent);color:#fff;border-radius:9px;padding:7px 16px;font-size:13px;cursor:pointer;font-weight:600">${okLabel||'Save'}</button>
+     </div></div>`;
+   document.body.appendChild(ov);
+   const inp=ov.querySelector('#_pi'); inp.value=def==null?'':def; inp.focus(); inp.select();
+   const done=v=>{ov.remove();resolve(v)};
+   ov.querySelector('#_cx').onclick=()=>done(null);
+   ov.querySelector('#_ok').onclick=()=>done(inp.value);
+   inp.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();done(inp.value)} if(e.key==='Escape')done(null)};
+   ov.onclick=e=>{if(e.target===ov)done(null)};
+ });
+}
 async function del(){
  const title=sel.slice(11).replace(/-\d+$/,'').replaceAll('-',' ');
  const yes=await confirmModal('Delete "'+title+'"?',
@@ -1291,9 +1316,9 @@ async function del(){
 }
 async function renameMeeting(){
  if(!sel) return;
- const cur=sel.slice(11).replace(/-\d+$/,'').replaceAll('-',' ');
- const to=prompt('Rename this meeting to:', cur);
- if(!to || !to.trim()) return;
+ const cur=(detail&&detail.title)||sel.slice(11).replace(/-\d+$/,'').replaceAll('-',' ');
+ const to=await promptModal('Rename meeting','Changes the meeting identity (renames its files + records). For a quick display-only change use ✎ Edit title.', cur, 'Rename');
+ if(to===null || !to.trim()) return;
  const x=await (await fetch('/api/rename/'+encodeURIComponent(sel)+'?to='+encodeURIComponent(to.trim()),{method:'POST'})).json();
  if(x.ok){ sel=x.new_mid||sel; detail=null; load(); if(sel) seg_(sel); }
  else confirmModal('Rename failed', x.error||'Something went wrong — the meeting was not renamed.');
@@ -1301,11 +1326,11 @@ async function renameMeeting(){
 async function editTitle(){
  if(!sel) return;
  const cur=(detail&&detail.title)||sel.slice(11).replace(/-\d+$/,'').replaceAll('-',' ');
- const to=prompt('Meeting title (display only — blank resets to auto):', cur);
+ const to=await promptModal('Edit title','Display only — does not rename files. Leave blank to reset to the auto title.', cur, 'Save');
  if(to===null) return;  // cancelled
  const x=await (await fetch('/api/title/'+encodeURIComponent(sel)+'?to='+encodeURIComponent(to.trim()),{method:'POST'})).json();
  if(x.ok){ if(detail){ detail.title=to.trim()||sel.slice(11).replace(/-\d+$/,'').replaceAll('-',' '); detail.title_manual=!!to.trim(); } seg_(sel); load(); }
- else confirmModal('Rename failed','Could not save the title.');
+ else confirmModal('Save failed','Could not save the title.');
 }
 function mom(){
  fetch('/api/mom/'+sel,{method:'POST'}).then(()=>{tab='MoM';seg_(sel)});
