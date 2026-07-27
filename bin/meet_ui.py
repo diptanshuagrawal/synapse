@@ -158,40 +158,34 @@ def _meetings_rows(q: str = "") -> list[dict]:
                 proj_by_stem[f"{parts[1]}-{parts[2]}"] = slug  # last row = max count
     except Exception:
         pass
-    groups: dict = {}
-    for txt in sorted(ARCHIVE.glob("*/*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)[:600]:
-        # Skip the per-speaker stream transcripts (<stem>.me.txt/.them.txt) —
-        # only the merged <stem>.txt is a real meeting row.
-        if txt.name.endswith((".me.txt", ".them.txt")):
-            continue
-        stem = txt.stem  # 2026-07-17-<slug>[-HHMM]
-        date, slug = stem[:10], stem[11:]
-        base = re.sub(r"-\d{4,6}$", "", slug)
-        title = base.replace("-", " ").strip() or slug
-        m = re.search(r"-(\d{2})(\d{2})(?:\d{2})?$", slug)
-        seg = {
+    # Same-day recordings sharing a base slug are joined into ONE meeting row
+    # ONLY when contiguous in time — i.e. fragments of a single call (a quick
+    # mic-drop/reconnect writes a fresh HHMM file). Distinct huddles hours apart
+    # MUST stay separate rows: grouping purely by (date, base) collapsed three
+    # same-day huddles (13:34 / 14:06 / 16:53) into ONE library entry — each
+    # should be its own meeting. Below: collect per-recording, then split each
+    # (date, base) bucket wherever consecutive START times are > GROUP_GAP_MIN apart.
+    GROUP_GAP_MIN = 20
+
+    def _seg_meta(stem: str, size: int) -> dict:
+        m = re.search(r"-(\d{2})(\d{2})(?:\d{2})?$", stem[11:])
+        s = {
             "id": stem,
             "has_note": (NOTES_DIR / f"{stem}.md").exists(),
-            "size": txt.stat().st_size,
+            "size": size,
             "time": f"{m.group(1)}:{m.group(2)}" if m else "",
+            "tmin": (int(m.group(1)) * 60 + int(m.group(2))) if m else None,
+            "proj": proj_by_stem.get(stem),
         }
-        g = groups.setdefault((date, base), {"date": date, "title": title, "segs": []})
-        g["segs"].append(seg)
-        if stem in proj_by_stem:
-            g.setdefault("proj", proj_by_stem[stem])
-        # Owner's manual category sidecar beats the AI classification.
         cat_f = NOTES_DIR / f"{stem}.cat"
         if cat_f.exists():
-            g["cat"] = cat_f.read_text().strip()
-            g["cat_manual"] = True
-        # The generated note's H1 is the best display title — it carries the
-        # inferred counterpart for huddles ("Huddle with Alex").
-        if seg["has_note"] and "note_title" not in g:
+            s["cat"], s["cat_manual"] = cat_f.read_text().strip(), True
+        if s["has_note"]:
             try:
                 head = (NOTES_DIR / f"{stem}.md").read_text(errors="replace").lstrip()
                 cm = re.search(r"<!--\s*category:\s*([\w-]+)\s*-->", head[:400])
-                if cm and not g.get("cat_manual"):
-                    g["cat"] = cm.group(1)
+                if cm and not s.get("cat_manual"):
+                    s["cat"] = cm.group(1)
                 first = head.splitlines()[0]
                 if first.startswith("#"):
                     t = first.lstrip("# ").strip()
@@ -202,12 +196,53 @@ def _meetings_rows(q: str = "") -> list[dict]:
                     if len(t) > 58:
                         t = t[:58].rsplit(" ", 1)[0] + "…"
                     if t:
-                        g["note_title"] = t
+                        s["note_title"] = t
             except Exception:
                 pass
+        return s
+
+    def _mk_group(date: str, base: str, segs: list) -> dict:
+        g = {"date": date, "title": base.replace("-", " ").strip() or base, "segs": []}
+        for s in segs:
+            g["segs"].append({k: s[k] for k in ("id", "has_note", "size", "time")})
+            if s.get("proj"):
+                g.setdefault("proj", s["proj"])
+            if s.get("cat_manual"):
+                g["cat"], g["cat_manual"] = s["cat"], True
+            elif s.get("cat") and "cat" not in g:
+                g["cat"] = s["cat"]
+            if s.get("note_title") and "note_title" not in g:
+                g["note_title"] = s["note_title"]
+        return g
+
+    buckets: dict = {}
+    for txt in sorted(ARCHIVE.glob("*/*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)[:600]:
+        # Skip the per-speaker stream transcripts (<stem>.me.txt/.them.txt) —
+        # only the merged <stem>.txt is a real meeting row.
+        if txt.name.endswith((".me.txt", ".them.txt")):
+            continue
+        stem = txt.stem  # 2026-07-17-<slug>[-HHMM]
+        date, slug = stem[:10], stem[11:]
+        base = re.sub(r"-\d{4,6}$", "", slug)
+        buckets.setdefault((date, base), []).append(_seg_meta(stem, txt.stat().st_size))
+
+    groups: list = []
+    for (date, base), segs in buckets.items():
+        segs.sort(key=lambda s: (s["tmin"] is None, s["tmin"] or 0, s["id"]))
+        cluster: list = []
+        prev = None
+        for s in segs:
+            if cluster and s["tmin"] is not None and prev is not None and (s["tmin"] - prev) > GROUP_GAP_MIN:
+                groups.append(_mk_group(date, base, cluster))
+                cluster = []
+            cluster.append(s)
+            if s["tmin"] is not None:
+                prev = s["tmin"]
+        if cluster:
+            groups.append(_mk_group(date, base, cluster))
 
     rows = []
-    for g in groups.values():
+    for g in groups:
         segs = sorted(g["segs"], key=lambda s: (s["has_note"], s["size"]), reverse=True)
         ordered = sorted(g["segs"], key=lambda s: s["id"])
         if stem_hits is not None:
