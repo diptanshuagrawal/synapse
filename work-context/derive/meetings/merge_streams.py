@@ -39,7 +39,7 @@ import re
 
 # Whisper silence-hallucination artifacts (mirror of ingest_transcript.HALLU_RE).
 HALLU_RE = re.compile(
-    r"www\.|https?://|\.org(\.au)?|thanks for watching|please subscribe|"
+    r"www\.|https?://|\.org(\.au)?|thanks for watching|please subscribe|सब्सक्राइ|"
     r"subtitles?\s+(by|provided)|amara\.org|for more information,?\s+visit|fema\.gov",
     re.I,
 )
