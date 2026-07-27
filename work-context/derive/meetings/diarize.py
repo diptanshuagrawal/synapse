@@ -57,6 +57,56 @@ def _fail(msg: str, code: int = 3) -> None:
     sys.exit(code)
 
 
+# Over-split guard: pyannote sometimes splits ONE speaker into several clusters
+# on imperfect audio (a lone far-side voice on a dual-stream call came back as
+# Speaker 1 + Speaker 2). Two clusters that are really the same person have
+# near-identical 256-d voiceprints, so merge any pair whose cosine similarity is
+# >= a HIGH threshold. Conservative by design: the default only fires on
+# near-identical voiceprints, so a genuine multi-speaker call is never collapsed.
+# Tune with STENO_DIARIZE_MERGE_SIM; skipped entirely when the caller passed an
+# explicit --num-speakers (we then trust the requested count).
+MERGE_SIM = float(os.environ.get("STENO_DIARIZE_MERGE_SIM", "0.82"))
+
+
+def _merge_oversplit(turns: list[dict], emb_map: dict[str, list[float]], threshold: float):
+    """Collapse clusters with near-identical voiceprints. Returns
+    (turns, emb_map, merges) — merges is a list of (absorbed, kept, sim)."""
+    import numpy as np
+
+    labels = list(emb_map)
+    if len(labels) < 2:
+        return turns, emb_map, []
+    unit = {}
+    for lab in labels:
+        v = np.asarray(emb_map[lab], dtype=float)
+        n = float(np.linalg.norm(v))
+        unit[lab] = v / n if n else v
+    parent = {lab: lab for lab in labels}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    merges = []
+    for i in range(len(labels)):
+        for j in range(i + 1, len(labels)):
+            a, b = labels[i], labels[j]
+            sim = float(unit[a] @ unit[b])
+            if sim >= threshold and find(a) != find(b):
+                parent[find(b)] = find(a)
+                merges.append((b, a, round(sim, 3)))
+    if not merges:
+        return turns, emb_map, []
+    remap = {lab: find(lab) for lab in labels}
+    new_turns = [{**t, "speaker": remap.get(t["speaker"], t["speaker"])} for t in turns]
+    new_emb = {}
+    for lab in labels:  # keep one voiceprint per surviving root
+        new_emb.setdefault(remap[lab], emb_map[remap[lab]])
+    return new_turns, new_emb, merges
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--wav", required=True, help="16 kHz mono wav (diarize.sh downmixes for you)")
@@ -150,6 +200,12 @@ def main() -> None:
             row = embeddings[i]
             if row is not None and not bool(np.isnan(row).any()):
                 emb_map[lab] = [float(x) for x in row]
+
+    # Collapse an over-split single speaker (unless an exact count was requested).
+    if not args.num_speakers and len(emb_map) >= 2:
+        turns, emb_map, merges = _merge_oversplit(turns, emb_map, MERGE_SIM)
+        for absorbed, kept, sim in merges:
+            print(f"diarize: merged over-split {absorbed} -> {kept} (voiceprint sim {sim} >= {MERGE_SIM})", file=sys.stderr)
 
     out: dict = {"turns": turns}
     if emb_map:
