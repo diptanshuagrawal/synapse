@@ -94,8 +94,9 @@ Category definitions (owner-calibrated 2026-07-17 — follow these, not intuitio
   attributing `Them:` speech. Still never attribute a specific quote to a
   specific person without transcript support.
 - Template: `standup` category → standup template; everything else →
-  `default.md`, which defines UNIVERSAL format rules (ADHD-readable: TL;DR
-  first, one idea per line, bold labels, lossless substance) + a section set
+  `default.md`, which defines UNIVERSAL format rules (DISTILLED + scannable:
+  a tight core — TL;DR + Decisions + your action items — then skippable
+  `## Details`; distill don't transcribe) + a section set
   PER CATEGORY — use the section set matching the classified category.
 - Owner can name a template explicitly in the invocation.
 
