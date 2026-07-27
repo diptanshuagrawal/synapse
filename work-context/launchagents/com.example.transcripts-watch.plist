@@ -14,11 +14,13 @@
   <array>
     <string>__REPO__/work-context/transcripts/inbox</string>
   </array>
-  <!-- ... and every 10 min as a backstop: the sweep skips files <60s old
+  <!-- ... and every 5 min as a backstop: the sweep skips files <60s old
        (still copying), so the WatchPaths fire right at file-creation is a
-       no-op and a later pass must pick it up. Sweep is idempotent + locked. -->
+       no-op and a later pass must pick it up. Sweep is idempotent + locked.
+       5 min (was 10) so a note appears ~5 min after a meeting, matching the
+       meeting-notes-auto render cadence. Empty inbox → the sweep exits fast. -->
   <key>StartInterval</key>
-  <integer>600</integer>
+  <integer>300</integer>
   <key>ThrottleInterval</key>
   <integer>30</integer>
   <!-- The sweep detaches its real work into a background session and the kicker

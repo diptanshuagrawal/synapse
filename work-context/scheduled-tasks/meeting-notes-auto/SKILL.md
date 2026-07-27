@@ -1,6 +1,6 @@
 ---
 name: meeting-notes-auto
-description: Weekdays every 15 min 09:05–21:50 — renders /meeting-notes for any newly recorded meeting that has no note yet + generates requested MoMs; idles cheaply otherwise.
+description: Weekdays every 5 min 09:00–21:55 — renders /meeting-notes for any newly recorded meeting that has no note yet + generates requested MoMs; idles cheaply otherwise.
 ---
 
 Auto-render notes for newly recorded meetings (meeting-intelligence pipeline).
