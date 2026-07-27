@@ -70,3 +70,25 @@ def test_intra_line_word_loop_dropped():
     c = LoopCollapser()
     assert not c.keep("जुड़े " * 24)                       # word-loop → dropped
     assert c.keep("this is a normal sentence of speech")  # real → kept
+
+
+def test_intra_line_phrase_loop_dropped():
+    # No-VAD decoding (needed for diarization timestamp alignment) latches into a
+    # repeating PHRASE with drift — "यह तो पूरी टीम है …" x15 (2026-07-27 Sanket
+    # huddle). The token varies per segment so is_word_loop + the exact-dup guards
+    # miss it, but the line's lexical diversity collapses. Long line + very low
+    # distinct/total ratio → dropped; a varied real utterance is kept.
+    from derive.meetings.loop_dedup import is_phrase_loop
+
+    assert is_phrase_loop("यह तो पूरी टीम है " * 15)          # phrase-loop
+    assert is_phrase_loop("चलेगा है यह " * 8)                 # drifting phrase-loop
+    assert is_phrase_loop("team team team the whole team is the whole team is the whole team")
+    assert not is_phrase_loop("यह तो पूरी टीम है")            # single instance → kept
+    assert not is_phrase_loop("haan haan theek hai")         # short filler → below floor
+    assert not is_phrase_loop(
+        "करोगे स्क्रीन शेयर मैं करूं किसका एक्सेस मेरा लैपटॉप का हाल"
+    )  # varied real Hindi speech → kept
+
+    c = LoopCollapser()
+    assert not c.keep("यह तो पूरी टीम है " * 15)              # phrase-loop → dropped
+    assert c.keep("करोगे स्क्रीन शेयर मैं करूं किसका एक्सेस मेरा लैपटॉप")  # real → kept

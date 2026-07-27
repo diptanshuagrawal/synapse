@@ -50,6 +50,25 @@ def is_word_loop(text: str) -> bool:
     return n >= WORD_LOOP_MIN_REPEAT and n >= WORD_LOOP_SHARE * len(toks)
 
 
+# Intra-line PHRASE-loop guard: whisper decoded without VAD (the diarization path
+# needs real-time timestamps) latches into a repeating PHRASE, not a single token
+# — "यह तो पूरी टीम है यह तो पूरी टीम है …" ×15. The token varies segment to
+# segment (drift), so neither is_word_loop (one dominant token) nor the exact-dup
+# line guards catch it. But a genuine 12+-token utterance has high lexical
+# diversity; a phrase-loop reuses a tiny vocabulary. So: a long-enough line whose
+# DISTINCT/total token ratio is very low is a loop. Language-agnostic; the min-
+# token floor keeps short real filler ("haan haan theek hai") safe.
+PHRASE_LOOP_MIN_TOKENS = 12    # only judge diversity once the line is long enough
+PHRASE_LOOP_DISTINCT_RATIO = 0.35  # distinct/total below this = a repetition loop
+
+
+def is_phrase_loop(text: str) -> bool:
+    toks = _TOKEN_RE.findall(text)
+    if len(toks) < PHRASE_LOOP_MIN_TOKENS:
+        return False
+    return len(set(toks)) / len(toks) < PHRASE_LOOP_DISTINCT_RATIO
+
+
 class LoopCollapser:
     """Stateful per-transcript whisper loop collapser.
 
@@ -66,9 +85,9 @@ class LoopCollapser:
         self._seen: dict[str, int] = {}
 
     def keep(self, text: str) -> bool:
-        # Intra-line word-loop → pure hallucination, drop outright (before the
-        # line-level guards, which only see repeated whole segments).
-        if is_word_loop(text):
+        # Intra-line word/phrase loops → pure hallucination, drop outright (before
+        # the line-level guards, which only see repeated whole segments).
+        if is_word_loop(text) or is_phrase_loop(text):
             return False
         # Consecutive-dup guard first (matches transcribe.sh, which runs the
         # consecutive collapse BEFORE the total cap): lines dropped here do NOT
