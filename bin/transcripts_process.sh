@@ -300,7 +300,20 @@ for audio in ${QUEUE[@]+"${QUEUE[@]}"}; do
         echo "WARN (on-speakers: them=${_them_n} me=${_me_n} lines — flagged unreliable labels): $name" >&2
       fi
     fi
-    rm -f "$me_wav" "$them_wav"   # m4a remains the audio archive
+    # Keep the per-stream audio so the dual-stream pipeline can be RE-RUN later
+    # (better model / re-diarization) — deleting it immediately made a re-run
+    # impossible. Archive each stream as ~64k AAC (raw wav is huge; re-transcribe
+    # downmixes to 16k mono anyway), then drop the raw wav. meet_retention.py
+    # prunes these with the mixed m4a at the retention window (star-exempt).
+    for _s in me them; do
+      _w="$INBOX/$stem.$_s.wav"
+      [ -s "$_w" ] || continue
+      if ffmpeg -y -loglevel error -i "$_w" -c:a aac -b:a 64k "$prefix.$_s.m4a" 2>/dev/null; then
+        rm -f "$_w"
+      else
+        echo "WARN: could not archive $_s stream (kept raw wav): $name" >&2
+      fi
+    done
   elif bash "$REPO/bin/transcribe.sh" "$audio" "$prefix"; then
     # Lone file (AirDropped phone recording / rescued mono) — always single-mic,
     # so diarize best-effort and relabel with Speaker N. If the diarizer is
