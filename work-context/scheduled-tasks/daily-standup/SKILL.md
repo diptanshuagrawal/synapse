@@ -11,13 +11,17 @@ Before doing ANY work, run this and obey it:
     MARK=__REPO__/work-context/state/last_routine_standup_success.date
     LOCK=__REPO__/work-context/state/standup_inprogress.lock
     TODAY=$(TZ=Asia/Kolkata date +%F)
+    DOW=$(TZ=Asia/Kolkata date +%u)
     NOW=$(date +%s)
     LOCKTS=$(cat "$LOCK" 2>/dev/null); LOCKTS=${LOCKTS:-0}
-    if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$TODAY" ]; then echo "GATE: standup already succeeded today ($TODAY) — idle"
+    if [ "$DOW" -ge 6 ]; then echo "GATE: weekend (Sat/Sun IST) — idle"
+    elif [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$TODAY" ]; then echo "GATE: standup already succeeded today ($TODAY) — idle"
     elif [ -f "$LOCK" ] && [ $((NOW - LOCKTS)) -lt 2700 ]; then echo "GATE: another standup run is in progress (lock age <45min) — idle"
     else echo "$NOW" > "$LOCK"; echo "GATE: standup not done today — proceed"; fi
 
-If it prints "already succeeded today" OR "another standup run is in progress" → STOP NOW: do not gather, render, or post anything; end the run. Only proceed to the steps below if it prints "not done today — proceed".
+If it prints "weekend" OR "already succeeded today" OR "another standup run is in progress" → STOP NOW: do not gather, render, or post anything; end the run. Only proceed to the steps below if it prints "not done today — proceed".
+
+(The weekend check exists because the cron being Mon–Fri is NOT a guarantee: a missed Friday-evening fire can be dispatched late by the scheduler after the machine wakes — validated 2026-07-25, when a Friday 23:xx fire ran at 01:03 IST Saturday and posted the digest at ~04:20 AM Saturday. No catch-up run may post on a weekend; Friday's work is covered by Monday's run.)
 
 (The lock closes a validated race — 2026-07-13 the 06:00 fire ran ~40 min and the 06:30 fire passed the marker check mid-run, so the full digest posted TWICE. The lock is stamped at start; a crashed run's stale lock self-expires after 45 min so retries still happen.)
 
@@ -25,7 +29,7 @@ STEP 1 — Determine the target date (previous WORKING day, IST):
 - Today is the run day. Compute the previous working day:
   - If today is Monday → target = last Friday (3 days ago).
   - If today is Tue/Wed/Thu/Fri → target = yesterday (1 day ago).
-- (Sat/Sun never fire because the cron is Mon–Fri.)
+- (Sat/Sun are excluded by the gate's weekend check above — a late-dispatched catch-up fire can land on Saturday even though the cron is Mon–Fri.)
 - If the target date lands on a known holiday with ~no activity, fall back to the most recent working day before it and note that in the post.
 
 STEP 1.5 — Pre-standup slack thread sweep (freshness; best-effort, once/day):

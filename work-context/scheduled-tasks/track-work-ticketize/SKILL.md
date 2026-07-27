@@ -13,13 +13,17 @@ Before doing ANY work, run this and obey it:
     MARK=__REPO__/work-context/state/last_routine_ticketize_success.date
     LOCK=__REPO__/work-context/state/ticketize_inprogress.lock
     TODAY=$(TZ=Asia/Kolkata date +%F)
+    DOW=$(TZ=Asia/Kolkata date +%u)
     NOW=$(date +%s)
     LOCKTS=$(cat "$LOCK" 2>/dev/null); LOCKTS=${LOCKTS:-0}
-    if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$TODAY" ]; then echo "GATE: ticketize already succeeded today ($TODAY) — idle"
+    if [ "$DOW" -ge 6 ]; then echo "GATE: weekend (Sat/Sun IST) — idle"
+    elif [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$TODAY" ]; then echo "GATE: ticketize already succeeded today ($TODAY) — idle"
     elif [ -f "$LOCK" ] && [ $((NOW - LOCKTS)) -lt 2700 ]; then echo "GATE: another ticketize run is in progress (lock age <45min) — idle"
     else echo "$NOW" > "$LOCK"; echo "GATE: ticketize not done today — proceed"; fi
 
-If it prints "already succeeded today" OR "another ticketize run is in progress" → STOP NOW: do not gather, detect, write the candidate md, or invoke the bot; end the run. Only proceed to the steps below if it prints "not done today — proceed".
+If it prints "weekend" OR "already succeeded today" OR "another ticketize run is in progress" → STOP NOW: do not gather, detect, write the candidate md, or invoke the bot; end the run. Only proceed to the steps below if it prints "not done today — proceed".
+
+(The weekend check exists because the cron being Mon–Fri is NOT a guarantee: the scheduler can dispatch a missed Friday-evening fire late, after the machine wakes — validated on daily-standup 2026-07-25, when a Friday 23:xx fire ran at 01:03 IST Saturday and posted at ~04:20 AM. No catch-up run may post on a weekend; Friday's work is covered by Monday's run.)
 
 (The lock closes the same >30-min-run race validated on daily-standup 2026-07-13 — the marker is checked at start but stamped at end, so a run longer than 30 min overlaps the next cron fire and the deliverable posts twice. The lock is stamped at start; a crashed run's stale lock self-expires after 45 min so retries still happen.)
 
@@ -40,7 +44,7 @@ Best-effort: it always exits 0 and never blocks DETECT; stamps the marker only o
 sweep, so a failed sweep is retried next fire.
 
 STEP 1 — Target window (previous WORKING day, IST):
-- Mon → last Friday; Tue–Fri → yesterday. (Sat/Sun never fire — cron is Mon–Fri.)
+- Mon → last Friday; Tue–Fri → yesterday. (Sat/Sun are excluded by the gate's weekend check above — a late-dispatched catch-up fire can land on Saturday even though the cron is Mon–Fri.)
 - Call the resolved date <date> (YYYY-MM-DD).
 
 STEP 2 — Run the /ticketize DETECT phase for <date>, team scope. This is the SAME skill at .claude/commands/ticketize.md — follow it EXACTLY:
