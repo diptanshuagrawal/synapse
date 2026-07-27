@@ -204,12 +204,29 @@ leadership, so: professional tone, no candid asides, no said-vs-done framing,
 no unattributed speculation):
 
     # Minutes of Meeting — <title>
-    **Date/Time** · **Attendees** (only names supported by transcript/calendar;
-    "and others" if unsure) · **Agenda** (inferred, 1-2 lines)
-    ## Discussion summary   (topic-grouped, neutral voice)
-    ## Decisions            (numbered)
-    ## Action items         (| # | Action | Owner | Due |)
+    **Date:** <date> · **Attendees:** <names supported by transcript/calendar; "+ others" if unsure>
+
+    **Summary** — 1–2 lines: what the meeting was for and the outcome. Nothing else.
+
+    ## Decisions
+    1. <the decision only, one line each>
+
+    ## Action items
+    | # | Action | Owner | Due |
+
+    ## Discussion
+    - <ONLY context the Summary/Decisions/Actions don't already carry — brief,
+      topic-grouped, neutral. Skip this whole section if it would just restate them.>
+
     ## Open points
+    - <unresolved items; omit the section if none>
+
+Tidy MoM rules (a formal doc someone READS — make it scannable, not a chore):
+- Summary leads; nothing above it. Professional tone, no candid asides, no
+  said-vs-done framing, no unattributed speculation.
+- SAY EACH THING ONCE. Decisions/Actions are the substance; Discussion adds only
+  what they don't already say. If a Discussion bullet repeats a decision, drop it.
+- Omit any empty section entirely. A short, clean MoM beats a complete-but-heavy one.
 
 Ground it in transcript + scratchpad + resolved links, same as the note.
 Delete the `.mom.request` marker after writing. Report it in the run output.
