@@ -99,13 +99,8 @@ def _load_patterns(root):
     return out
 
 
-def _scan(path, text, rx, content_hits, name_hits):
-    if path.endswith("leak-patterns.txt"):
-        return  # the pattern file would self-match
-    for p, r, _hard in rx:
-        if r.search(path):
-            name_hits.append((path, p))
-            break
+def _scan_lines(label, text, rx, content_hits):
+    """Line-by-line content scan (shared by file blobs AND commit messages)."""
     for i, line in enumerate(text.split("\n"), 1):
         allowed = bool(ALLOW_RE.search(line))  # an intentional-placeholder line
         for p, r, hard in rx:
@@ -114,8 +109,18 @@ def _scan(path, text, rx, content_hits, name_hits):
             if allowed and not hard:
                 continue  # soft format hit on a placeholder line — not a leak
             # hard hits fire even on placeholder lines (real token = always a leak)
-            content_hits.append((path, i, p, line.strip()[:100]))
+            content_hits.append((label, i, p, line.strip()[:100]))
             break
+
+
+def _scan(path, text, rx, content_hits, name_hits):
+    if path.endswith("leak-patterns.txt"):
+        return  # the pattern file would self-match
+    for p, r, _hard in rx:
+        if r.search(path):
+            name_hits.append((path, p))
+            break
+    _scan_lines(path, text, rx, content_hits)
 
 
 def _report(content_hits, name_hits):
@@ -186,6 +191,16 @@ def cmd_range(root, rx, new, base):
         except UnicodeDecodeError:
             continue
         _scan(sha_path.get(sha, sha), text, rx, content_hits, name_hits)
+    # Also scan the COMMIT MESSAGES in the range: a secret pasted into a commit
+    # body (token, email, denylisted org term) lives in message metadata, not in
+    # any file blob, so blob scanning alone can't catch it. (Note: this is still
+    # PATTERN-based — an arbitrary personal name isn't caught here; human review
+    # is the backstop for those.)
+    logargs = ["git", "rev-list", new] + (["--not", base] if base else [])
+    for csha in subprocess.run(logargs, capture_output=True, text=True).stdout.split():
+        msg = subprocess.run(["git", "log", "-1", "--format=%B", csha],
+                             capture_output=True, text=True).stdout
+        _scan_lines(f"commit {csha[:10]} (message)", msg, rx, content_hits)
     return _report(content_hits, name_hits)
 
 
