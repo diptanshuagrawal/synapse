@@ -18,14 +18,34 @@
 // Build (done by the meet-record wrapper when missing/stale):
 //   clang -fobjc-arc -O2 meet_record_capture.m -o meet-record-capture \
 //     -framework Foundation -framework AVFoundation -framework CoreMedia \
-//     -framework ScreenCaptureKit
+//     -framework ScreenCaptureKit -framework CoreAudio
 
 #import <AVFoundation/AVFoundation.h>
+#import <CoreAudio/CoreAudio.h>
 #import <CoreMedia/CoreMedia.h>
 #import <Foundation/Foundation.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #include <fcntl.h>
 #include <sys/time.h>
+
+// Name of the current system default input device — logged at start and on
+// every mic re-tap so a silent mic.wav can be traced to the device that was
+// actually recorded (AirPods vs built-in was invisible before).
+static NSString *DefaultInputName(void) {
+    AudioDeviceID dev = 0;
+    UInt32 sz = sizeof(dev);
+    AudioObjectPropertyAddress addr = {kAudioHardwarePropertyDefaultInputDevice,
+                                       kAudioObjectPropertyScopeGlobal,
+                                       kAudioObjectPropertyElementMain};
+    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &addr, 0, NULL, &sz, &dev) != noErr || !dev)
+        return @"?";
+    CFStringRef name = NULL;
+    sz = sizeof(name);
+    addr.mSelector = kAudioDevicePropertyDeviceNameCFString;
+    if (AudioObjectGetPropertyData(dev, &addr, 0, NULL, &sz, &name) != noErr || !name)
+        return @"?";
+    return CFBridgingRelease(name);
+}
 
 // Voice-activity sidecar: whenever captured audio is above a speech-ish level,
 // touch <capture-dir>/voice_active (throttled to once per 5s). The auto-stop
@@ -114,24 +134,67 @@ int main(int argc, const char *argv[]) {
         sink.url = sysURL;
 
         // --- microphone -----------------------------------------------------
+        // The tap records the SYSTEM DEFAULT input device. When that device
+        // reconfigures mid-recording — AirPods dropping from A2DP to headset
+        // (HFP) mode the moment a call app grabs their mic, or the user
+        // switching inputs — AVAudioEngine STOPS and posts
+        // AVAudioEngineConfigurationChangeNotification. Unhandled, the mic
+        // stream is silent from that point on (this lost the owner's whole
+        // side of a huddle). So: re-tap + restart on every such change, and
+        // convert the new device format to the file's original format so one
+        // coherent WAV survives sample-rate flips (48k A2DP ↔ 16/24k HFP).
         AVAudioEngine *engine = [AVAudioEngine new];
         __block AVAudioFile *micFile = nil;
-        @try {
+        __block BOOL shuttingDown = NO;
+        void (^installMicTap)(void) = ^{
             AVAudioInputNode *input = engine.inputNode;
             AVAudioFormat *fmt = [input outputFormatForBus:0];
+            AVAudioFormat *fileFmt = micFile.processingFormat;
+            AVAudioConverter *conv = [fmt isEqual:fileFmt] ? nil
+                : [[AVAudioConverter alloc] initFromFormat:fmt toFormat:fileFmt];
+            AVAudioFile *file = micFile;
+            [input installTapOnBus:0 bufferSize:4096 format:fmt
+                             block:^(AVAudioPCMBuffer *buf, AVAudioTime *when) {
+                               NSError *werr = nil;
+                               AVAudioPCMBuffer *out = buf;
+                               if (conv) {
+                                   double ratio = fileFmt.sampleRate / fmt.sampleRate;
+                                   AVAudioFrameCount cap =
+                                       (AVAudioFrameCount)(buf.frameLength * ratio) + 64;
+                                   out = [[AVAudioPCMBuffer alloc] initWithPCMFormat:fileFmt
+                                                                       frameCapacity:cap];
+                                   __block BOOL fed = NO;
+                                   [conv convertToBuffer:out error:&werr
+                                       withInputFromBlock:^AVAudioBuffer *(
+                                           AVAudioPacketCount inNumPackets,
+                                           AVAudioConverterInputStatus *outStatus) {
+                                         if (fed) {
+                                             *outStatus = AVAudioConverterInputStatus_NoDataNow;
+                                             return nil;
+                                         }
+                                         fed = YES;
+                                         *outStatus = AVAudioConverterInputStatus_HaveData;
+                                         return buf;
+                                       }];
+                                   if (werr || out.frameLength == 0) return;
+                               }
+                               [file writeFromBuffer:out error:&werr];
+                               NoteVoiceLevel(out);
+                             }];
+        };
+        @try {
+            AVAudioFormat *fmt = [engine.inputNode outputFormatForBus:0];
             NSError *err = nil;
             micFile = [[AVAudioFile alloc] initForWriting:micURL settings:fmt.settings error:&err];
             if (!err) {
-                [input installTapOnBus:0 bufferSize:4096 format:fmt
-                                 block:^(AVAudioPCMBuffer *buf, AVAudioTime *when) {
-                                   NSError *werr = nil;
-                                   [micFile writeFromBuffer:buf error:&werr];
-                                   NoteVoiceLevel(buf);
-                                 }];
+                installMicTap();
                 if (![engine startAndReturnError:&err]) {
                     fprintf(stderr, "mic unavailable: %s — continuing system-audio only\n",
                             err.description.UTF8String);
                     micFile = nil;
+                } else {
+                    fprintf(stderr, "mic input: %s @ %.0f Hz\n",
+                            DefaultInputName().UTF8String, fmt.sampleRate);
                 }
             }
         } @catch (NSException *ex) {
@@ -139,6 +202,28 @@ int main(int argc, const char *argv[]) {
                     ex.description.UTF8String);
             micFile = nil;
         }
+
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:AVAudioEngineConfigurationChangeNotification
+                        object:engine
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification *note) {
+                      if (shuttingDown || !micFile) return;
+                      @try {
+                          [engine.inputNode removeTapOnBus:0];
+                          installMicTap();
+                          NSError *rerr = nil;
+                          if (![engine startAndReturnError:&rerr])
+                              fprintf(stderr, "mic re-start failed: %s\n",
+                                      rerr.description.UTF8String);
+                          else
+                              fprintf(stderr, "mic re-tapped: input now %s\n",
+                                      DefaultInputName().UTF8String);
+                      } @catch (NSException *ex) {
+                          fprintf(stderr, "mic re-tap failed: %s\n",
+                                  ex.description.UTF8String);
+                      }
+                    }];
 
         // --- system audio (ScreenCaptureKit) --------------------------------
         dispatch_queue_t audioQueue = dispatch_queue_create("meet-record.audio", NULL);
@@ -202,7 +287,6 @@ int main(int argc, const char *argv[]) {
         fflush(stdout);
 
         // --- graceful shutdown on SIGINT/SIGTERM -----------------------------
-        __block BOOL shuttingDown = NO;
         void (^shutdown)(void) = ^{
             if (shuttingDown) return;
             shuttingDown = YES;

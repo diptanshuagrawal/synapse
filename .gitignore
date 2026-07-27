@@ -103,6 +103,8 @@ secrets/
 # ──────────────────────────────────────────────────────────────────────
 work-context/config/*.yaml
 !work-context/config/*.example.yaml
+work-context/config/steno.local.sh
+!work-context/config/steno.local.example.sh
 
 # ──────────────────────────────────────────────────────────────────────
 # Private work output (narratives, retros, sessions, handoffs) — sensitive.
