@@ -160,19 +160,32 @@ while true; do
     # huddle should say so, not "adhoc". (/meeting-notes infers WHO from the
     # transcript and titles the note "Huddle with <name>".)
     app="$(echo "$inuse" | head -1 | cut -d' ' -f2-)"
+    # adhoc=1 → an inherently unscheduled call (a Slack huddle / FaceTime); a
+    # calendar event overlapping it is one you SKIPPED, not the one you're in,
+    # so NEVER adopt a calendar title for these — keep the app label.
     case "$app" in
-      *Slack*)                       slug="slack-huddle" ;;
-      *Teams*|*MSTeams*)             slug="teams-call" ;;
-      *Chrome*|*Safari*|*Arc*|*fire*) slug="browser-call" ;;
-      *FaceTime*)                    slug="facetime-call" ;;
-      *)                             slug="adhoc" ;;
+      *Slack*)                       slug="slack-huddle"; adhoc=1 ;;
+      *FaceTime*)                    slug="facetime-call"; adhoc=1 ;;
+      *Teams*|*MSTeams*)             slug="teams-call"; adhoc=0 ;;
+      *Chrome*|*Safari*|*Arc*|*fire*) slug="browser-call"; adhoc=0 ;;
+      *)                             slug="adhoc"; adhoc=0 ;;
     esac
     end=0; uid="$slug-$(date +%s)"
-    if [ -n "$PY" ]; then
+    # Adopt the live calendar event's title ONLY when the trigger is a scheduled-
+    # meeting client (adhoc=0) AND exactly one event is live. calendar_feed emits
+    # an ALT line per extra overlapping event; if any ALT is present the pick is a
+    # coin flip, so keep the app label and let /meeting-notes name it from the
+    # transcript. (2026-07-27 fix: a Sanket Slack huddle overlapping a scheduled
+    # NACH call was mislabeled as NACH because the calendar always won.)
+    if [ "$adhoc" = 0 ] && [ -n "$PY" ]; then
       state="$("$PY" "$WC/derive/meetings/calendar_feed.py" now 2>/dev/null)" || state="NONE"
-      case "$state" in
-        ACTIVE\|*) IFS='|' read -r _ slug end uid _ <<< "$state" ;;
-      esac
+      if printf '%s\n' "$state" | grep -q '^ALT|'; then
+        log "overlap: multiple live calendar events — keeping app label '$slug' (ambiguous)"
+      else
+        case "$state" in
+          ACTIVE\|*) IFS='|' read -r _ slug end uid _ <<< "$(printf '%s\n' "$state" | head -1)" ;;
+        esac
+      fi
     fi
     log "START call detected ($(echo "$inuse" | head -1 | cut -d' ' -f2-)) label=$slug"
     if "$MR" start "$slug" >>"$LOG" 2>&1; then
