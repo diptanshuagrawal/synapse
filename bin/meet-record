@@ -24,6 +24,14 @@ SRC="$REPO/bin/meet_record_capture.m"
 BIN="$CAP/meet-record-capture"
 PIDF="$CAP/pid"
 
+# Codesign identifier for the capture binary. TCC matches on identifier+cert, so
+# it must stay STABLE across rebuilds or the Screen-Recording grant silently
+# breaks. The real per-machine value lives in a GITIGNORED local config (never
+# in this public repo); the default here is only a placeholder that won't match
+# any real grant. See config/steno.local.example.sh.
+CODESIGN_ID="com.example.meet-record-capture"
+[ -f "$WC/config/steno.local.sh" ] && . "$WC/config/steno.local.sh"
+
 mkdir -p "$INBOX" "$CAP"
 
 notify() {  # best-effort UI feedback for hotkey use; silent in headless runs
@@ -35,7 +43,17 @@ ensure_built() {
     echo "building capture binary..."
     clang -fobjc-arc -O2 "$SRC" -o "$BIN" \
       -framework Foundation -framework AVFoundation -framework CoreMedia \
-      -framework ScreenCaptureKit || { echo "ERROR: clang build failed"; exit 1; }
+      -framework ScreenCaptureKit -framework CoreAudio || { echo "ERROR: clang build failed"; exit 1; }
+    # Sign with the persistent self-signed identity so the TCC Screen-Recording
+    # grant survives rebuilds (TCC matches identifier+cert, not the ad-hoc hash;
+    # an unsigned rebuild silently loses system audio on this admin-gated Mac).
+    if security find-identity -p codesigning -v 2>/dev/null | grep -q "meet-record-codesign"; then
+      codesign --force --sign "meet-record-codesign" \
+        --identifier "$CODESIGN_ID" "$BIN" \
+        || echo "WARN: codesign failed — Screen Recording grant will break"
+    else
+      echo "WARN: 'meet-record-codesign' identity missing — rebuild will lose the Screen Recording grant"
+    fi
   fi
 }
 
