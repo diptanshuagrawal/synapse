@@ -158,14 +158,15 @@ def _meetings_rows(q: str = "") -> list[dict]:
                 proj_by_stem[f"{parts[1]}-{parts[2]}"] = slug  # last row = max count
     except Exception:
         pass
-    # Same-day recordings sharing a base slug are joined into ONE meeting row
-    # ONLY when contiguous in time — i.e. fragments of a single call (a quick
-    # mic-drop/reconnect writes a fresh HHMM file). Distinct huddles hours apart
-    # MUST stay separate rows: grouping purely by (date, base) collapsed three
-    # same-day huddles (13:34 / 14:06 / 16:53) into ONE library entry — each
-    # should be its own meeting. Below: collect per-recording, then split each
-    # (date, base) bucket wherever consecutive START times are > GROUP_GAP_MIN apart.
-    GROUP_GAP_MIN = 20
+    # Each recording is its OWN meeting tile — that's what the owner expects (a
+    # huddle should look like any other meeting). Same-base recordings are joined
+    # into one tile ONLY when they're a genuine mic-drop/reconnect of a SINGLE
+    # call: consecutive starts within GROUP_GAP_MIN minutes. Anything further apart
+    # (distinct huddles — even 15 min apart like an 18:52 and a 19:07) becomes its
+    # own tile. Keep this SMALL: the auto-recorder stops ~25s after the mic frees,
+    # so a real reconnect resumes within a couple of minutes; a larger gap is a
+    # different meeting.
+    GROUP_GAP_MIN = 5
 
     def _seg_meta(stem: str, size: int) -> dict:
         m = re.search(r"-(\d{2})(\d{2})(?:\d{2})?$", stem[11:])
