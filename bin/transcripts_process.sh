@@ -258,8 +258,19 @@ for audio in ${QUEUE[@]+"${QUEUE[@]}"}; do
     _call_path=0
     if grep -q '"text"' "$prefix.them.json" 2>/dev/null; then
       _call_path=1
+      # The far-side ('them') is CLEAN digital system-audio (no room echo) with
+      # every remote/in-room voice mixed in — the clean case for diarization.
+      # Split it into `Them · Speaker N` (keeping `Me:` for the owner) so two
+      # people on the call, or a room on one Teams mic, don't collapse into one
+      # `Them`. SOFT overlay: diarizer unavailable (exit 3/4) → flat `Them:`
+      # (today). Diarize BEFORE the wavs are rm'd below. (must run before merge)
+      _them_diar=()
+      if bash "$REPO/bin/diarize.sh" "$them_wav" "$prefix.them.diar.json"; then
+        _them_diar=(--them-diarize "$prefix.them.diar.json")
+      fi
       "$PY" "$WC/derive/meetings/merge_streams.py" \
-        --me "$prefix.me.json" --them "$prefix.them.json" --out "$prefix"; merge_rc=$?
+        --me "$prefix.me.json" --them "$prefix.them.json" \
+        ${_them_diar[@]+"${_them_diar[@]}"} --out "$prefix"; merge_rc=$?
     elif bash "$REPO/bin/diarize.sh" "$me_wav" "$prefix.diar.json"; then
       "$PY" "$WC/derive/meetings/merge_streams.py" \
         --single "$prefix.me.json" --diarize "$prefix.diar.json" --out "$prefix"; merge_rc=$?
