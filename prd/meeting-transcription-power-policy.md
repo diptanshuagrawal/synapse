@@ -8,21 +8,27 @@ on battery. A merge-crash retry loop amplified it (fixed 2026-07-20:
 `merge_streams.py` tolerant UTF-8 decode). The manual pause flag
 (`transcripts/.transcription_paused`) is a band-aid, not the fix.
 
-**Principle.** Never *drop* a recording; *defer* transcription to a cheap moment.
-Recordings already show on Steno raw (untranscribed) — so deferral is invisible to
-the user. Transcribe at the right **time** (plugged in, not mid-meeting), at the
-right **cost** (lighter model / hardware accel).
+**Principle.** Never *drop* a recording, and never *drain* for one. Transcribe at the
+right **cost** — the lighter model (turbo) on battery, `large-v3` on AC — rather than
+deferring for hours. Right after the meeting, not mid-meeting; below a low-charge
+floor, defer to AC. Recordings show on Steno raw meanwhile, so any deferral is visible.
 
 ---
 
 ## Policy (steady state) — replaces per-call immediate sweeps
 
-`transcripts_process.sh` transcribes a queued recording only when ALL hold:
+`transcripts_process.sh` transcribes a queued recording when ALL hold:
 
-1. **On AC power AND charge ≥ floor** — `pmset -g ps` contains "AC Power" and battery
-   %% ≥ `TRANSCRIBE_BATTERY_FLOOR` (default 30). Off AC → defer. On AC but below the
-   floor → still defer: a heavy GPU job at very low charge can out-draw a weak charger
-   (net drain while "charging"). Deferred files stay in the inbox (shown raw on Steno).
+1. **Power** (revised 2026-07-27 — transcribe right after the meeting, not "when
+   plugged in"):
+   - **On AC** — battery %% ≥ `TRANSCRIBE_BATTERY_FLOOR` (default 30) → `large-v3`
+     (best quality; energy irrelevant on AC). Below the floor → defer: a heavy GPU
+     job at very low charge can out-draw a weak charger (net drain while "charging").
+   - **On battery** — %% ≥ `TRANSCRIBE_BATTERY_TURBO_FLOOR` (default 20) → transcribe
+     **now with `large-v3-turbo`** (4-6× faster = a fraction of the energy; ~1-2 %%
+     battery for a 30-min meeting). Below the turbo floor → defer until AC.
+   - Deferred files stay in the inbox (shown raw on Steno); `transcripts-watch` drains
+     them the moment you're on AC.
 2. **No recording active** — `meet-record status` ≠ RECORDING. Don't fight a live
    meeting for GPU.
 3. **Not hard-paused** — `transcripts/.transcription_paused` absent.
@@ -36,14 +42,18 @@ The queue is drained by the existing `transcripts-watch` launchd agent
 the queue automatically the moment you're on AC (day or night while charging). No
 separate nightly job needed.
 
-## Model tiering — NOT changed (respect the A/B)
+## Model tiering — quality on AC, turbo on battery
 
 `transcribe.sh` documents an owner A/B (2026-07-18): `large-v3` chosen over turbo
-("equal-or-better accuracy, 2× slower but irrelevant for background"). Once
-transcription is AC-gated, large-v3's higher energy never touches the battery — so
-turbo is unnecessary and the quality decision stands. `WHISPER_MODEL` env already
-exists as the override. Turbo remains an *optional* on-battery fallback only if we
-ever choose to transcribe on battery.
+("equal-or-better accuracy, 2× slower but irrelevant for background"). That holds
+**on AC**, where energy is free — so AC transcription keeps `large-v3`.
+
+**On battery** the trade flips (revised 2026-07-27): waiting for AC meant notes
+weren't ready right after the meeting. `large-v3` is the drain; turbo is 4-6× faster
+for a fraction of the energy. So on battery (≥ turbo floor) the sweep runs turbo —
+immediacy for a marginal quality cost. `transcripts_process.sh` sets
+`TRANSCRIBE_ON_BATTERY=1`, which the model-selection block honours over the backlog
+heuristic; an explicit `WHISPER_MODEL` from the caller still wins outright.
 
 ## Deeper lever (stretch) — ANE via CoreML
 
@@ -59,16 +69,18 @@ do not touch). Biggest hardware win; requires a source build + model gen.
 
 1. **Power + meeting gate** in `transcripts_process.sh` (early-exit → defer).
    ✅ DONE 2026-07-20 — single choke point; `FORCE_TRANSCRIBE=1` overrides.
+   ✅ REVISED 2026-07-27 — on battery ≥ 20 %% no longer defers; transcribes now
+   with turbo (`TRANSCRIBE_BATTERY_TURBO_FLOOR`, `TRANSCRIBE_ON_BATTERY=1`).
 2. ~~Nightly backstop~~ — NOT needed; `transcripts-watch` is already periodic.
-3. ~~Model default → turbo~~ — NOT changed; respects the 2026-07-18 large-v3 A/B
-   (AC-gating makes its energy moot).
+3. **Model default → turbo on battery** ✅ DONE 2026-07-27 — AC keeps large-v3
+   (A/B stands where energy is free); battery uses turbo for immediacy.
 4. **Steno UI** (optional, todo): surface "N queued · deferred (on battery)" + promote
    the manual pause flag to a real toggle button.
 5. **(stretch)** CoreML/ANE whisper build — the deep power lever.
 
 ## Net behaviour
 
-Record freely on battery all day → recordings visible immediately (raw) → they
-transcribe automatically the moment you're plugged in and not in a meeting (turbo,
-low cost), or overnight. Manual button for "I need this one now." Battery drain: gone
-by construction, not by remembering to toggle a flag.
+Record freely on battery → recordings visible immediately (raw) → they transcribe
+**right after the meeting** with turbo (low cost, ~1-2 %% battery), or with large-v3
+the moment you're on AC. Only a genuinely low battery (< 20 %%) defers to AC. Manual
+button still forces "I need this one now." Immediacy without the drain.

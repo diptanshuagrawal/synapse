@@ -69,21 +69,30 @@ if [ -f "$WC/transcripts/.transcription_paused" ] && [ "${FORCE_TRANSCRIBE:-}" !
   exit 0
 fi
 
-# --- power-aware: whisper on the GPU is the battery cost. Never drain for it.
-# Off AC → defer; the file stays in the inbox (shows on Steno raw) and the
-# periodic transcripts-watch drains it the moment you plug in. On AC, large-v3's
-# energy is irrelevant. FORCE_TRANSCRIBE=1 (Steno "Transcribe") overrides. ------
+# --- power-aware: whisper on the GPU is the battery cost. large-v3 is the drain;
+# turbo is ~4-6x faster = a fraction of the energy. So instead of waiting for AC
+# (notes sat in the inbox until you plugged in), transcribe RIGHT AFTER the
+# meeting even on battery — just with turbo, and only above a low-charge floor.
+# On AC → large-v3 (energy irrelevant). FORCE_TRANSCRIBE=1 (Steno "Transcribe")
+# overrides everything. --------------------------------------------------------
 if [ "${FORCE_TRANSCRIBE:-}" != "1" ]; then
   _ps=$(pmset -g ps 2>/dev/null)
   _pct=$(printf '%s' "$_ps" | grep -oE '[0-9]+%' | head -1 | tr -d '%')
   _floor="${TRANSCRIBE_BATTERY_FLOOR:-30}"
+  _batt_floor="${TRANSCRIBE_BATTERY_TURBO_FLOOR:-20}"
   if ! printf '%s' "$_ps" | grep -q "AC Power"; then
-    echo "ON BATTERY — deferring sweep until on AC power"
-    exit 0
-  fi
-  # Even on AC: a heavy GPU job at very low charge can out-draw a weak charger
-  # (net drain while "charging"). Hold off below the floor.
-  if [ -n "$_pct" ] && [ "$_pct" -lt "$_floor" ]; then
+    # On battery: below the turbo floor the charge is genuinely low → defer to AC
+    # (file stays in the inbox; transcripts-watch drains it the moment you plug in).
+    if [ -n "$_pct" ] && [ "$_pct" -lt "$_batt_floor" ]; then
+      echo "ON BATTERY, LOW (${_pct}% < ${_batt_floor}% floor) — deferring sweep until on AC power"
+      exit 0
+    fi
+    # Enough charge → transcribe now with turbo (cheap). Signals the model block.
+    export TRANSCRIBE_ON_BATTERY=1
+    echo "ON BATTERY (${_pct:-?}% >= ${_batt_floor}% floor) — transcribing now with turbo (low-energy)"
+  elif [ -n "$_pct" ] && [ "$_pct" -lt "$_floor" ]; then
+    # Even on AC: a heavy GPU job at very low charge can out-draw a weak charger
+    # (net drain while "charging"). Hold off below the floor.
     echo "LOW BATTERY (${_pct}% < ${_floor}% floor) despite AC — deferring sweep"
     exit 0
   fi
@@ -188,6 +197,8 @@ MODEL_QUALITY="${WHISPER_MODEL_QUALITY:-$HOME/.whisper-models/ggml-large-v3.bin}
 MODEL_TURBO="${WHISPER_MODEL_TURBO:-$HOME/.whisper-models/ggml-large-v3-turbo.bin}"
 if [ -n "${WHISPER_MODEL:-}" ]; then
   _model_why="caller override"
+elif [ "${TRANSCRIBE_ON_BATTERY:-}" = "1" ]; then
+  export WHISPER_MODEL="$MODEL_TURBO"; _model_why="turbo (on battery — low-energy)"
 elif [ "$qcount" -gt "$THRESH" ]; then
   export WHISPER_MODEL="$MODEL_TURBO"; _model_why="turbo (backlog $qcount > $THRESH)"
 else
@@ -244,7 +255,9 @@ for audio in ${QUEUE[@]+"${QUEUE[@]}"}; do
     # A real CALL has speech on 'them' → keep ground-truth Me:/Them:. Diarization
     # is a SOFT overlay: if the diarizer is unavailable the in-person branch
     # falls back to the plain Me:/Them: merge (today).
+    _call_path=0
     if grep -q '"text"' "$prefix.them.json" 2>/dev/null; then
+      _call_path=1
       "$PY" "$WC/derive/meetings/merge_streams.py" \
         --me "$prefix.me.json" --them "$prefix.them.json" --out "$prefix"; merge_rc=$?
     elif bash "$REPO/bin/diarize.sh" "$me_wav" "$prefix.diar.json"; then
@@ -256,6 +269,25 @@ for audio in ${QUEUE[@]+"${QUEUE[@]}"}; do
     fi
     if [ "$merge_rc" -ne 0 ]; then
       echo "FAIL (merge): $name — left in inbox"; failed=$((failed+1)); continue
+    fi
+    # On-speakers guard: on the CALL path, if the system-audio ('them') stream
+    # captured far less than the mic ('me'), the two sides likely weren't cleanly
+    # separated — you were on laptop SPEAKERS (not headphones), so the mic picked
+    # up BOTH voices while the system tap barely registered. Me:/Them: labels are
+    # then unreliable (everything collapses onto 'Me'). Flag it honestly at the
+    # top of the transcript instead of presenting wrong attribution as fact.
+    # Headphones give a clean split; diarization can't recover it from a mono mix.
+    if [ "$_call_path" = 1 ]; then
+      _me_n=$(grep -cvE '^[[:space:]]*$' "$prefix.me.txt" 2>/dev/null || true); _me_n=${_me_n:-0}
+      _them_n=$(grep -cvE '^[[:space:]]*$' "$prefix.them.txt" 2>/dev/null || true); _them_n=${_them_n:-0}
+      if [ "$_them_n" -gt 0 ] && [ "$_me_n" -ge $((_them_n * 6)) ]; then
+        _warn='⚠️ Speaker labels may be unreliable: the "Them" side captured far less audio than your mic — you were likely on speakers (not headphones), so the mic caught both voices. Use headphones for a clean Me/Them split.'
+        # Read the transcript into a var BEFORE the redirect: `> file` truncates
+        # before `$(cat file)` runs, which would wipe the transcript.
+        _body=$(cat "$prefix.txt" 2>/dev/null)
+        printf '%s\n\n%s\n' "$_warn" "$_body" > "$prefix.txt"
+        echo "WARN (on-speakers: them=${_them_n} me=${_me_n} lines — flagged unreliable labels): $name" >&2
+      fi
     fi
     rm -f "$me_wav" "$them_wav"   # m4a remains the audio archive
   elif bash "$REPO/bin/transcribe.sh" "$audio" "$prefix"; then
