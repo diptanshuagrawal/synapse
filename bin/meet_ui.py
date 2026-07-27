@@ -423,6 +423,10 @@ def signals() -> dict:
 
 
 # ── "My action items" (To-do) ────────────────────────────────────────────────
+# Feature paused 2026-07-24 (owner request: refine transcription/notes first).
+# Flip to True to restore; store backup: state/meeting_signals.json.disabled-2026-07-24
+TODO_FEATURE = False
+
 # The signal STORE and its owner-facing filter live in derive/meetings/signals.py
 # — we load that module by path (derive/ has no package __init__) and REUSE its
 # logic rather than reimplementing the JSON shape or the attribution rules here.
@@ -496,6 +500,11 @@ def _enrich_meeting(subject: str, idx: dict) -> dict:
 
 
 def todos() -> dict:
+    if not TODO_FEATURE:
+        return {"items": [], "follow_up": [], "suggestions": [], "done": [],
+                "untracked": [], "count": 0, "follow_up_count": 0,
+                "suggestion_count": 0, "done_count": 0,
+                "owner_resolved": True, "disabled": True}
     owner = _owner_handle()
     try:
         sig = _sig()
@@ -523,6 +532,8 @@ def todos() -> dict:
 
 
 def _todo_action(iid: str, verb: str) -> dict:
+    if not TODO_FEATURE:
+        return {"ok": False}
     iid = re.sub(r"[^a-zA-Z0-9-]", "", iid)
     if not iid:
         return {"ok": False}
@@ -642,7 +653,8 @@ width:30px;height:30px;flex-shrink:0;font-size:15px;cursor:pointer;line-height:1
 </style></head><body>
 <div id="side">
   <h1><svg width="20" height="20" viewBox="0 0 1024 1024" style="vertical-align:-4px;margin-right:6px"><rect width="1024" height="1024" rx="232" fill="#1f1d1a"/><g stroke="#c2410c" stroke-width="58" stroke-linecap="round" fill="none"><path d="M 232 547 v -70"/><path d="M 340 607 v -190"/><path d="M 448 572 v -120"/></g><g stroke="#faf6ee" stroke-width="58" stroke-linecap="round" fill="none"><path d="M 560 392 h 232"/><path d="M 560 512 h 232"/><path d="M 560 632 h 150"/></g></svg>Steno <span style="color:var(--muted);font-weight:400">· local</span><button id="theme" onclick="cycleTheme()">auto</button></h1>
-  <div id="todonav" onclick="showTodos()" title="Your open action items across meetings">
+  <!-- TODO-DISABLED: restore onclick="showTodos()" + original title to re-enable -->
+  <div id="todonav" style="opacity:.4;cursor:default;pointer-events:none" title="To-do is paused for now">
     <span>✓ To-do</span><span id="todocount"></span></div>
   <h2>Today</h2><div id="today" style="margin-bottom:14px"></div>
   <div id="sidecal" style="margin-bottom:16px"></div>
@@ -772,7 +784,7 @@ async function load(){
 function setTodoBadge(n){const b=$('todocount');if(!b)return;
  b.textContent=n||'';b.style.display=n?'inline-block':'none'}
 async function showLib(){sel=null;detail=null;mainView='lib';syncTodoNav();try{localStorage.removeItem('stenoView')}catch(e){}await renderLib()}
-async function showTodos(){sel=null;detail=null;mainView='todo';syncTodoNav();try{localStorage.removeItem('stenoView')}catch(e){}await renderTodos()}
+async function showTodos(){/* TODO-DISABLED: feature paused — no-op so nothing can enter the todo view */}
 function syncTodoNav(){const n=$('todonav');if(n)n.className=(mainView==='todo'&&!sel)?'on':''}
 async function renderLib(){
  const ms=await (await fetch('/api/meetings?q='+encodeURIComponent(mq)+'&limit=500')).json();
@@ -811,6 +823,13 @@ async function transcribe(id,ev){
  try{await fetch('/api/transcribe/'+encodeURIComponent(id),{method:'POST'});}catch(e){}
  // sweep runs in the background; the row flips to transcribed on its own once
  // the transcript lands (next library refresh).
+}
+async function retranscribe(lang){
+ if(!sel)return;
+ const L={auto:'Auto',en:'English',hi:'Hindi'}[lang]||lang;
+ if(!confirm('Re-transcribe this recording as '+L+'? Runs whisper again in the background (~1-2 min); refresh to see the new transcript.'))return;
+ try{await fetch('/api/transcribe/'+encodeURIComponent(sel)+'?lang='+lang,{method:'POST'});
+   alert('Re-transcribing as '+L+'. Reopen the meeting in a minute to see it.');}catch(e){alert('Failed to start: '+e);}
 }
 function bigCal(ms){
  const byDate={};ms.forEach(m=>{(byDate[m.date]=byDate[m.date]||[]).push(m)});
@@ -1109,7 +1128,14 @@ function render(){
            <select onchange="setSpeaker('${s.cluster}',this.value)" style="border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;padding:5px 10px;font-size:12.5px">${opts(s.handle||'')}</select>
          </div>`).join('');
      })()
-   : tab==='transcript' ? `<pre>${mapTranscript(detail.transcript).replace(/</g,'&lt;')}</pre>`
+   : tab==='transcript' ? `<div style="display:flex;gap:7px;align-items:center;margin-bottom:11px;font-size:12px;color:var(--muted);flex-wrap:wrap">
+       <span>Re-transcribe:</span>
+       <button onclick="retranscribe('auto')" style="border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:7px;padding:2px 10px;font-size:11.5px;cursor:pointer">Auto</button>
+       <button onclick="retranscribe('en')" style="border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:7px;padding:2px 10px;font-size:11.5px;cursor:pointer">English</button>
+       <button onclick="retranscribe('hi')" style="border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:7px;padding:2px 10px;font-size:11.5px;cursor:pointer">Hindi</button>
+       <span style="opacity:.8">— Hinglish comes out as gibberish on Auto; pick Hindi.</span>
+     </div>
+     <pre>${mapTranscript(detail.transcript).replace(/</g,'&lt;')}</pre>`
    : `<textarea id="mpad" style="width:100%;min-height:320px;border:1px solid var(--line);border-radius:12px;background:var(--card);padding:14px 16px;font:14px/1.6 ui-monospace,Menlo,monospace;resize:vertical;outline:none" placeholder="Add your own context — what mattered, corrections, decisions the transcript garbled. Autosaves; used on the next (re)generation.">${detail.scratchpad.replace(/</g,'&lt;')}</textarea>
       <div style="font-size:12px;color:var(--muted);margin-top:6px">autosaves · attach links above · hit ↻ regenerate when ready</div>`}</div>`;
  const mp=document.getElementById('mpad');
@@ -1566,7 +1592,16 @@ class H(BaseHTTPRequestHandler):
                         shutil.move(str(f), str(INBOX / f.name))
                 if src:
                     import os as _os
-                    env = {**_os.environ, "FORCE_TRANSCRIBE": "1"}  # bypass the pause toggle
+                    from urllib.parse import parse_qs, urlparse
+                    # Optional ?lang= to force whisper's language. Hinglish can't be
+                    # auto-detected (whisper decodes Hindi as confident-but-garbled
+                    # English), so the transcript tab offers Auto/English/Hindi and
+                    # passes the pick through transcripts_process.sh → transcribe.sh.
+                    lang = (parse_qs(urlparse(self.path).query).get("lang", ["auto"])[0] or "auto").lower()
+                    if lang not in ("auto", "hi", "en"):
+                        lang = "auto"
+                    env = {**_os.environ, "FORCE_TRANSCRIBE": "1",  # bypass the pause toggle
+                           "TRANSCRIBE_LANG": lang}
                     subprocess.Popen(["/bin/bash", str(REPO / "bin" / "transcripts_process.sh")],
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                      cwd=str(WC), env=env)

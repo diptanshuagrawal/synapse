@@ -57,7 +57,13 @@ if [ "$_silent" = 1 ]; then
 fi
 
 # Flag set tuned empirically 2026-07-17 (see project memory for the matrix):
-# -l auto: meetings code-switch between languages; let Whisper detect.
+# -l $LANG: transcription language, default "auto". Whisper picks ONE language
+#   per segment and CANNOT be auto-detected reliably on Hinglish — it decodes
+#   Hindi as confident-but-garbled English (measured: en mean-token-p 0.89 >
+#   hi 0.81 on a real huddle where hi was correct). So language is an EXPLICIT
+#   control: auto is fine for English meetings; set TRANSCRIBE_LANG=hi for
+#   Hindi/Hinglish huddles (Hindi transcribes right; English words render
+#   phonetically in Devanagari). Steno's re-transcribe button passes it.
 # -bs 5: beam search — measurably better decoding, ~1.5x slower (fine offline).
 # --prompt: domain vocab from config/transcribe.yaml biases decoding toward
 #   real jargon/names (fixed "lean"→lien 24/24 on a real meeting). The bias
@@ -86,8 +92,9 @@ fi
 VAD_MODEL="$HOME/.whisper-models/ggml-silero-v5.1.2.bin"
 VAD_ARGS=""
 [ -f "$VAD_MODEL" ] && VAD_ARGS="--vad --vad-model $VAD_MODEL"
+LANG="${TRANSCRIBE_LANG:-auto}"
 _run_whisper() {  # $1 = extra flags (e.g. "-mc 0" on the loop-recovery retry)
-  whisper-cli -m "$MODEL" -f "$WAV" -l auto -oj -otxt -of "$OUT" --no-prints -bs 5 -sns $VAD_ARGS $1 \
+  whisper-cli -m "$MODEL" -f "$WAV" -l "$LANG" -oj -otxt -of "$OUT" --no-prints -bs 5 -sns $VAD_ARGS $1 \
     ${PROMPT:+--prompt "This bank meeting discusses $PROMPT."} >/dev/null
 }
 _run_whisper ""
