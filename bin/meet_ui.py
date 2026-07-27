@@ -338,11 +338,29 @@ def _name_for(handle: str, roster: list) -> str:
     return handle
 
 
+def _speaker_files(mid: str, month: str) -> tuple[Path | None, Path | None, bool]:
+    """Return (diar_json, speakers_json, far_side) for a meeting, or (None, None,
+    False) if not diarized. An IN-PERSON single-mic meeting uses
+    <mid>.diar/.speakers.json; a dual-stream CALL diarizes only the far side into
+    <mid>.them.diar/.speakers.json (`Me` is the owner, never a taggable cluster).
+    A meeting is one or the other, never both — prefer the in-person pair."""
+    base = ARCHIVE / month
+    sp = base / f"{mid}.speakers.json"
+    if sp.exists():
+        return base / f"{mid}.diar.json", sp, False
+    tsp = base / f"{mid}.them.speakers.json"
+    if tsp.exists():
+        return base / f"{mid}.them.diar.json", tsp, True
+    return None, None, False
+
+
 def _speakers_payload(mid: str, month: str) -> dict | None:
-    """Parse <mid>.speakers.json into a UI payload: per-speaker current identity +
-    voice-match suggestion + the roster for the dropdown. None if not diarized."""
-    f = ARCHIVE / month / f"{mid}.speakers.json"
-    if not f.exists():
+    """Parse the speakers sidecar into a UI payload: per-speaker current identity +
+    voice-match suggestion + the roster for the dropdown. None if not diarized.
+    Far-side (dual-stream call) clusters are shown as `Them · Speaker N` to match
+    the transcript; in-person clusters stay `Speaker N`."""
+    _diar, f, far_side = _speaker_files(mid, month)
+    if f is None or not f.exists():
         return None
     try:
         data = json.loads(f.read_text(errors="replace"))
@@ -353,17 +371,21 @@ def _speakers_payload(mid: str, month: str) -> dict | None:
     for cluster, e in sorted(data.items(), key=lambda kv: kv[1].get("display", kv[0])):
         name, handle = e.get("name"), e.get("handle")
         auto, score = e.get("auto"), float(e.get("score") or 0)
+        # Far side: prefix the sidecar's `Speaker N` so tab + transcript agree.
+        display = e.get("display", cluster)
+        if far_side:
+            display = f"Them · {display}"
         if name:
             effective = name
         elif handle:
             effective = _name_for(handle, roster)
         else:
-            effective = e.get("display", cluster)
+            effective = display
         # A voice suggestion only surfaces when unconfirmed and above the gate.
         suggestion = (_name_for(auto, roster)
                       if auto and score >= VOICE_THRESHOLD and not handle and not name else None)
         lst.append({
-            "cluster": cluster, "display": e.get("display", cluster),
+            "cluster": cluster, "display": display,
             "handle": handle, "name": name, "effective": effective,
             "score": round(score, 2), "suggestion": suggestion, "suggestion_handle": auto,
         })
@@ -1223,11 +1245,17 @@ function copyShare(){ if(navigator.clipboard) navigator.clipboard.writeText(deta
 function setSpeaker(cluster,handle){
  fetch('/api/speakers/'+sel,{method:'POST',body:JSON.stringify({cluster:cluster,handle:handle})}).then(()=>seg_(sel));
 }
-// Display confirmed speaker names in the raw transcript (Speaker N → name).
+// Display confirmed speaker names in the raw transcript. The stored label is
+// `Speaker N` (in-person) or `Them · Speaker N` (far side); a confirmed name
+// replaces the WHOLE label. Longest display first so `Them · Speaker 1` wins
+// over a bare `Speaker 1`; a trailing \b keeps `Speaker 1` from eating `Speaker 10`.
 function mapTranscript(t){
  if(!detail.speakers) return t;
- const m={}; detail.speakers.list.forEach(s=>{ if(s.name) m[s.display]=s.name; });
- return t.replace(/\bSpeaker \d+\b/g, x=> m[x]||x);
+ detail.speakers.list.filter(s=>s.name)
+  .sort((a,b)=>b.display.length-a.display.length)
+  .forEach(s=>{ const re=new RegExp(s.display.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b','g');
+                t=t.replace(re, ()=>s.name); });  // callback: $ in a name is literal
+ return t;
 }
 function setCat(c){if(!c)return;
  fetch('/api/cat/'+sel,{method:'POST',body:c}).then(()=>{seg_(sel);load()})}
@@ -1595,8 +1623,9 @@ class H(BaseHTTPRequestHandler):
                 req = {}
             cluster = str(req.get("cluster", ""))
             handle = str(req.get("handle", "")).strip()
-            spk_f = ARCHIVE / month / f"{mid}.speakers.json"
-            if not (cluster and spk_f.exists()):
+            # Resolve the in-person OR far-side (dual-stream call) sidecar pair.
+            diar_f, spk_f, _far = _speaker_files(mid, month)
+            if not (cluster and spk_f and spk_f.exists()):
                 self._json({"ok": False, "error": "no such speaker map"})
                 return
             data = json.loads(spk_f.read_text(errors="replace"))
@@ -1611,8 +1640,7 @@ class H(BaseHTTPRequestHandler):
                 data[cluster]["name"] = None
             spk_f.write_text(json.dumps(data, indent=2), encoding="utf-8")
             # Enroll the voiceprint (best-effort; needs the diarize venv + diar.json).
-            diar_f = ARCHIVE / month / f"{mid}.diar.json"
-            if handle and DIAR_PY.exists() and diar_f.exists():
+            if handle and DIAR_PY.exists() and diar_f and diar_f.exists():
                 subprocess.Popen(
                     [str(DIAR_PY), str(WC / "derive" / "meetings" / "voice_gallery.py"),
                      "enroll", str(diar_f), cluster, handle],
