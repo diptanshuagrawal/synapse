@@ -22,11 +22,32 @@ Constants are kept in sync (by hand) with the awk collapses in bin/transcribe.sh
 
 from __future__ import annotations
 
+import re
+from collections import Counter
+
 # Keep in sync with the awk collapses in bin/transcribe.sh:
 #   consecutive:  awk 'prev==$0 {c++; if (c<2) print ...}'   -> keep first 2
 #   total-cap:    awk '{ if (++seen[$0] <= 6) print }'       -> cap at 6
 CONSECUTIVE_MAX = 2  # keep at most this many identical lines in a row
 TOTAL_MAX = 6        # cap any identical line to this many occurrences overall
+
+# Intra-line word-loop guard: a SINGLE segment dominated by one repeated token is
+# whisper's word-level hallucination loop ("सब्सक्राइब सब्सक्राइब …" x14, "जुड़े
+# जुड़े …" x24, "look look look …"). Distinct from the line-level dup guards above
+# — that's repeated SEGMENTS; this is one segment that is mostly one word.
+# Language-agnostic (counts whitespace tokens, no word list) so it catches
+# Devanagari caption-junk the English HALLU_RE regex can't.
+WORD_LOOP_MIN_REPEAT = 6   # top token must repeat at least this many times ...
+WORD_LOOP_SHARE = 0.5      # ... and be at least half the line's tokens
+_TOKEN_RE = re.compile(r"\S+")
+
+
+def is_word_loop(text: str) -> bool:
+    toks = _TOKEN_RE.findall(text)
+    if len(toks) < WORD_LOOP_MIN_REPEAT:
+        return False
+    _, n = Counter(toks).most_common(1)[0]
+    return n >= WORD_LOOP_MIN_REPEAT and n >= WORD_LOOP_SHARE * len(toks)
 
 
 class LoopCollapser:
@@ -45,6 +66,10 @@ class LoopCollapser:
         self._seen: dict[str, int] = {}
 
     def keep(self, text: str) -> bool:
+        # Intra-line word-loop → pure hallucination, drop outright (before the
+        # line-level guards, which only see repeated whole segments).
+        if is_word_loop(text):
+            return False
         # Consecutive-dup guard first (matches transcribe.sh, which runs the
         # consecutive collapse BEFORE the total cap): lines dropped here do NOT
         # count toward the total cap.

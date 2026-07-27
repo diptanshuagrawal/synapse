@@ -54,3 +54,19 @@ def test_dropped_consecutive_do_not_count_toward_total():
     # a later, non-consecutive 'a' still counts from 2, so 4 more survive.
     kept2 = [t for t in (["x", "a"] * 6) if c.keep(t)]
     assert kept2.count("a") == TOTAL_MAX - 2
+
+
+def test_intra_line_word_loop_dropped():
+    # Whisper word-level hallucination loop WITHIN one segment (2026-07-23 Positive
+    # Pay: "सब्सक्राइब …" x14, "जुड़े …" x24). Language-agnostic — a single line
+    # dominated by one repeated token is dropped; real speech is kept.
+    from derive.meetings.loop_dedup import is_word_loop
+
+    assert is_word_loop("सब्सक्राइब " * 14 + "कर दो")
+    assert is_word_loop("look " * 8)
+    assert not is_word_loop("branch banking may not have a UUID store at all")
+    assert not is_word_loop("okay okay sure")  # short → below the min-repeat floor
+
+    c = LoopCollapser()
+    assert not c.keep("जुड़े " * 24)                       # word-loop → dropped
+    assert c.keep("this is a normal sentence of speech")  # real → kept

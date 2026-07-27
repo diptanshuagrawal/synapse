@@ -32,6 +32,7 @@ def test_load_tags_filters_and_keeps_offsets(tmp_path):
         _seg("hello there", 0, 500),
         _seg("   ", 500, 600),               # empty → dropped
         _seg("please subscribe", 600, 700),  # whisper hallucination → dropped
+        _seg("सब्सक्राइब करें", 700, 800),   # Devanagari caption junk → dropped (HALLU_RE)
     ]}), encoding="utf-8")
 
     out = merge_streams.load(str(p), "Me")

@@ -47,7 +47,7 @@ CHUNK_TARGET = 1200  # chars of transcript text per event
 
 # Whisper silence-hallucination artifacts (shared with merge_streams.py).
 HALLU_RE = re.compile(
-    r"www\.|https?://|\.org(\.au)?|thanks for watching|please subscribe|"
+    r"www\.|https?://|\.org(\.au)?|thanks for watching|please subscribe|सब्सक्राइ|"
     r"subtitles?\s+(by|provided)|amara\.org|for more information,?\s+visit|fema\.gov",
     re.I,
 )
