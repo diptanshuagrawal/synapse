@@ -11,9 +11,12 @@ dump carries correct epics. Pairs with `/sprint-plan` (which does the allocation
 ## Steps
 
 1. **Read** `work-context/derived/initiatives-in.json` (the planner wrote it on
-   "Resolve via chat"). It has `initiatives: [{name, type, assignees, reviewer,
+   "Resolve via chat"). It has `initiatives: [{name, task, type, assignees, reviewer,
    priority, epic, comments}]`. If missing, tell the user to click **Resolve via
    chat** on the planner page first. If `$ARGUMENTS` names another path, use it.
+   A non-empty `task` marks the row as ONE specific work item inside the initiative
+   (several rows may share a `name` with different tasks/assignees) — entry identity
+   everywhere is **name+task**, and task rows resolve at ticket level (step 2.5).
 
 1.5 **Prefetch — one script call does the diff AND every Jira search.** Run
    `cd work-context && .venv/bin/python derive/resolve_prefetch.py` (append
@@ -54,6 +57,18 @@ dump carries correct epics. Pairs with `/sprint-plan` (which does the allocation
      one live ticket (To Do, 2 SP) under a generic 'Prod Misc' epic").
    - If neither epics nor tickets match, leave `epic` empty (new/unticketed work).
 
+2.5 **Task rows (`task` non-empty) — resolve at ticket level, never whole-epic SP.**
+   The prefetch already ran the ticket search on the TASK text (even when the epic
+   was preset). Resolve the `epic` from the initiative `name`/preset as in step 2,
+   but for `sp`:
+   - Match tickets to the task from `ticketSearch` and the chosen candidate's
+     `open` list — task text against summaries, the row's `assignees` against
+     ticket assignees as a tie-breaker.
+   - `sp` = sum of the matched tickets' remaining SP; list keys in `tickets`.
+   - Comment from THOSE tickets (status, holder), not the epic totals.
+   - Nothing matches → keep the epic, give a rough `sp`, say the task is unticketed.
+   - Rows sharing a `name` are separate out-entries — never merge or dedupe them.
+
 3. **Remaining SP**: for a resolved epic, use the candidate's `remainingSP`
    (already summed from `parent = <epic> AND statusCategory != Done`). For a
    ticket-level match (generic-epic fallback), sum the matched tickets' remaining
@@ -71,14 +86,14 @@ dump carries correct epics. Pairs with `/sprint-plan` (which does the allocation
 5. **Write** `work-context/derived/initiatives-out.json`:
    ```
    { "_generated": "<today>",
-     "initiatives": [ { "name", "epic", "epicSummary", "sp", "type", "comment", "_src", "tickets?" } ] }
+     "initiatives": [ { "name", "task", "epic", "epicSummary", "sp", "type", "comment", "_src", "tickets?" } ] }
    ```
-   Keep `name` **identical** to the input — the page merges by name (sets `epic`,
-   `comments`, and for unticketed ones the manual `sp`). Every entry (copied or
-   freshly resolved) gets `_src` = its input fingerprint (step 1.5), so the next
-   run can diff; ticket-level matches also carry `tickets: [<keys>]`. The page
-   ignores `_src` and `tickets` (and with `epic` empty it applies the ticket-summed
-   `sp` — exactly right, since the generic epic's SP would be wrong).
+   Keep `name` AND `task` **identical** to the input — the page merges by
+   name+task (sets `epic`, `comments`, and the manual `sp` for unticketed rows
+   AND for task rows, which always size from their matched tickets). Every entry
+   (copied or freshly resolved) gets `_src` = its input fingerprint (step 1.5),
+   so the next run can diff; ticket-level matches also carry `tickets: [<keys>]`.
+   The page ignores `_src` and `tickets`.
 
 6. **Tell the user**: resolved — click **Load resolved** on the planner page.
    Say how many were freshly resolved vs copied unchanged.

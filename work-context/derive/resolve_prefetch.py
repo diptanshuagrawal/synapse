@@ -3,9 +3,14 @@
 
 Reads  derived/initiatives-in.json  (planner "Resolve via chat" export)
    +   derived/initiatives-out.json (previous resolution, may be absent)
-Diffs by the _src fingerprint (name|epic|type|assignees, lowercased; an input epic that
-merely echoes the entry's own resolved epic is NOT a diff), then for rows that need
+Diffs by the _src fingerprint (name|task|epic|type|assignees, lowercased; an input epic
+that merely echoes the entry's own resolved epic is NOT a diff), then for rows that need
 resolution runs every Jira search concurrently and dumps the evidence.
+
+Rows may carry a `task` (a specific work item inside the initiative; several rows can
+share a `name` with different tasks). Entries are keyed by name+task. For task rows the
+ticket search matches the TASK text (and runs even when the epic is preset), so the
+resolver can size the row from its matched tickets instead of the whole epic.
 
 Writes derived/resolve-prefetch.json:
   { "_generated", "unchanged": [<out-entries verbatim, _src refreshed>],
@@ -58,10 +63,16 @@ def jql(query, fields, max_results=50):
 
 
 def fingerprint(row, blank_epic=False):
-    vals = [(row.get(k) or "").strip().lower() for k in ("name", "epic", "type", "assignees")]
+    vals = [(row.get(k) or "").strip().lower()
+            for k in ("name", "task", "epic", "type", "assignees")]
     if blank_epic:
-        vals[1] = ""
+        vals[2] = ""
     return "|".join(vals)
+
+
+def entry_key(row):
+    """Merge identity: initiative name + task (several rows can share a name)."""
+    return ((row.get("name") or "").strip() + "||" + (row.get("task") or "").strip()).lower()
 
 
 def _slim(i):
@@ -79,14 +90,21 @@ def _slim(i):
 TICKET_FIELDS = ["summary", "status", "assignee", "parent", SP_FIELD, "updated"]
 
 
-def search_initiative(name, preset_epic):
-    """Both text searches for one initiative (skipped when the epic is preset)."""
-    if preset_epic:
+def search_initiative(name, task, preset_epic):
+    """Both text searches for one initiative row.
+
+    Epic search runs on the initiative name (skipped when the epic is preset).
+    Ticket search runs on the task text when set (even with a preset epic — the
+    row must size from its own tickets), else on the name."""
+    if preset_epic and not task:
         return {"epicSearch": [], "ticketSearch": []}
-    safe = name.replace('"', "")
-    epics = jql(f'project = {PROJECT} AND issuetype = Epic AND summary ~ "{safe}"',
-                ["summary", "status"])
-    tickets = jql(f'project = {PROJECT} AND issuetype != Epic AND summary ~ "{safe}"',
+    epics = []
+    if not preset_epic:
+        safe = name.replace('"', "")
+        epics = jql(f'project = {PROJECT} AND issuetype = Epic AND summary ~ "{safe}"',
+                    ["summary", "status"])
+    text = (task or name).replace('"', "")
+    tickets = jql(f'project = {PROJECT} AND issuetype != Epic AND summary ~ "{text}"',
                   TICKET_FIELDS)
     return {
         "epicSearch": [{"key": i["key"], "summary": i["fields"]["summary"][:80],
@@ -101,11 +119,11 @@ def main():
         prev = json.loads((DERIVED / "initiatives-out.json").read_text())["initiatives"]
     except Exception:
         prev = []
-    old = {(e.get("name") or "").lower(): e for e in prev}
+    old = {entry_key(e): e for e in prev}
 
     unchanged, resolve_rows = [], []
     for row in inp:
-        e = old.get((row.get("name") or "").lower())
+        e = old.get(entry_key(row))
         cur = fingerprint(row)
         if e and not force_all:
             stored = e.get("_src", "")
@@ -120,7 +138,8 @@ def main():
     # fan out the per-initiative text searches
     with ThreadPoolExecutor(max_workers=6) as ex:
         searches = list(ex.map(
-            lambda rc: search_initiative(rc[0]["name"], (rc[0].get("epic") or "").strip()),
+            lambda rc: search_initiative(rc[0]["name"], (rc[0].get("task") or "").strip(),
+                                         (rc[0].get("epic") or "").strip()),
             resolve_rows))
 
     # candidate epics per initiative: preset epic, epic-title hits, ticket parents (voted)
