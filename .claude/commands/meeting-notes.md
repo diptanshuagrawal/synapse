@@ -150,6 +150,24 @@ Category definitions (owner-calibrated 2026-07-17 — follow these, not intuitio
 - These notes are PRIVATE (management/ is gitignored, never published). Do not
   redact; do capture candid content faithfully.
 
+## STEP 4.5 — Dedup pass (MANDATORY, not a while-drafting instinct)
+
+The #1 reason a note "feels like a task" is the same fact appearing in TL;DR AND
+Decisions AND Actions AND Details. The no-repetition rule is easy to draft past,
+so run this as an EXPLICIT pass before writing the file:
+
+1. Re-read the CORE (TL;DR + Decisions + Actions). List every distinct fact it
+   states.
+2. Scan `## Details` line by line. Delete or merge any line that only restates
+   one of those facts — a reworded version, or the same fact with one extra
+   number, STILL counts as a repeat. Details earns its place only by adding a
+   NEW nuance (who argued what, a constraint, a figure the core didn't carry).
+3. Within the core itself: the TL;DR must not pre-list the Decisions; an Action
+   that just says "do <the decision>" is already covered by the Decision — drop
+   it. (Real miss to avoid: "owner takes X" in TL;DR + Decision + Action = 3×.)
+
+A note that survives this pass says each thing exactly once.
+
 ## STEP 5 — Persist signals (EVERY meeting)
 
 Run for **every** meeting, not just standups — the note already produces the

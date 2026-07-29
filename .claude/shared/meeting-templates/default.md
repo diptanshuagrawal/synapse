@@ -6,8 +6,12 @@
 - **Lead with the CORE, in this exact order. Each layer has a DISTINCT job —
   NEVER restate the same fact across them (that triple-echo is the #1 thing that
   makes a note a chore):**
-  1. **TL;DR** — 1-2 lines. The SITUATION + the outcome, in prose. NOT a list of
-     the decisions (those are next) — don't pre-state them here.
+  1. **TL;DR** — ONE topic sentence: the situation + the single highest-order
+     outcome. HARD CAP: 2 sentences / ~40 words. NOT a list of the decisions.
+     Self-test: if it reads as "X; Y; and Z" where X/Y/Z are separate decisions,
+     it's a decision-list in disguise — name the THEME instead ("team aligned on
+     de-risk sequencing; execution starts before the data migration") and let
+     the Decisions section carry the specifics.
   2. **Decisions** — the choices made, one line each; stated ONCE (not echoed in
      the TL;DR above or the actions below). Omit the section if none.
   3. **Your action items** — the OWNER's follow-ups: the concrete next step +
@@ -21,8 +25,9 @@
     separate next step.
 - **NOTHING above the TL;DR.** The very first content line after the H1 is
   `**TL;DR**`. Any caveat (low-fidelity transcript, unattributed speaker, partial
-  audio) is a SINGLE short italic line at the very END — never a preamble. The
-  reader must hit the outcome first, not disclaimers.
+  audio) is a SINGLE short italic line at the very END — never a preamble,
+  written with underscores (`_…_`, not `*…*`). The reader must hit the outcome
+  first, not disclaimers.
 - THEN `## Details` — the supporting discussion, category-specific sections
   below, SKIPPABLE. Depth lives here so the top stays scannable.
 - **SAY EACH THING ONCE — no duplication.** The TL;DR is the only summary.
@@ -46,6 +51,14 @@
 (TL;DR + Decisions + Your action items are the universal CORE above. The sets
 below are what goes UNDER `## Details` — pick the set for the category, keep each
 bullet distilled, drop any that's empty. Don't re-list Decisions/Actions here.)
+
+STRUCTURE (enforce): everything below the core lives under a SINGLE `## Details`
+H2. Each subsection is a **bold-text label** on its own line — NEVER its own
+`##`/`###` heading, and never a sibling H2 to `## Details` (no top-level
+`## Open questions` / `## Asks`). "Open questions" appears ONLY for the
+categories that list it below, and ONLY for a genuinely unresolved NEW point —
+if the only open question is "which option wins" or restates a Risk/Decision
+already written, drop it (re-posing a stated fact as a question is repetition).
 
 **default / other**
 Discussion (topic-grouped) · Open questions
