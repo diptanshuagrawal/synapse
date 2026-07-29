@@ -895,6 +895,7 @@ def backlog_pool(cap=300):
                             "priority": (f.get("priority") or {}).get("name", ""),
                             "type": f["issuetype"]["name"],
                             "epic": (f.get("parent") or {}).get("key", ""),
+                            "epicSummary": (((f.get("parent") or {}).get("fields") or {}).get("summary") or "")[:70],
                             "assignee": (f.get("assignee") or {}).get("displayName", ""),
                             "status": f["status"]["name"],
                             "created": f.get("created", "")})
