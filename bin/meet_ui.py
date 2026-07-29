@@ -287,6 +287,8 @@ def _meetings_rows(q: str = "") -> list[dict]:
         if not d.is_dir():
             continue
         for m4a in d.glob("*.m4a"):
+            if m4a.name.endswith((".me.m4a", ".them.m4a")):
+                continue  # per-stream re-run audio, not a standalone meeting
             stem = m4a.stem
             date = _dt.datetime.fromtimestamp(m4a.stat().st_mtime).strftime("%Y-%m-%d")
             rid = f"{date}-{stem}"
