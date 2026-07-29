@@ -3,12 +3,22 @@
 ## Universal format (EVERY note — DISTILLED + scannable; the reader gets the whole meeting in ~15 seconds and can stop)
 
 - H1 = clean display title (no dates/slugs), then the `<!-- category: x -->` tag.
-- **Lead with the CORE, in this exact order. A reader who stops after it still
-  has everything they must know or do:**
-  1. **TL;DR** — 1-2 lines MAX. The outcome. Nothing else.
-  2. **Decisions** — one line each. Omit the whole section if none.
-  3. **Your action items** — the OWNER's to-dos first: `action (due)`, one line
-     each. Then others' actions under a sub-line. Omit if none.
+- **Lead with the CORE, in this exact order. Each layer has a DISTINCT job —
+  NEVER restate the same fact across them (that triple-echo is the #1 thing that
+  makes a note a chore):**
+  1. **TL;DR** — 1-2 lines. The SITUATION + the outcome, in prose. NOT a list of
+     the decisions (those are next) — don't pre-state them here.
+  2. **Decisions** — the choices made, one line each; stated ONCE (not echoed in
+     the TL;DR above or the actions below). Omit the section if none.
+  3. **Your action items** — the OWNER's follow-ups: the concrete next step +
+     `(due)`, one line each; others' under a sub-line. An action is the DOING,
+     not a decision restated — if the only "action" is "do <the decision>", the
+     decision already covers it; drop it. Omit if none.
+  - Anti-pattern (a real miss): TL;DR "owner takes transaction & savings" +
+    Decision "owner will take transaction & savings" + Action "take transaction
+    & savings" = the SAME fact 3×. Right: TL;DR frames the situation; the
+    Decision records the ownership once; an Action appears only for a genuinely
+    separate next step.
 - **NOTHING above the TL;DR.** The very first content line after the H1 is
   `**TL;DR**`. Any caveat (low-fidelity transcript, unattributed speaker, partial
   audio) is a SINGLE short italic line at the very END — never a preamble. The
