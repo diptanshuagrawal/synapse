@@ -57,14 +57,23 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if self.path.split("?")[0] == "/api/capacity":
             from urllib.parse import urlparse, parse_qs
-            fresh = parse_qs(urlparse(self.path).query).get("fresh", ["0"])[0] == "1"
+            q = parse_qs(urlparse(self.path).query)
+            fresh = q.get("fresh", ["0"])[0] == "1"
+            start_raw = q.get("start", [""])[0]
             cachef = os.path.join(DERIVED, "capacity.json")
             try:
-                if not fresh and os.path.exists(cachef):
+                start_override = None
+                if start_raw:
+                    import datetime as _dt
+                    start_override = _dt.date.fromisoformat(start_raw)
+                # a custom start always computes live — the cached model is a
+                # different window; the result still lands in the cache so a
+                # reload keeps showing the chosen window
+                if not (fresh or start_override) and os.path.exists(cachef):
                     with open(cachef, "rb") as f:
                         body = f.read()
                 else:
-                    model = capacity_engine.build()
+                    model = capacity_engine.build(start_override=start_override)
                     body = json.dumps(model).encode()
                     with open(cachef, "wb") as f:
                         f.write(body)
