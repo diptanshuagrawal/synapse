@@ -1018,8 +1018,10 @@ def get_ticket(key):
         return {"error": str(e)}
 
 
-def build():
+def build(start_override=None):
     start, active_label, sprint_id = active_sprint()
+    if start_override:
+        start = start_override
     days = [start + dt.timedelta(days=i) for i in range(14)]      # Wed -> Tue+1wk
     working = [d for d in days if d.weekday() < 5]
     year = start.year
@@ -1072,10 +1074,16 @@ def build():
                        "wfh": wfh_n, "net": net, "sp": sp,
                        "spillover": spill.get(p["canonical"], [])})
 
+    if start_override:
+        label = f"Custom start (during/after {active_label})"
+        cadence = "custom start, 2 weeks"
+    else:
+        label = f"Upcoming (after {active_label})"
+        cadence = "Wed-to-Wed, 2 weeks"
     model = {
-        "sprint": {"label": f"Upcoming (after {active_label})",
+        "sprint": {"label": label,
                    "start": days[0].isoformat(), "end": working[-1].isoformat(),
-                   "workingDays": wd, "cadence": "Wed-to-Wed, 2 weeks"},
+                   "workingDays": wd, "cadence": cadence},
         "effByRole": eff,
         "days": day_meta,
         "oncall": oncall_canon,
