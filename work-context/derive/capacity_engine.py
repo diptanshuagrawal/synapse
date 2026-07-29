@@ -878,7 +878,8 @@ def backlog_pool(cap=300):
         while len(out) < cap:
             payload = {"jql": jql, "maxResults": 100,
                        "fields": ["summary", "status", "customfield_10051", "priority",
-                                  "issuetype", "parent", "assignee", "created", "description"]}
+                                  "issuetype", "parent", "assignee", "reporter",
+                                  "created", "description"]}
             if token_page:
                 payload["nextPageToken"] = token_page
             req = urllib.request.Request(f"https://{JIRA_HOST}/rest/api/3/search/jql",
@@ -897,6 +898,7 @@ def backlog_pool(cap=300):
                             "epic": (f.get("parent") or {}).get("key", ""),
                             "epicSummary": (((f.get("parent") or {}).get("fields") or {}).get("summary") or "")[:70],
                             "assignee": (f.get("assignee") or {}).get("displayName", ""),
+                            "reporter": (f.get("reporter") or {}).get("displayName", ""),
                             "status": f["status"]["name"],
                             "created": f.get("created", "")})
             token_page = data.get("nextPageToken")
