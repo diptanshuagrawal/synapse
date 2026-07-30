@@ -34,10 +34,20 @@ Target = newly processed meetings from STEP 0, plus any meeting matching
 Skip meetings whose note file already exists (management/meetings/<date>-<slug>.md)
 unless the owner explicitly asked to redo one.
 
-REGENERATION: a missing note WITH a `<date>-<slug>.md.prev` sibling means the
-owner hit ↻ in the Steno UI after adding scratchpad context / links — treat it
-as pending, generate fresh from transcript + CURRENT scratchpad + links (don't
-copy the .prev; it exists only as the owner's rollback).
+ALSO enumerate explicit work markers — these are age-independent, and the
+`LIMIT 15` query above only sees recent recordings, so an OLD meeting's request
+would otherwise be missed (the bug that stranded regens/MoMs older than the last
+~15 recordings):
+
+    ls management/meetings/*.regen.request management/meetings/*.mom.request 2>/dev/null
+
+Each marker's `<date>-<slug>` is a pending target no matter how old the meeting is.
+
+REGENERATION: a `<date>-<slug>.regen.request` marker (or, legacy, a missing note
+WITH a `<date>-<slug>.md.prev` sibling) means the owner hit ↻ in the Steno UI —
+regenerate that note fresh from transcript + CURRENT scratchpad + links + `.cat`
+(don't copy the .prev; it's only the owner's rollback), then DELETE the
+`.regen.request` marker and report it in the run output.
 
 ## STEP 2 — Load the material (per meeting)
 
@@ -216,35 +226,48 @@ ticketize pickups read this, the latter via `# STANDUP CALL` in the standup gath
 ## STEP 5.5 — MoM on request
 
 A `management/meetings/<date>-<slug>.mom.request` marker means the owner hit
-"MoM" in the Steno UI. Generate `<date>-<slug>.mom.md` — a FORMAL, SHAREABLE
-Minutes of Meeting (unlike the private note, this may be sent to attendees /
-leadership, so: professional tone, no candid asides, no said-vs-done framing,
-no unattributed speculation):
+"MoM" in the Steno UI. Generate `<date>-<slug>.mom.md` — a SLACK-READY, shareable
+recap the owner can paste straight into a channel or DM. Unlike the private note
+it may go to attendees / leadership, so: professional tone, no candid asides, no
+said-vs-done framing, no unattributed speculation.
 
-    # Minutes of Meeting — <title>
-    **Date:** <date> · **Attendees:** <names supported by transcript/calendar; "+ others" if unsure>
+FORMAT — Slack mrkdwn, NOT document markdown (this gets pasted into Slack, which
+renders none of `#`/`##` headers, tables, or `[label](url)` links):
+- Section labels are `*bold*` lines; bullets are `•`; owners emphasised with
+  `*bold*`; links only as `<https://url|label>`.
+- NO `#`/`##` headers, NO markdown tables, NO `[label](url)` links.
+- It's a MESSAGE, not minutes-on-letterhead — compact, scannable in ~15 seconds.
 
-    **Summary** — 1–2 lines: what the meeting was for and the outcome. Nothing else.
+    *<Title>*  ·  <date>
+    _Attendees: <names supported by transcript/calendar; "+others" if unsure>_
 
-    ## Decisions
-    1. <the decision only, one line each>
+    *Summary* — 1–2 lines: what the meeting was for and the outcome. Nothing else.
 
-    ## Action items
-    | # | Action | Owner | Due |
+    *Decisions*
+    • <the decision only, one line each>
 
-    ## Discussion
-    - <ONLY context the Summary/Decisions/Actions don't already carry — brief,
-      topic-grouped, neutral. Skip this whole section if it would just restate them.>
+    *Actions*
+    • <action> — *<owner>* (<due, or "—">)
 
-    ## Open points
-    - <unresolved items; omit the section if none>
+    *Discussion*
+    • <ONLY context the Summary/Decisions/Actions don't already carry>
 
-Tidy MoM rules (a formal doc someone READS — make it scannable, not a chore):
-- Summary leads; nothing above it. Professional tone, no candid asides, no
-  said-vs-done framing, no unattributed speculation.
-- SAY EACH THING ONCE. Decisions/Actions are the substance; Discussion adds only
-  what they don't already say. If a Discussion bullet repeats a decision, drop it.
-- Omit any empty section entirely. A short, clean MoM beats a complete-but-heavy one.
+    *Open*
+    • <unresolved items>
+
+SAME quality bar as the note — a MoM is not exempt from the distillation rules:
+- DISTILL, don't transcribe — capture the point, cut filler and back-and-forth.
+- SAY EACH THING ONCE — the Summary frames; Decisions/Actions are the substance;
+  Discussion adds ONLY what they didn't already say. If a bullet restates a
+  decision/action/the summary, delete it. (Same triple-echo trap as the note.)
+- NO INFORMATION LOSS on what matters — every decision, every action+owner, and
+  every hard number/date/ticket/owner survives. Distil the wording, never drop a
+  decision or a commitment.
+- OMIT ANY EMPTY SECTION entirely (Decisions / Actions / Discussion / Open are all
+  optional). A 4-line MoM for a 4-line meeting is correct — short beats complete-
+  but-heavy.
+- Cross-reference to another meeting → name it in prose (NO local-file links; the
+  MoM leaves the machine). Only real shareable URLs, in `<url|label>` form.
 
 Ground it in transcript + scratchpad + resolved links, same as the note.
 Delete the `.mom.request` marker after writing. Report it in the run output.
