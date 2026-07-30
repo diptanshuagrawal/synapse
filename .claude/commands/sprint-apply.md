@@ -51,6 +51,20 @@ Walk every `work`/labelled-`oncall` cell and every `backlogPick`, then classify 
      created tickets — discover the SP custom field id from an existing SIZED ticket (a project
      may expose two SP-like fields, e.g. "Story Points" vs "Story point estimate"; use the one
      the board actually populates) and carry the plan's SP. New tickets with blank SP are a bug.
+- **Per-dev initiative coverage — CREATE placeholders for planned tracks with no ticket for
+  that dev (this is MANDATORY, not optional).** Every person has planned `work` cells labelled
+  with an initiative/track (e.g. "CASA migration", "CTS routing"). For EACH such (person, track):
+  check whether that person already has an open ticket under the track's epic (their `spillover`,
+  or a child of the mapped epic assigned to them). If **yes** → covered, no action. If **no** →
+  the dev has planned days with nothing to log against → action **CREATE a placeholder ticket**:
+  Task under the track's epic, assignee = that dev, priority from the initiative, SP ≈
+  `round(planned_days × eff)` (state it's a rough continuous-track estimate in the proposal so
+  the owner can adjust), added to the sprint. This is exactly the case for brand-new epics with
+  no children (e.g. CASA's fresh epic) and for a shared initiative where the open tickets sit with
+  a *different* dev (e.g. CTS spillover on dev A while dev B is also assigned the CTS track).
+  Do NOT skip these as "managed under the epic" — a planned track with no per-dev ticket is a gap
+  the owner expects filled. Surface every placeholder in the Step-2 proposal (with its rough SP)
+  so the gate can tweak SP/summary before apply.
 - **On-call tickets** — if the plan has on-call days, the team tracks on-call as its OWN ticket.
   Copy the convention from a recent on-call ticket (summary, epic, SP) and create ONE per on-call
   rotation in the sprint (e.g. one per person/week), assigned to that person, added to the sprint.
@@ -72,8 +86,12 @@ Walk every `work`/labelled-`oncall` cell and every `backlogPick`, then classify 
 Write the full action set to `work-context/state/sprint_apply_pending.json`, then render a
 readable plan in chat, grouped:
 `CREATE sprint` · `CREATE epics` (with the exact description you'll use) · `CREATE tickets`
-(summary · type · epic · assignee · priority) · `UPDATE` (key → assignee/priority/reviewer-comment)
-· `ADD to sprint` · `SKIPPED — spillover (auto-carries)`. Show counts.
+(summary · type · epic · assignee · priority · SP) — including **on-call tickets** AND
+**per-dev initiative placeholders** (mark each placeholder + its rough SP) · `UPDATE`
+(key → assignee/priority/reviewer-comment) · `ADD to sprint` · `SKIPPED — spillover
+(auto-carries)`. Show counts. Before rendering, sanity-check: does EVERY person with planned
+`work` days have at least one ticket (spillover, pick, or a placeholder you're creating)? If a
+dev's track has no ticket and you created no placeholder, that's a bug — go back to Step 1.
 
 ### 3 · STOP — checker gate
 Do not touch Jira yet. If any epic/new ticket needs a description or an ambiguous owner needs
