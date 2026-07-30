@@ -19,12 +19,28 @@ created) and renders their notes.
 At the 5-min cadence a slow render can still be running when the next fire
 starts. Take a single-flight lock FIRST so two runs never render the same
 meeting at once (double-written note / double signals / double MoM). `mkdir` is
-atomic; a stale lock (>15 min = a prior run died) is taken over.
+atomic; a stale lock (past the TTL = a prior run died) is taken over. TTL is
+8 min — comfortably longer than any legit render (so a live run is never
+preempted) yet short enough that a dead lock recovers within ~2 fires instead
+of ~3. Every fire appends to `/tmp/meeting-notes-auto.log`; a REPEATED
+"TOOK OVER stale lock" line there is the smoking gun for a render that keeps
+dying mid-run.
 
     LOCK=__REPO__/work-context/transcripts/.notes_render.lock
-    if ! mkdir "$LOCK" 2>/dev/null; then
+    LOG=/tmp/meeting-notes-auto.log
+    TTL=480   # stale-lock takeover after 8 min (was 900/15 min)
+    if mkdir "$LOCK" 2>/dev/null; then
+      echo "$(date '+%F %T') acquired lock (pid $$)" >> "$LOG"
+    else
       age=$(( $(date +%s) - $(stat -f %m "$LOCK" 2>/dev/null || echo 0) ))
-      if [ "$age" -lt 900 ]; then echo "LOCKED: another notes render already in progress — idle"; else rm -rf "$LOCK" && mkdir "$LOCK" && echo "took over stale lock (>15m)"; fi
+      if [ "$age" -lt "$TTL" ]; then
+        echo "$(date '+%F %T') LOCKED age=${age}s<${TTL}s — idle" >> "$LOG"
+        echo "LOCKED: another notes render already in progress — idle"
+      else
+        rm -rf "$LOCK" && mkdir "$LOCK"
+        echo "$(date '+%F %T') TOOK OVER stale lock age=${age}s>=${TTL}s (prior render died without releasing)" >> "$LOG"
+        echo "took over stale lock"
+      fi
     fi
 
 If it printed "LOCKED … — idle" → STOP NOW: do NO other work and do NOT touch
@@ -32,32 +48,52 @@ the lock (it belongs to the live run). Otherwise you hold the lock — continue.
 
 Cheap gate (only when you hold the lock):
 
+    LOCK=__REPO__/work-context/transcripts/.notes_render.lock
+    LOG=/tmp/meeting-notes-auto.log
     cd __REPO__/work-context
     PENDING=$(sqlite3 index/events.db "SELECT subject, title FROM events WHERE source='meeting' AND event_type='meeting_recorded' ORDER BY ts DESC LIMIT 10" | while IFS='|' read -r sub title; do
       d=$(echo "$sub" | cut -d: -f2); slug=$(echo "$sub" | cut -d: -f3)
       [ -f "__REPO__/management/meetings/$d-$slug.md" ] || echo "$sub"
     done)
     MOMS=$(ls __REPO__/management/meetings/*.mom.request 2>/dev/null)
-    if [ -z "$PENDING" ] && [ -z "$MOMS" ]; then rm -rf "$LOCK"; echo "GATE: nothing pending — idle"; else echo "GATE: pending notes:"; echo "$PENDING"; echo "GATE: pending MoMs:"; echo "$MOMS"; fi
+    REGENS=$(ls __REPO__/management/meetings/*.regen.request 2>/dev/null)
+    if [ -z "$PENDING" ] && [ -z "$MOMS" ] && [ -z "$REGENS" ]; then
+      rm -rf "$LOCK"; echo "$(date '+%F %T') gate: nothing pending — released, idle" >> "$LOG"; echo "GATE: nothing pending — idle"
+    else
+      echo "$(date '+%F %T') gate: notes=[$(echo $PENDING | tr '\n' ' ')] moms=[$(ls __REPO__/management/meetings/*.mom.request 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')] regens=[$(ls __REPO__/management/meetings/*.regen.request 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')]" >> "$LOG"
+      echo "GATE: pending notes:"; echo "$PENDING"; echo "GATE: pending MoMs:"; echo "$MOMS"; echo "GATE: pending regens:"; echo "$REGENS"
+    fi
 
 If it prints "nothing pending — idle" → STOP NOW (the lock was just released).
 
 ## If pending work exists
 
 Run the /meeting-notes skill (the SAME skill at `.claude/commands/meeting-notes.md`) for the
-pending subjects and/or MoM requests only. Follow it exactly: template by classified
+pending subjects, MoM requests, AND regen requests only. Follow it exactly: template by classified
 category, scratchpad merge if present, attached-links resolution (STEP 2.4), attribution
 honesty ((unattributed) over guessing), STEP 5 signal persistence via signals.py for EVERY
 meeting (not standups only — the Steno To-do view + standup gather both read this store), STEP 5.5
 MoM generation for each `.mom.request` marker (formal shareable minutes; delete the marker
 after writing), note file to `management/meetings/<date>-<slug>.md`.
 
+REGEN requests: each `<date>-<slug>.regen.request` marker means the owner hit "regenerate" in
+the Steno UI — re-render THAT specific note (the previous version is at `<mid>.md.prev`),
+honoring its `.cat`/scratchpad/links sidecars, then DELETE the marker. Age-independent: the
+marker names the exact mid, so an OLD meeting regenerates even though it's absent from the
+recent-recordings scan above (the bug that stranded regens older than the last ~10 recordings).
+
 Rules:
+- LOG the render phase to `/tmp/meeting-notes-auto.log` (same log STEP 0 writes) so a
+  repeatedly-dying render is diagnosable. The moment you decide to render, append
+  `echo "$(date '+%F %T') render START notes=<n> moms=<m>" >> /tmp/meeting-notes-auto.log`;
+  after each note/MoM file is written append `wrote <basename>`; after the LAST one append
+  `render DONE`; on ANY early stop append `render ABORTED: <reason>`.
 - RELEASE THE LOCK when finished: after the LAST note/MoM is written — or if you stop
   early for any reason after acquiring it — run
-  `rm -rf __REPO__/work-context/transcripts/.notes_render.lock`. (If the run crashes without
-  releasing, the 15-min TTL in STEP 0 lets the next fire take over — so overlap degrades to a
-  brief skip, never a double render.)
+  `rm -rf __REPO__/work-context/transcripts/.notes_render.lock` and append
+  `echo "$(date '+%F %T') released lock" >> /tmp/meeting-notes-auto.log`. (If the run crashes
+  without releasing, the 8-min TTL in STEP 0 lets the next fire take over — so overlap degrades
+  to a brief skip, never a double render.)
 - NO Slack posts, no external writes — note/MoM files + signals state are the only outputs.
 - NEVER run `bin/transcripts_process.sh` here (see RENDER-ONLY above) — the launchd watcher owns
   transcription. If a recorded meeting has no note AND no ingested transcript yet, it's simply not
