@@ -30,6 +30,15 @@ like `Work item (PROJ-2591)` that names its key directly). Resolve each against 
 initiative `epic`. A label with no resolvable key and no matching open ticket = **NEW work**.
 Map each person's display name → Jira accountId via `lookupJiraAccountId` + `config/people.yaml`.
 
+**accountId discipline (this caused a real mis-assignment bug — follow exactly):**
+- Build ONE name→accountId map up front by looking each person up; store `name → {accountId,
+  email}`. Every id used in a write is read from that map BY NAME — never hand-typed, never
+  copied from a sibling variable or from memory. A literal accountId pasted into a write is a bug.
+- Names collide: `user/search` often returns several people for a first-name query. Pick by
+  **exact email/displayName**, not the first hit; eyeball each mapping before any write.
+- Follow-up scripts (placeholders, a second pass) MUST re-read ids from the same map by name —
+  do not re-declare or hardcode them.
+
 ### 1 · Derive the action set (NO writes yet)
 Walk every `work`/labelled-`oncall` cell and every `backlogPick`, then classify into actions:
 
@@ -122,10 +131,15 @@ exactly what's in the (possibly owner-edited) pending file — nothing more.
   name must be < 30 chars** — DON'T use the planner's display label; follow the board's live
   convention (read `…/board/{id}/sprint?state=active,future` and increment, e.g. `… S5`→`… S6`).
 
-### 5 · Report
-Summarize every action with its result and a Jira link. State failures plainly; never fake a
-success. If a leg couldn't run (permissions, missing field), say so and leave it in the pending
-file for retry. Update `sprint_apply_pending.json` to mark applied items.
+### 5 · Verify, then report
+**Read back every ticket you created or updated and assert its assignee + SP match the plan
+BEFORE reporting success** (one JQL over all touched keys, fields `assignee,SP`). Compare each
+resolved `assignee.displayName` to the intended person by NAME — a write returning 204 only means
+the API accepted the payload, not that the payload was right (a wrong accountId still 204s). If
+any assignee/SP mismatches, fix it and re-verify; never report a ticket as done until the read-back
+confirms it. Then summarize every action with its result and a Jira link. State failures plainly;
+never fake a success. If a leg couldn't run (permissions, missing field), say so and leave it in
+the pending file for retry. Update `sprint_apply_pending.json` to mark applied items.
 
 ## Notes
 - Maker-checker is mandatory: **no Jira writes before an explicit go.**
