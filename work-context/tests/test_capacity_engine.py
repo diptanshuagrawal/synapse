@@ -169,3 +169,77 @@ def test_opt_str_scalar_and_empty():
     assert ce._opt_str(None) == ""
     assert ce._opt_str("") == ""
     assert ce._opt_str([]) == ""
+
+
+# --- build(start_override): custom start date overrides the active-sprint start
+#     and switches the sprint header (label + cadence). build() fans out to many
+#     Jira/state helpers, so stub them and exercise ONLY the override branch. ---
+
+def _stub_build_deps(monkeypatch, active_start):
+    monkeypatch.setattr(ce, "active_sprint", lambda: (active_start, "Sprint 42", 42))
+    monkeypatch.setattr(ce, "holidays_for", lambda year, days: {})
+    monkeypatch.setattr(ce, "eff_by_role", lambda: {"SDE2": 0.5})
+    monkeypatch.setattr(ce, "roster",
+                        lambda: [{"name": "A", "canonical": "a", "role": "SDE2", "email": "a@x"}])
+    monkeypatch.setattr(ce, "oncall_for", lambda working: {})
+    monkeypatch.setattr(ce, "leaves_for", lambda a, b: {})
+    monkeypatch.setattr(ce, "spillover", lambda sid, m: {})
+    monkeypatch.setattr(ce, "backlog_pool", lambda: [])
+
+
+def test_build_start_override_sets_start_and_custom_header(monkeypatch):
+    _stub_build_deps(monkeypatch, dt.date(2026, 7, 8))   # active sprint starts Wed Jul 8
+    m = ce.build(start_override=dt.date(2026, 7, 20))
+    assert m["sprint"]["start"] == "2026-07-20"          # override wins over active start
+    assert m["sprint"]["label"].startswith("Custom start")
+    assert m["sprint"]["cadence"] == "custom start, 2 weeks"
+
+
+def test_build_without_override_uses_active_sprint_start(monkeypatch):
+    _stub_build_deps(monkeypatch, dt.date(2026, 7, 8))
+    m = ce.build()
+    assert m["sprint"]["start"] == "2026-07-08"
+    assert m["sprint"]["label"] == "Upcoming (after Sprint 42)"
+    assert m["sprint"]["cadence"] == "Wed-to-Wed, 2 weeks"
+
+
+# --- backlog_pool: the Jira mapping layer. Stub the HTTP so we assert the field
+#     extraction only, incl. the newly-added reporter + epicSummary fields. ---
+
+def _stub_backlog_http(monkeypatch, canned):
+    import io
+    import json as _json
+    monkeypatch.setattr(ce, "_secret", lambda k: "x")
+    monkeypatch.setattr("urllib.request.urlopen",
+                        lambda req, timeout=0: io.BytesIO(_json.dumps(canned).encode()))
+
+
+def test_backlog_pool_maps_reporter_and_epic_summary(monkeypatch):
+    _stub_backlog_http(monkeypatch, {"isLast": True, "issues": [
+        {"key": "K-1", "fields": {
+            "summary": "do the thing", "status": {"name": "To Do"},
+            "customfield_10051": 3, "priority": {"name": "P2"},
+            "issuetype": {"name": "Story"},
+            "parent": {"key": "E-9", "fields": {"summary": "Epic Nine"}},
+            "assignee": {"displayName": "Dev A"},
+            "reporter": {"displayName": "PM B"},
+            "created": "2026-06-01T00:00:00Z", "description": None}}]})
+    out = ce.backlog_pool()
+    assert len(out) == 1
+    t = out[0]
+    assert t["reporter"] == "PM B"
+    assert t["epicSummary"] == "Epic Nine"
+    assert t["epic"] == "E-9"
+
+
+def test_backlog_pool_missing_reporter_and_parent_default_empty(monkeypatch):
+    _stub_backlog_http(monkeypatch, {"isLast": True, "issues": [
+        {"key": "K-2", "fields": {
+            "summary": "s", "status": {"name": "To Do"},
+            "customfield_10051": None, "priority": None,
+            "issuetype": {"name": "Bug"},
+            "created": "", "description": None}}]})
+    t = ce.backlog_pool()[0]
+    assert t["reporter"] == ""
+    assert t["epicSummary"] == ""
+    assert t["epic"] == ""
