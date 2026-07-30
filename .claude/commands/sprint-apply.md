@@ -51,20 +51,27 @@ Walk every `work`/labelled-`oncall` cell and every `backlogPick`, then classify 
      created tickets — discover the SP custom field id from an existing SIZED ticket (a project
      may expose two SP-like fields, e.g. "Story Points" vs "Story point estimate"; use the one
      the board actually populates) and carry the plan's SP. New tickets with blank SP are a bug.
-- **Per-dev initiative coverage — CREATE placeholders for planned tracks with no ticket for
-  that dev (this is MANDATORY, not optional).** Every person has planned `work` cells labelled
-  with an initiative/track (e.g. "CASA migration", "CTS routing"). For EACH such (person, track):
-  check whether that person already has an open ticket under the track's epic (their `spillover`,
-  or a child of the mapped epic assigned to them). If **yes** → covered, no action. If **no** →
-  the dev has planned days with nothing to log against → action **CREATE a placeholder ticket**:
-  Task under the track's epic, assignee = that dev, priority from the initiative, SP ≈
-  `round(planned_days × eff)` (state it's a rough continuous-track estimate in the proposal so
-  the owner can adjust), added to the sprint. This is exactly the case for brand-new epics with
-  no children (e.g. CASA's fresh epic) and for a shared initiative where the open tickets sit with
-  a *different* dev (e.g. CTS spillover on dev A while dev B is also assigned the CTS track).
-  Do NOT skip these as "managed under the epic" — a planned track with no per-dev ticket is a gap
-  the owner expects filled. Surface every placeholder in the Step-2 proposal (with its rough SP)
-  so the gate can tweak SP/summary before apply.
+- **Per-(person, task-row) coverage — resolve EVERY planned work item to a ticket in the sprint
+  (MANDATORY). Granularity is the plan/initiative ROW, NOT the epic.** For each person's planned
+  `work` track (each initiative row + each `task` row — treat a repeated initiative with a
+  different `task`/dev as its OWN item; two task rows under the same epic but with different devs
+  are two separate items), find the ONE ticket that represents THAT person doing THAT item:
+  1. **Existing + assigned to that dev** (their `spillover`, or a matched backlog/epic-child
+     ticket assigned to them) → covered. **If it's a backlog ticket (not spillover), it is NOT in
+     a sprint yet → PULL it into the target sprint.** Do NOT assume an existing initiative ticket
+     is already in the sprint — check the `sprint` field/verify; spillover auto-carries, everything
+     else must be explicitly added.
+  2. **Existing but assigned to a DIFFERENT dev** (a shared task ticket sits with dev A while the
+     plan also puts dev B on that same task row) → that ticket covers dev A; dev B still has no
+     ticket → **CREATE a placeholder** for dev B (don't reassign the shared one, don't leave B
+     ticketless). Pull the existing one in for dev A.
+  3. **No ticket anywhere** (a brand-new epic with no children, or a track nobody has ticketed) →
+     **CREATE a placeholder**: Task under the track's epic, assignee = that dev, priority from the
+     initiative, SP ≈ `round(planned_days × eff)` (flag it as a rough continuous-track estimate),
+     added to the sprint.
+  Epic-level coverage is NOT sufficient — "the dev has *some* ticket under this epic" does not mean
+  every planned row is ticketed. Surface every pull + every placeholder (with rough SP) in the
+  Step-2 proposal so the gate can adjust before apply.
 - **On-call tickets** — if the plan has on-call days, the team tracks on-call as its OWN ticket.
   Copy the convention from a recent on-call ticket (summary, epic, SP) and create ONE per on-call
   rotation in the sprint (e.g. one per person/week), assigned to that person, added to the sprint.
