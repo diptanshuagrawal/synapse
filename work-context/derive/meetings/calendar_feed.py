@@ -52,20 +52,53 @@ def _ics_url() -> str:
     return url
 
 
-def _fetch(max_age_min: int = 10, force: bool = False) -> str:
+def _fetch(max_age_min: int = 10, force: bool = False, strict: bool = False) -> str:
+    """Return calendar ICS text, refreshing the cache when stale.
+
+    A refresh is only accepted when curl returns HTTP 200 AND the body is a real
+    `BEGIN:VCALENDAR` payload — so a 302→login/error redirect (the signature of a
+    dead / IT-revoked publish link) or any non-ICS body can NEVER overwrite the
+    cache or masquerade as success. `strict=True` (the explicit `refresh` command)
+    fails LOUD with the HTTP status instead of silently falling back to stale.
+    """
     if (not force and CACHE.exists()
             and time.time() - CACHE.stat().st_mtime < max_age_min * 60):
         return CACHE.read_text(encoding="utf-8", errors="replace")
     url = _ics_url()
     CACHE.parent.mkdir(parents=True, exist_ok=True)
     tmp = CACHE.with_suffix(f".ics.tmp.{__import__('os').getpid()}")
-    r = subprocess.run(["curl", "-sf", "--max-time", "60", url, "-o", str(tmp)])
-    if r.returncode != 0 or not tmp.exists() or tmp.stat().st_size < 100:
+    # -w %{http_code} so a failure is actionable; NO -L (don't chase a redirect
+    # into a login/error page and cache that as the calendar).
+    r = subprocess.run(
+        ["curl", "-s", "--max-time", "60", "-o", str(tmp), "-w", "%{http_code}", url],
+        capture_output=True, text=True)
+    code = (r.stdout or "").strip() or "?"
+    size = tmp.stat().st_size if tmp.exists() else 0
+    head = ""
+    if size:
+        try:
+            head = tmp.read_text(encoding="utf-8", errors="replace")[:64].lstrip()
+        except OSError:
+            head = ""
+    ok = (r.returncode == 0 and code == "200"
+          and size >= 100 and head.startswith("BEGIN:VCALENDAR"))
+    if not ok:
         tmp.unlink(missing_ok=True)
+        why = f"curl exit {r.returncode}, HTTP {code}, {size} bytes"
+        if size >= 100 and not head.startswith("BEGIN:VCALENDAR"):
+            why += " — body is NOT ICS (likely a redirect to a login/error page)"
+        age = int((time.time() - CACHE.stat().st_mtime) / 60) if CACHE.exists() else None
+        if strict:
+            hint = ("The published Outlook ICS link is likely dead or IT-blocked "
+                    "(302→error is the usual sign). Re-publish the calendar in "
+                    "Outlook and update config/sources.yaml → calendar.ics_url.")
+            stale = f" Cache is {age} min old and was NOT updated." if age is not None else ""
+            sys.exit(f"ERROR: calendar refresh FAILED ({why}). {hint}{stale}")
         if CACHE.exists():
-            print("WARN: feed refresh failed — using stale cache", file=sys.stderr)
+            print(f"WARN: feed refresh failed ({why}) — using STALE cache "
+                  f"({age} min old)", file=sys.stderr)
             return CACHE.read_text(encoding="utf-8", errors="replace")
-        sys.exit("ERROR: calendar feed fetch failed and no cache present")
+        sys.exit(f"ERROR: calendar feed fetch failed ({why}) and no cache present")
     tmp.replace(CACHE)
     return CACHE.read_text(encoding="utf-8", errors="replace")
 
@@ -214,8 +247,8 @@ def main() -> None:
         sys.exit(__doc__)
     cmd = sys.argv[1]
     if cmd == "refresh":
-        _fetch(force=True)
-        print("OK refreshed")
+        txt = _fetch(force=True, strict=True)   # exits non-zero + explains on failure
+        print(f"OK refreshed — {txt.count('BEGIN:VEVENT')} events")
         return
     raw = _fetch()
     events = _events(raw)

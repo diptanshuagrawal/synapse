@@ -82,12 +82,24 @@ honoring its `.cat`/scratchpad/links sidecars, then DELETE the marker. Age-indep
 marker names the exact mid, so an OLD meeting regenerates even though it's absent from the
 recent-recordings scan above (the bug that stranded regens older than the last ~10 recordings).
 
+FAST-PATH — MoM / regen-only fires SKIP the inbox sweep. If there are NO pending NOTES
+(PENDING empty) and the only work is `.mom.request` / `.regen.request` markers, do NOT run the
+/meeting-notes STEP 0 inbox sweep (whisper/ingest) — the note + archived transcript already
+exist on disk. Go straight to: read `management/meetings/<mid>.md` +
+`transcripts/archive/<month>/<mid>.txt`, synthesize the MoM (STEP 5.5) or regenerate the note,
+write it, delete the marker. WHY: a MoM fire that runs the full sweep + synthesis has been
+overrunning the run window and getting SIGKILLed mid-render (note fires finish in ~3 min; MoM
+fires hung ~12 min and were killed → MoM never landed, "queued forever"). Skipping the sweep
+keeps MoM/regen fires as short as note fires.
+
 Rules:
-- LOG the render phase to `/tmp/meeting-notes-auto.log` (same log STEP 0 writes) so a
-  repeatedly-dying render is diagnosable. The moment you decide to render, append
+- LOG each phase to `/tmp/meeting-notes-auto.log` (same log STEP 0 writes) so a repeatedly-dying
+  render is diagnosable AND you can see WHERE it dies. The moment you decide to render, append
   `echo "$(date '+%F %T') render START notes=<n> moms=<m>" >> /tmp/meeting-notes-auto.log`;
-  after each note/MoM file is written append `wrote <basename>`; after the LAST one append
-  `render DONE`; on ANY early stop append `render ABORTED: <reason>`.
+  right before synthesizing each MoM/note append `synth <basename>`; after each file is written
+  append `wrote <basename>`; after the LAST one append `render DONE`; on ANY early stop append
+  `render ABORTED: <reason>`. (START-but-no-`synth` = died in the sweep; `synth`-but-no-`wrote`
+  = died in synthesis.)
 - RELEASE THE LOCK when finished: after the LAST note/MoM is written — or if you stop
   early for any reason after acquiring it — run
   `rm -rf __REPO__/work-context/transcripts/.notes_render.lock` and append

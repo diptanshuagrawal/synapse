@@ -63,10 +63,16 @@ already written, drop it (re-posing a stated fact as a question is repetition).
 **default / other**
 Discussion (topic-grouped) · Open questions
 
-**1-1** (managerial; private — candid is fine here)
-How they're doing · Topics they raised · Feedback exchanged ·
-Growth / career notes
-(agreed follow-ups → core action items)
+**1-1** (managerial EM↔dev; private — candid is fine here)
+FIRST fix the manager→report DIRECTION from the content (see the skill's STEP 4
+"1-1 DIRECTION" hard rule): whoever sets the other's goals / gives competency
+feedback is the MANAGER; the other is the REPORT. NEVER assume the recording
+owner is the manager — often the owner's OWN manager ran the owner's review, so
+the goals + feedback are the OWNER's (owner = report). Frame every line in that
+direction; getting it backwards inverts the whole note.
+Sections: How the report is doing · Topics the report raised (upward) ·
+Feedback the manager gave · Goals set + growth/career notes
+(agreed follow-ups → core action items, attributed to whoever owns each)
 
 **prd-handover**
 What's being handed over · Key flows & components walked through ·
