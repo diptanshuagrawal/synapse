@@ -121,6 +121,20 @@ Category definitions (owner-calibrated 2026-07-17 — follow these, not intuitio
   rules above. CAVEAT: if the owner was on speakers, the mic hears the remote
   side too — a `Me:` line that duplicates an adjacent `Them:` line is the echo,
   not the owner speaking; prefer the `Them:` copy.
+- 1-1 DIRECTION (MANDATORY for every `1-1`; the #1 way a 1-1 note goes wrong):
+  a managerial 1-1 always has a MANAGER and a REPORT. Determine which side the
+  OWNER is on from the CONTENT — this is ALWAYS unambiguous, so there is no
+  excuse for getting it backwards. The MANAGER is whoever sets the other's
+  goals, gives competency / performance feedback, or assesses the other; the
+  REPORT is whoever receives goals/feedback and raises things upward. NEVER
+  assume the recording owner is the manager — the owner's OWN manager frequently
+  runs the owner's review, in which case the OWNER is the report (their goals,
+  their feedback, their competency being set — not the other way round). Before
+  writing, state the direction to yourself ("owner is the REPORT; <other> set
+  the owner's goals") and frame EVERY goal, action item, and feedback line that
+  way. Getting the direction backwards inverts the whole note and is a hard fail.
+  `Me:` telling you who held the mic does NOT tell you who is the manager —
+  the mic-owner is just as often the one being reviewed.
 - SPEAKER N (in-person, diarized): meetings captured on ONE room mic are
   diarized — lines are prefixed `Speaker 1:` / `Speaker 2:` / … These are
   DISTINCT VOICES, not names, and the numbering is arbitrary per meeting
