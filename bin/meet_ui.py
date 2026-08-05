@@ -72,6 +72,12 @@ def rec_status() -> dict:
             "mode": "mic-only" if "mic-only" in log else "full",
             "auto": (CAP / "auto").exists(),
         }
+        # Live silent-mic detection: the capture touches .capture/mic_active when
+        # the mic carries voice. If it stays stale >20s into a recording (or was
+        # never created), the mic is dead/muted → the recording is going silent.
+        ma = CAP / "mic_active"
+        silent_for = (time.time() - ma.stat().st_mtime) if ma.exists() else out["elapsed"]
+        out["mic_silent"] = out["elapsed"] > 20 and silent_for > 20
     except Exception:
         pass
     # Persistent in-person nudge (meet_watch writes it while a calendar meeting is
@@ -781,6 +787,7 @@ width:30px;height:30px;flex-shrink:0;font-size:15px;cursor:pointer;line-height:1
     <select id="picker" style="display:none;margin-left:12px;border:1px solid var(--line);border-radius:8px;padding:5px 8px;font-size:12.5px;background:#fff" onchange="relabel(this.value)"></select>
     <button onclick="toggleRec()">Stop</button>
   </div>
+  <div id="recwarn" style="display:none;margin:0 0 14px;border-radius:12px;padding:10px 14px;font-size:13px;font-weight:600;line-height:1.45"></div>
   <textarea id="pad" placeholder="Jot rough notes here during the call — they'll shape the AI notes…"></textarea>
   <div id="linkrow" style="display:none;margin-top:8px">
     <input id="linkin" placeholder="attach context — slack thread / confluence / jira link, press Enter"
@@ -822,6 +829,7 @@ function smd(t){
 async function poll(){
  const s=await (await fetch('/api/status')).json();
  $('rec').className = s.recording ? 'on' : '';
+ if(!s.recording) $('recwarn').style.display='none';
  const nud = s.nudge && !s.recording;
  $('nudge').style.display = nud ? 'flex':'none';
  if(nud) $('nudgetitle').textContent = s.nudge;
@@ -841,6 +849,21 @@ async function poll(){
    recSuffix=' · '+(s.mode==='full'?'both sides':'mic only')+(s.auto?' · auto':' · manual');
    $('reclbl').textContent=(s.label||'').replaceAll('-',' ');
    $('recmeta').textContent='recording · '+fmt(recEl)+recSuffix;
+   // Loud, live capture-health warnings — catch a broken recording DURING the
+   // call, not days later as an empty note. mic-only = Screen-Recording perm off
+   // (far side not captured); mic_silent = mic dead/muted (whole recording empty).
+   const warns=[];
+   if(s.mode!=='full') warns.push('⚠️ System audio NOT captured — recording your mic only. The other side will be missing. (Screen-Recording permission is off.)');
+   if(s.mic_silent) warns.push('🔴 Mic is silent — no voice detected. Check your input device / unmute now, or this recording will be empty.');
+   const rw=$('recwarn');
+   if(warns.length){
+     const crit=!!s.mic_silent;
+     rw.style.display='block';
+     rw.style.background=crit?'#3a0f0f':'var(--recbg)';
+     rw.style.color=crit?'#ff6b6b':'var(--accent)';
+     rw.style.border='1px solid '+(crit?'#ff6b6b':'var(--recline)');
+     rw.innerHTML=warns.join('<br>');
+   } else rw.style.display='none';
    // Overlapping calendar events → the label was a guess. Offer the picker.
    const live=await (await fetch('/api/live')).json();
    const pk=$('picker');
