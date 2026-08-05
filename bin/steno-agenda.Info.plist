@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.steno.agenda</string>
+  <key>CFBundleName</key>
+  <string>steno-agenda</string>
+  <key>NSCalendarsUsageDescription</key>
+  <string>Steno reads your local calendar to show your agenda and auto-name meeting recordings.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>Steno reads your local calendar to show your agenda and auto-name meeting recordings.</string>
+</dict>
+</plist>

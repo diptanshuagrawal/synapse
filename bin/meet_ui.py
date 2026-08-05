@@ -229,9 +229,12 @@ def _meetings_rows(q: str = "") -> list[dict]:
 
     buckets: dict = {}
     for txt in sorted(ARCHIVE.glob("*/*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)[:600]:
-        # Skip the per-speaker stream transcripts (<stem>.me.txt/.them.txt) —
-        # only the merged <stem>.txt is a real meeting row.
-        if txt.name.endswith((".me.txt", ".them.txt")):
+        # Only the canonical <date>-<slug>.txt is a real meeting row. Skip the
+        # per-stream / raw intermediate transcripts (<mid>.me/.them/.raw.txt),
+        # else they surface as phantom tiles (e.g. "… 1935.Raw"). Explicit suffix
+        # list — NOT a blanket "dot in stem" check — so a future slug rule that
+        # allows dots can never silently hide real meetings.
+        if txt.name.endswith((".me.txt", ".them.txt", ".raw.txt")):
             continue
         stem = txt.stem  # 2026-07-17-<slug>[-HHMM]
         date, slug = stem[:10], stem[11:]
@@ -893,12 +896,19 @@ function syncTodoNav(){const n=$('todonav');if(n)n.className=(mainView==='todo'&
 async function renderLib(){
  const ms=await (await fetch('/api/meetings?q='+encodeURIComponent(mq)+'&limit=500')).json();
  const cats=[...new Set(ms.map(m=>m.cat).filter(Boolean))].sort();
- const tabs=['recent','calendar','categories'].map(v=>
-   `<button class="${v===libTab?'on':''}" onclick="libTab='${v}';renderLib()">${v}</button>`).join('');
+ const tabs=['recent','starred','calendar','categories'].map(v=>
+   `<button class="${v===libTab?'on':''}" onclick="libTab='${v}';renderLib()">${v==='starred'?'★ starred':v}</button>`).join('');
  let body='';
  if(libTab==='recent'){
-   const shown=libCat?ms.filter(m=>m.cat===libCat):ms;
-   body=chipRow(cats)+`<div class="cardgrid">`+shown.map(cardHtml).join('')+`</div>`;
+   const RECENT_N=20;                       // "recent" = the latest N, not the whole archive
+   const all=libCat?ms.filter(m=>m.cat===libCat):ms;
+   const shown=all.slice(0,RECENT_N), more=all.length-shown.length;
+   body=chipRow(cats)+`<div class="cardgrid">`+shown.map(cardHtml).join('')+`</div>`
+     +(more>0?`<div class="empty" style="margin-top:14px">+${more} older — use <b>categories</b>, <b>calendar</b>, or search for the rest.</div>`:'');
+ } else if(libTab==='starred'){
+   const st=ms.filter(m=>m.starred);
+   body = st.length ? `<div class="cardgrid">`+st.map(cardHtml).join('')+`</div>`
+     : `<div class="empty">No starred meetings yet — hit ★ on a meeting to pin it here (starred meetings also keep their audio forever).</div>`;
  } else if(libTab==='calendar'){
    body=bigCal(ms);
  } else {

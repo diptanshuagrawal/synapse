@@ -89,9 +89,13 @@ fi
 # that survive the gate above (partial-silence stretches within a real track).
 # --vad (silero) trims non-speech BEFORE decoding when the model is present —
 # fewer junk segments, tighter timestamps. Soft dependency: absent model → off.
+# VAD (silero) DISABLED by default as of 2026-08-05: silero-v5.1.2 + whisper-cpp
+# (ggml 0.16.0) trims ALL speech → every file decoded to 0 segments (total
+# transcription outage; confirmed same clip = 3 segs no-VAD vs 0 with-VAD).
+# Re-enable with STENO_VAD=1 once the model/runtime combo is fixed.
 VAD_MODEL="$HOME/.whisper-models/ggml-silero-v5.1.2.bin"
 VAD_ARGS=""
-[ -f "$VAD_MODEL" ] && VAD_ARGS="--vad --vad-model $VAD_MODEL"
+[ "${STENO_VAD:-0}" = "1" ] && [ -f "$VAD_MODEL" ] && VAD_ARGS="--vad --vad-model $VAD_MODEL"
 LANG="${TRANSCRIBE_LANG:-auto}"
 _run_whisper() {  # $1 = extra flags (e.g. "-mc 0" on the loop-recovery retry)
   whisper-cli -m "$MODEL" -f "$WAV" -l "$LANG" -oj -otxt -of "$OUT" --no-prints -bs 5 -sns $VAD_ARGS $1 \

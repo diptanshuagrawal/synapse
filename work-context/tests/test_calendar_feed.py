@@ -83,6 +83,7 @@ def _fake_curl(http_code, body):
 def _wire(monkeypatch, tmp_path, http_code, body):
     cache = tmp_path / "calendar_feed.ics"
     monkeypatch.setattr(cf, "CACHE", cache)
+    monkeypatch.setattr(cf, "_calendar_source", lambda: "ics")   # pin ICS path (a real steno-agenda binary would auto-select eventkit)
     monkeypatch.setattr(cf, "_ics_url", lambda: "https://example.test/cal.ics")
     monkeypatch.setattr(cf.subprocess, "run", _fake_curl(http_code, body))
     return cache
@@ -118,3 +119,53 @@ def test_error_page_body_is_rejected_not_cached(monkeypatch, tmp_path):
     out = cf._fetch(force=True, strict=False)
     assert out.startswith("BEGIN:VCALENDAR")               # served good stale, not the HTML
     assert cache.read_text().count("BEGIN:VEVENT") == 2    # cache NOT overwritten
+
+
+# --- EventKit source (bin/steno-agenda) — the local replacement for the ICS URL ---
+
+def _wire_eventkit(monkeypatch, tmp_path, rc, stdout, stderr=""):
+    import subprocess as sp
+    cache = tmp_path / "calendar_feed.ics"
+    binp = tmp_path / "steno-agenda"
+    binp.write_text("#!/bin/sh\n")            # exists() → True
+    monkeypatch.setattr(cf, "CACHE", cache)
+    monkeypatch.setattr(cf, "_agenda_bin", lambda: binp)
+    monkeypatch.setattr(cf, "_calendar_source", lambda: "eventkit")
+    monkeypatch.setattr(cf.subprocess, "run",
+                        lambda cmd, capture_output=False, text=False, **kw:
+                        sp.CompletedProcess(cmd, rc, stdout=stdout, stderr=stderr))
+    return cache
+
+
+def test_calendar_source_auto_eventkit_when_binary_present(monkeypatch, tmp_path):
+    binp = tmp_path / "steno-agenda"
+    binp.write_text("x")
+    monkeypatch.setattr(cf, "_agenda_bin", lambda: binp)
+    monkeypatch.setattr(cf, "WC", tmp_path)   # no sources.yaml → cfg {} → auto-detect
+    assert cf._calendar_source() == "eventkit"
+
+
+def test_fetch_eventkit_success_caches(monkeypatch, tmp_path):
+    cache = _wire_eventkit(monkeypatch, tmp_path, 0, _VALID_ICS)
+    out = cf._fetch(force=True, strict=True)
+    assert out.startswith("BEGIN:VCALENDAR")
+    assert cache.read_text().count("BEGIN:VEVENT") == 2
+
+
+def test_fetch_eventkit_denied_fails_loud(monkeypatch, tmp_path):
+    _wire_eventkit(monkeypatch, tmp_path, 2, "", "calendar access not granted: denied")
+    with pytest.raises(SystemExit) as e:
+        cf._fetch(force=True, strict=True)
+    msg = str(e.value)
+    assert "[eventkit]" in msg and "Calendar access" in msg   # source-specific loud hint
+
+
+def test_fetch_eventkit_empty_calendar_is_valid(monkeypatch, tmp_path):
+    # a window with no events still emits a valid empty VCALENDAR → accept it
+    # (the gate is a real header + exit 0, NOT a byte-count floor).
+    empty = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//steno-agenda//EN\r\nEND:VCALENDAR\r\n"
+    cache = _wire_eventkit(monkeypatch, tmp_path, 0, empty)
+    out = cf._fetch(force=True, strict=True)
+    assert out.startswith("BEGIN:VCALENDAR")
+    assert out.count("BEGIN:VEVENT") == 0
+    assert cache.exists()

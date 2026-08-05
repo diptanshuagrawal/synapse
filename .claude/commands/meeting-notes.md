@@ -152,13 +152,24 @@ Category definitions (owner-calibrated 2026-07-17 — follow these, not intuitio
   only an `auto` voice-match and NO confirmed name are a hint, not truth — treat
   them like any other inference (needs transcript support). Confirmed names here
   beat both diarization numbering and your own inference.
-- OFF-CALENDAR TITLES (`slack-huddle` / `teams-call` / `adhoc` slugs): infer
-  the counterpart(s) from the transcript — direct address ("hey Alex"),
-  self-introduction, or work uniquely matching one person's events.db
-  activity — and title the note `Huddle with <Name>` (H1) plus a
-  `Participants:` line. Confidence threshold applies: can't tell → keep the
-  generic title; never guess a colleague's name into a title. The note FILE
-  name keeps the original stem (pipeline key); only the display title improves.
+- HUDDLE TITLES (stem contains `slack-huddle` or `facetime-call` — the ad-hoc
+  huddle/call sources): the H1 MUST start with `Huddle` so the owner spots it as
+  a huddle in the library, EVEN when you give it a good context-based title. Two
+  shapes:
+    • counterpart(s) inferable (direct address "hey Alex", self-intro, or work
+      uniquely matching one person's events.db activity) → `Huddle with <Name>`
+      + a `Participants:` line;
+    • topical / group / counterpart unclear → `Huddle — <concise topic>`
+      (e.g. `Huddle — Liabilities Load-Test Sustenance`), NEVER a bare topic
+      title with the "Huddle" dropped (that's the miss: "Slice Sustenance
+      Session" should be "Huddle — Slice Sustenance Session").
+  The confidence threshold applies to the NAME only: can't tell who → use the
+  `Huddle — <topic>` form; never guess a colleague's name into a title.
+- OTHER OFF-CALENDAR TITLES (`teams-call` / `browser-call` / `adhoc` slugs that
+  never adopted a calendar title): title by content as usual (no forced prefix);
+  use `Huddle with <Name>` only if it genuinely reads as a 1:1 huddle.
+- The note FILE name always keeps the original stem (pipeline key); only the
+  display-title H1 improves.
 - Quotes stay verbatim with their `[mm:ss]` offset.
 - HINGLISH: meetings code-switch Hindi/English. Whisper silently TRANSLATES
   Hindi stretches into approximate English (observed: "Nothing has happened
