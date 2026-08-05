@@ -52,53 +52,100 @@ def _ics_url() -> str:
     return url
 
 
-def _fetch(max_age_min: int = 10, force: bool = False, strict: bool = False) -> str:
+def _agenda_bin() -> Path:
+    """Local EventKit reader (bin/steno-agenda) — the network-free calendar
+    source that replaces the IT-blocked published-ICS URL."""
+    return WC.parent / "bin" / "steno-agenda"
+
+
+def _calendar_source() -> str:
+    """`eventkit` (local, via bin/steno-agenda reading the macOS Calendar store)
+    or `ics` (published URL). Config `calendar.source` wins; else auto: eventkit
+    when the binary is present, otherwise ics."""
+    import yaml
+    try:
+        with open(WC / "config" / "sources.yaml") as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        cfg = {}
+    src = ((cfg.get("calendar") or {}).get("source") or "").strip().lower()
+    if src in ("eventkit", "ics"):
+        return src
+    return "eventkit" if _agenda_bin().exists() else "ics"
+
+
+def _fetch(max_age_min: int = 3, force: bool = False, strict: bool = False) -> str:
     """Return calendar ICS text, refreshing the cache when stale.
 
-    A refresh is only accepted when curl returns HTTP 200 AND the body is a real
-    `BEGIN:VCALENDAR` payload — so a 302→login/error redirect (the signature of a
-    dead / IT-revoked publish link) or any non-ICS body can NEVER overwrite the
-    cache or masquerade as success. `strict=True` (the explicit `refresh` command)
-    fails LOUD with the HTTP status instead of silently falling back to stale.
+    Source = `calendar.source` in sources.yaml: `eventkit` (local, bin/steno-agenda
+    reading the macOS Calendar store) or `ics` (published URL). A refresh is
+    accepted ONLY when the payload is a real `BEGIN:VCALENDAR` (and, for ICS, HTTP
+    200) — so a 302→login/error page, a TCC-denied binary, or any non-ICS body can
+    NEVER overwrite the cache or masquerade as success. `strict=True` (the
+    `refresh` command) fails LOUD instead of silently serving stale.
     """
     if (not force and CACHE.exists()
             and time.time() - CACHE.stat().st_mtime < max_age_min * 60):
         return CACHE.read_text(encoding="utf-8", errors="replace")
-    url = _ics_url()
     CACHE.parent.mkdir(parents=True, exist_ok=True)
     tmp = CACHE.with_suffix(f".ics.tmp.{__import__('os').getpid()}")
-    # -w %{http_code} so a failure is actionable; NO -L (don't chase a redirect
-    # into a login/error page and cache that as the calendar).
-    r = subprocess.run(
-        ["curl", "-s", "--max-time", "60", "-o", str(tmp), "-w", "%{http_code}", url],
-        capture_output=True, text=True)
-    code = (r.stdout or "").strip() or "?"
-    size = tmp.stat().st_size if tmp.exists() else 0
-    head = ""
-    if size:
-        try:
-            head = tmp.read_text(encoding="utf-8", errors="replace")[:64].lstrip()
-        except OSError:
-            head = ""
-    ok = (r.returncode == 0 and code == "200"
-          and size >= 100 and head.startswith("BEGIN:VCALENDAR"))
-    if not ok:
-        tmp.unlink(missing_ok=True)
+    src = _calendar_source()
+
+    if src == "eventkit":
+        binp = _agenda_bin()
+        hint = ("Grant Calendar access: run `bin/steno-agenda` once from Terminal "
+                "and click Allow (System Settings → Privacy → Calendars).")
+        if not binp.exists():
+            ok, why = False, "steno-agenda binary missing (build it with swiftc)"
+        else:
+            r = subprocess.run([str(binp), "--back", "2", "--days", "30"],
+                               capture_output=True, text=True)
+            body = r.stdout or ""
+            try:
+                tmp.write_text(body, encoding="utf-8")
+            except OSError:
+                pass
+            # an empty-but-valid calendar (no events in window) is legit → the
+            # gate is exit 0 + real VCALENDAR header, NOT a byte-count floor.
+            ok = (r.returncode == 0 and body.lstrip().startswith("BEGIN:VCALENDAR"))
+            why = f"steno-agenda exit {r.returncode}"
+            if not ok:
+                why += f": {(r.stderr or '').strip()[:140]}"
+    else:
+        url = _ics_url()
+        hint = ("The published Outlook ICS link is likely dead or IT-blocked "
+                "(302→error is the usual sign). Re-publish the calendar in Outlook "
+                "and update config/sources.yaml → calendar.ics_url.")
+        # -w %{http_code} so a failure is actionable; NO -L (don't chase a redirect
+        # into a login/error page and cache that as the calendar).
+        r = subprocess.run(
+            ["curl", "-s", "--max-time", "60", "-o", str(tmp), "-w", "%{http_code}", url],
+            capture_output=True, text=True)
+        code = (r.stdout or "").strip() or "?"
+        size = tmp.stat().st_size if tmp.exists() else 0
+        head = ""
+        if size:
+            try:
+                head = tmp.read_text(encoding="utf-8", errors="replace")[:64].lstrip()
+            except OSError:
+                head = ""
+        ok = (r.returncode == 0 and code == "200"
+              and size >= 100 and head.startswith("BEGIN:VCALENDAR"))
         why = f"curl exit {r.returncode}, HTTP {code}, {size} bytes"
         if size >= 100 and not head.startswith("BEGIN:VCALENDAR"):
             why += " — body is NOT ICS (likely a redirect to a login/error page)"
+
+    if not ok:
+        tmp.unlink(missing_ok=True)
         age = int((time.time() - CACHE.stat().st_mtime) / 60) if CACHE.exists() else None
         if strict:
-            hint = ("The published Outlook ICS link is likely dead or IT-blocked "
-                    "(302→error is the usual sign). Re-publish the calendar in "
-                    "Outlook and update config/sources.yaml → calendar.ics_url.")
             stale = f" Cache is {age} min old and was NOT updated." if age is not None else ""
-            sys.exit(f"ERROR: calendar refresh FAILED ({why}). {hint}{stale}")
+            sys.exit(f"ERROR: calendar refresh FAILED [{src}] ({why}). {hint}{stale}")
         if CACHE.exists():
-            print(f"WARN: feed refresh failed ({why}) — using STALE cache "
+            print(f"WARN: feed refresh failed [{src}] ({why}) — using STALE cache "
                   f"({age} min old)", file=sys.stderr)
             return CACHE.read_text(encoding="utf-8", errors="replace")
-        sys.exit(f"ERROR: calendar feed fetch failed ({why}) and no cache present")
+        sys.exit(f"ERROR: calendar feed fetch failed [{src}] ({why}) and no cache present")
     tmp.replace(CACHE)
     return CACHE.read_text(encoding="utf-8", errors="replace")
 

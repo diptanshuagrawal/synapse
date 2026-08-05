@@ -140,3 +140,7 @@ work-context/transcripts/
 work-context/dist/
 *.app/
 work-context/assets/synapse.iconset/
+
+# steno-agenda: compiled EventKit calendar reader — build artifact, not shipped.
+# Rebuild from source: see the header of bin/steno_agenda.swift.
+bin/steno-agenda
