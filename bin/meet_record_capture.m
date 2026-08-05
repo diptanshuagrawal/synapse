@@ -69,6 +69,30 @@ static void NoteVoiceLevel(AVAudioPCMBuffer *pcm) {
     }
 }
 
+// Mic-activity sidecar: touch <capture-dir>/mic_active whenever the MIC stream
+// carries signal (throttled 5s). Mirrors NoteVoiceLevel but for the mic, so a
+// DEAD/muted mic (silent recording — the on-speakers + mic-only failure) can be
+// detected live by meet_ui, instead of surfacing days later as an empty note.
+// Lower threshold than the system tap: room/speaker pickup is quieter than a
+// direct app audio stream.
+static NSString *gMicFile = nil;
+static double gLastMicTouch = 0;
+
+static void NoteMicLevel(AVAudioPCMBuffer *pcm) {
+    if (!gMicFile || !pcm.floatChannelData || pcm.frameLength == 0) return;
+    double now = [NSDate date].timeIntervalSince1970;
+    if (now - gLastMicTouch < 5.0) return;
+    const float *ch = pcm.floatChannelData[0];
+    double acc = 0;
+    AVAudioFrameCount n = pcm.frameLength, step = n > 512 ? n / 512 : 1, cnt = 0;
+    for (AVAudioFrameCount i = 0; i < n; i += step) { acc += fabsf(ch[i]); cnt++; }
+    if (cnt && (acc / cnt) > 0.004) {  // mic speech level (room/speaker pickup)
+        gLastMicTouch = now;
+        int fd = open(gMicFile.UTF8String, O_WRONLY | O_CREAT, 0644);
+        if (fd >= 0) { futimes(fd, NULL); close(fd); }
+    }
+}
+
 static AVAudioPCMBuffer *PCMBufferFromSampleBuffer(CMSampleBufferRef sb) {
     CMFormatDescriptionRef fmt = CMSampleBufferGetFormatDescription(sb);
     if (!fmt) return nil;
@@ -129,6 +153,8 @@ int main(int argc, const char *argv[]) {
         NSURL *micURL = [NSURL fileURLWithPath:@(argv[2])];
         gVoiceFile = [sysURL.URLByDeletingLastPathComponent
                          URLByAppendingPathComponent:@"voice_active"].path;
+        gMicFile = [micURL.URLByDeletingLastPathComponent
+                       URLByAppendingPathComponent:@"mic_active"].path;
 
         SystemAudioSink *sink = [SystemAudioSink new];
         sink.url = sysURL;
@@ -155,6 +181,7 @@ int main(int argc, const char *argv[]) {
             AVAudioFile *file = micFile;
             [input installTapOnBus:0 bufferSize:4096 format:fmt
                              block:^(AVAudioPCMBuffer *buf, AVAudioTime *when) {
+                               NoteMicLevel(buf);  // live silent-mic detection
                                NSError *werr = nil;
                                AVAudioPCMBuffer *out = buf;
                                if (conv) {
