@@ -339,6 +339,17 @@ for audio in ${QUEUE[@]+"${QUEUE[@]}"}; do
   # Scratchpad + context links (owner's during-meeting attachments) ride along.
   [ -f "$INBOX/$stem.notes.md" ] && mv "$INBOX/$stem.notes.md" "$prefix.notes.md"
   [ -f "$INBOX/$stem.links" ] && mv "$INBOX/$stem.links" "$prefix.links"
+  # If this meeting ALREADY has a note, this run is a RE-transcribe (not a first
+  # render): the transcript just changed under the note, so the note is now stale.
+  # Drop a regen marker (transcript is already written — no race) so
+  # meeting-notes-auto rebuilds the note from the fresh transcript on its next
+  # fire. First-time meetings (no note yet) go through the normal pending
+  # path, so skip them.
+  _mid="$(basename "$prefix")"
+  if [ -f "$REPO/management/meetings/$_mid.md" ]; then
+    : > "$REPO/management/meetings/$_mid.regen.request"
+    echo "  re-transcribed → queued note regen ($_mid)"
+  fi
   processed=$((processed+1))
 done
 
