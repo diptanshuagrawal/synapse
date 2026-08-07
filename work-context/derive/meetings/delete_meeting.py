@@ -17,6 +17,7 @@ Idempotent and best-effort per file. Prints a one-line summary.
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -24,7 +25,12 @@ from ingest.common import get_db, delete_events  # noqa: E402
 
 WC = Path(__file__).resolve().parents[2]
 ARCHIVE = WC / "transcripts" / "archive"
+INBOX = WC / "transcripts" / "inbox"
+HOLD = WC / "transcripts" / "hold"
 NOTES = WC.parent / "management" / "meetings"
+# transcripts_process derives a meeting's date from the IST date of the file mtime;
+# mirror it so raw-audio removal can disambiguate same-slug meetings across days.
+IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def delete_stem(stem: str) -> tuple[int, int]:
@@ -44,6 +50,26 @@ def delete_stem(stem: str) -> tuple[int, int]:
     for f in NOTES.glob(f"{stem}.*"):
         f.unlink(missing_ok=True)
         files += 1
+    # RAW audio keeps its ORIGINAL inbox basename (<slug>, NO date prefix) when it
+    # is queued (inbox/hold) or archived (the mixed .m4a keeps its inbox name), so
+    # the date-prefixed {stem}.* globs above MISS it. Left behind, the meeting
+    # reappears as an untranscribed raw tile (meet_ui lists archive/inbox/hold
+    # *.m4a) — or a still-in-inbox file re-sweeps. Remove it by slug everywhere.
+    for base in (INBOX, HOLD, ARCHIVE / month):
+        for pat in (f"{slug}.m4a", f"{slug}.wav", f"{slug}.me.wav", f"{slug}.them.wav"):
+            for f in base.glob(pat):
+                # DISAMBIGUATE same-slug meetings across days (e.g. the daily
+                # standup-1201): the raw file carries no date, so only remove it
+                # when its own IST mtime-date matches THIS meeting's date —
+                # otherwise a delete could nuke a different day's queued audio.
+                try:
+                    fdate = datetime.fromtimestamp(f.stat().st_mtime, IST).strftime("%Y-%m-%d")
+                except OSError:
+                    continue
+                if fdate != date:
+                    continue
+                f.unlink(missing_ok=True)
+                files += 1
     return removed, files
 
 
