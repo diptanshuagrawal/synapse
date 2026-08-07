@@ -22,6 +22,10 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 WC="$REPO/work-context"
+# Per-machine config (gitignored) — sets TRANSCRIBE_LANG so the auto-sweep pins
+# the language (Hinglish → hi) instead of whisper's unreliable auto-detect. The
+# export flows to the transcribe.sh children below.
+[ -f "$WC/config/steno.local.sh" ] && . "$WC/config/steno.local.sh"
 INBOX="$WC/transcripts/inbox"
 ARCHIVE="$WC/transcripts/archive"
 LOCK="$WC/transcripts/.process.lock"

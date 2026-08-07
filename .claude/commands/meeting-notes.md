@@ -75,6 +75,44 @@ regenerate that note fresh from transcript + CURRENT scratchpad + links + `.cat`
    decisions to their written source. Bare URLs pasted into the scratchpad
    get the same treatment.
 
+## STEP 2.5 — Correct the transcript (context-aware, in-session)
+
+BEFORE classifying/synthesizing, polish the raw ASR against real context — fix
+garbled names / jargon / ticket-IDs whisper misheard (a mangled first name → the
+teammate, "aka"→"AK", "skafka"→"S-Kafka"). Runs IN THIS SESSION (you are the LLM
+— no API key); guarded so it can only swap names/terms, never rewrite content.
+
+1. Dump the context bundle (title + attendees from `.people` + recent events.db
+   activity for the topic + roster + domain vocab + the transcript):
+
+       cd work-context && .venv/bin/python derive/meetings/correct_llm.py context --stem <stem>
+
+2. Read the transcript against that bundle and build a correction MAP — a JSON
+   array of ONLY high-confidence single-token fixes:
+
+       [{"wrong":"<as heard>","right":"<correct>","kind":"name"|"term",
+         "scope":"meeting"|"global","confidence":"high"|"low"}]
+
+   Rules: names/terms ONLY (never phrases / sentences / content); every entry
+   must be backed by a REAL teammate (roster), product/ticket term (vocab), or
+   the events.db activity — when unsure, DROP it. A recurring mis-hearing that
+   will recur across meetings → `scope:"global","confidence":"high"` so `apply`
+   persists it back to the vocab (self-heals the ASR source for next time).
+   Write it to `transcripts/.capture/<stem>.cmap.json`.
+
+3. Apply it — deterministic; backs up raw → `<stem>.raw.txt`, rewrites `<stem>.txt`
+   (what the Steno transcript tab shows), re-ingests events.db, and ABORTS
+   (restoring raw) if line-count or any `.json` offset drifts:
+
+       .venv/bin/python derive/meetings/correct_llm.py apply --stem <stem> --map transcripts/.capture/<stem>.cmap.json
+
+   If `apply` aborts, keep the raw transcript and say so in the run output — never
+   force it. If there are no high-confidence fixes, skip apply (a clean transcript
+   needs no map). Log any systematic issue you notice (whole-language mis-detect,
+   decoder loop, dead far-side) in the run output so recurring problems surface.
+
+Everything below (classify, synthesize, MoM) uses the CORRECTED `<stem>.txt`.
+
 ## STEP 3 — Classify the meeting + select the template
 
 Classify from title + transcript content into ONE category:
