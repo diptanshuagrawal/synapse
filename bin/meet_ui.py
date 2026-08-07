@@ -442,6 +442,7 @@ def meeting_detail(mid: str) -> dict:
         "participants": participants,
         "starred": (NOTES_DIR / f"{mid}.star").exists(),
         "transcribed": txt.exists(),
+        "transcript_mtime": txt.stat().st_mtime if txt.exists() else 0,  # freshness stamp (changes on re-transcribe)
         "transcript": txt.read_text(errors="replace") if txt.exists() else "(not transcribed yet)",
         "note": note.read_text(errors="replace") if note.exists() else "",
         "scratchpad": scratch.read_text(errors="replace") if scratch else "",
@@ -799,6 +800,11 @@ width:30px;height:30px;flex-shrink:0;font-size:15px;cursor:pointer;line-height:1
 </div>
 <script>
 let sel=null, tab='note', padTimer=null, detail=null, recEl=0, recSuffix='', recOn=false;
+// mid → epoch(ms) a re-transcribe was kicked; drives the transcript freshness
+// banner. PERSISTED in localStorage so a full Cmd-R reload keeps the "still
+// re-transcribing (OLD)" state instead of silently dropping it.
+let reTx=(()=>{try{return JSON.parse(localStorage.getItem('stenoReTx')||'{}')}catch(e){return {}}})();
+function saveReTx(){try{localStorage.setItem('stenoReTx',JSON.stringify(reTx))}catch(e){}}
 const $=id=>document.getElementById(id);
 // HTML-escape for values dropped into innerHTML (to-do text + titles come from
 // LLM-extracted transcript content — never trust them in markup).
@@ -964,11 +970,13 @@ async function transcribe(id,ev){
 async function retranscribe(lang){
  if(!sel)return;
  const L={auto:'Auto',en:'English',hi:'Hindi'}[lang]||lang;
- const yes=await confirmModal('Re-transcribe as '+L+'?','Runs whisper again in the background (~1-2 min). Reopen the meeting in a minute to see the new transcript.');
+ const yes=await confirmModal('Re-transcribe as '+L+'?','Runs whisper again in the background (~1-2 min). The transcript below stays the OLD one until it finishes.','Re-transcribe');
  if(!yes)return;
  try{await fetch('/api/transcribe/'+encodeURIComponent(sel)+'?lang='+lang,{method:'POST'});
-   confirmModal('Re-transcribing as '+L,'Started in the background. Reopen the meeting in a minute.');}
- catch(e){confirmModal('Failed to start', String(e));}
+   reTx[sel]=Date.now(); saveReTx();   // mark a re-transcribe in flight (survives Cmd-R) → freshness banner
+   toast('Re-transcribing as '+L+' — reopen in ~1 min');
+   seg_(sel);                      // re-render so the "re-transcribing…" indicator shows immediately
+ }catch(e){ toast('Failed to start: '+String(e)); }
 }
 function bigCal(ms){
  const byDate={};ms.forEach(m=>{(byDate[m.date]=byDate[m.date]||[]).push(m)});
@@ -1285,7 +1293,15 @@ function render(){
        <button onclick="retranscribe('hi')" style="border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:7px;padding:2px 10px;font-size:11.5px;cursor:pointer">Hindi</button>
        <span style="opacity:.8">— Hinglish comes out as gibberish on Auto; pick Hindi.</span>
      </div>
-     <pre>${mapTranscript(detail.transcript).replace(/</g,'&lt;')}</pre>`
+     ${(function(){
+        const mt = detail.transcript_mtime ? new Date(detail.transcript_mtime*1000) : null;
+        const pending = reTx[sel] && (!mt || mt.getTime() < reTx[sel]);   // kicked a re-transcribe, new one not landed yet
+        if(pending) return '<div style="font-size:12px;color:var(--accent);background:var(--recbg);border:1px solid var(--recline);border-radius:8px;padding:7px 12px;margin-bottom:9px">↻ Re-transcribing… the transcript below is the OLD version — reopen the meeting in ~1 min to load the new one.</div>';
+        if(reTx[sel]){ delete reTx[sel]; saveReTx(); setTimeout(()=>toast('✓ Transcript updated'),0); }  // pending→fresh: clear + confirm once
+        return mt ? '<div style="font-size:11.5px;color:var(--muted);margin-bottom:8px">transcript · updated '+mt.toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+'</div>' : '';
+     })()}
+     ${detail.speakers && detail.speakers.list.some(s=>!s.name) ? '<div style="font-size:11.5px;color:var(--muted);margin-bottom:8px">Tip: click any <span style="color:var(--accent);border-bottom:1px dashed var(--accent)">Speaker&nbsp;▾</span> in the transcript to name them — no need to open the Speakers tab.</div>' : ''}
+     <pre>${mapTranscriptHTML(detail.transcript)}</pre>`
    : `<textarea id="mpad" style="width:100%;min-height:320px;border:1px solid var(--line);border-radius:12px;background:var(--card);padding:14px 16px;font:14px/1.6 ui-monospace,Menlo,monospace;resize:vertical;outline:none" placeholder="Add your own context — what mattered, corrections, decisions the transcript garbled. Autosaves; used on the next (re)generation.">${detail.scratchpad.replace(/</g,'&lt;')}</textarea>
       <div style="font-size:12px;color:var(--muted);margin-top:6px">autosaves · attach links above · hit ↻ regenerate when ready</div>`}</div>`;
  const mp=document.getElementById('mpad');
@@ -1329,21 +1345,70 @@ function mapTranscript(t){
                 t=t.replace(re, ()=>s.name); });  // callback: $ in a name is literal
  return t;
 }
+// v2 inline speaker tagging: render the transcript as HTML where a CONFIRMED
+// speaker shows as their name and an UNASSIGNED speaker label is a clickable
+// chip that opens the tag picker in place — so you never leave the transcript
+// to go to the Speakers tab. (The Speakers tab still works, unchanged.)
+function mapTranscriptHTML(t){
+ let h=esc(t);
+ if(!detail.speakers) return h;
+ // longest display first (so "Them · Speaker 1" wins over "Speaker 1"); \b keeps
+ // "Speaker 1" from eating "Speaker 10".
+ [...detail.speakers.list].sort((a,b)=>b.display.length-a.display.length).forEach(s=>{
+   const disp=esc(s.display);
+   const re=new RegExp(disp.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b','g');
+   if(s.name){
+     h=h.replace(re,()=>'<span style="color:var(--accent);font-weight:600">'+esc(s.name)+'</span>');
+   } else {
+     h=h.replace(re,()=>'<span onclick="tagSpeakerInline(\''+esc(s.cluster)+'\')" title="click to name this speaker" style="cursor:pointer;color:var(--accent);border-bottom:1px dashed var(--accent)">'+disp+' ▾</span>');
+   }
+ });
+ return h;
+}
+// Tag picker anchored to a transcript click — reuses the roster + setSpeaker
+// (incl. the "+ add a name…" custom path), then re-renders so every line for
+// that speaker updates at once.
+function tagSpeakerInline(cluster){
+ if(!detail.speakers) return;
+ const sp=detail.speakers, cur=sp.list.find(s=>s.cluster===cluster)||{};
+ const ov=document.createElement('div');
+ ov.style.cssText='position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center';
+ ov.innerHTML=`<div style="background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px 22px;max-width:420px;width:90%;box-shadow:0 16px 50px rgba(0,0,0,.35)">
+   <div style="font-size:15px;font-weight:700;margin-bottom:6px">Tag ${esc(cur.display||'speaker')}</div>
+   <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px">Assign this voice to a person — saved as ground truth AND teaches Steno to recognise it next time.</div>
+   <select id="_spk" style="width:100%;box-sizing:border-box;border:1px solid var(--line);background:var(--paper);color:var(--ink);border-radius:9px;padding:9px 12px;font-size:14px;margin-bottom:16px">${
+     ['<option value="">— unassigned —</option>']
+       .concat(sp.roster.map(r=>'<option value="'+esc(r.handle)+'">'+esc(r.name)+'</option>'))
+       .concat('<option value="__custom__">+ add a name…</option>').join('')}</select>
+   <div style="display:flex;justify-content:flex-end"><button id="_spkx" style="border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:9px;padding:7px 16px;font-size:13px;cursor:pointer">Cancel</button></div>
+ </div>`;
+ document.body.appendChild(ov);
+ const sel=ov.querySelector('#_spk'); sel.focus();
+ const close=()=>ov.remove();
+ ov.querySelector('#_spkx').onclick=close;
+ ov.onclick=e=>{if(e.target===ov)close()};
+ sel.onchange=()=>{ const v=sel.value; close(); setSpeaker(cluster,v); };  // setSpeaker handles roster / __custom__ / clear + re-renders
+}
 function setCat(c){if(!c)return;
  fetch('/api/cat/'+sel,{method:'POST',body:c}).then(()=>{seg_(sel);load()})}
 // Star = pin: protected from the audio-retention auto-delete.
 function toggleStar(){fetch('/api/star/'+sel,{method:'POST'}).then(()=>{seg_(sel);load()})}
 // Custom confirm — WKWebView (Steno.app) silently ignores native confirm().
-function confirmModal(title, body){
+// A yes/no dialog. okLabel + danger let it be a neutral confirm (default) OR a
+// red destructive one — so a "Re-transcribe?" prompt no longer shows a scary
+// "Delete" button (that hardcoded label was the bug).
+function confirmModal(title, body, okLabel, danger){
+ okLabel = okLabel || 'OK';
  return new Promise(resolve=>{
    const ov=document.createElement('div');
    ov.style.cssText='position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center';
+   const okBg = danger ? '#b91c1c' : 'var(--accent)';
    ov.innerHTML=`<div style="background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px 24px;max-width:400px;box-shadow:0 16px 50px rgba(0,0,0,.35)">
      <div style="font-size:15px;font-weight:700;margin-bottom:8px">${title}</div>
      <div style="font-size:13px;color:var(--muted);line-height:1.5;margin-bottom:18px">${body}</div>
      <div style="display:flex;gap:8px;justify-content:flex-end">
        <button id="_cx" style="border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:9px;padding:7px 16px;font-size:13px;cursor:pointer">Cancel</button>
-       <button id="_ok" style="border:none;background:#b91c1c;color:#fff;border-radius:9px;padding:7px 16px;font-size:13px;cursor:pointer;font-weight:600">Delete</button>
+       <button id="_ok" style="border:none;background:${okBg};color:#fff;border-radius:9px;padding:7px 16px;font-size:13px;cursor:pointer;font-weight:600">${okLabel}</button>
      </div></div>`;
    document.body.appendChild(ov);
    const done=v=>{ov.remove();resolve(v)};
@@ -1351,6 +1416,15 @@ function confirmModal(title, body){
    ov.querySelector('#_ok').onclick=()=>done(true);
    ov.onclick=e=>{if(e.target===ov)done(false)};
  });
+}
+// One-button-free auto-dismissing notice — for "started / failed" messages that
+// are NOT questions (so they don't render as a Cancel/confirm dialog).
+function toast(msg, ms){
+ const t=document.createElement('div');
+ t.style.cssText='position:fixed;left:50%;bottom:30px;transform:translateX(-50%);z-index:120;background:var(--ink);color:var(--paper);padding:10px 18px;border-radius:10px;font-size:13px;box-shadow:0 10px 34px rgba(0,0,0,.4);max-width:80%;text-align:center';
+ t.textContent=msg;
+ document.body.appendChild(t);
+ setTimeout(()=>t.remove(), ms||3600);
 }
 // Custom text prompt — WKWebView also ignores native prompt(). Resolves to the
 // entered string (may be empty) on OK/Enter, or null on Cancel/Esc/backdrop.
@@ -1378,11 +1452,11 @@ function promptModal(title, body, def, okLabel){
 async function del(){
  const title=sel.slice(11).replace(/-\d+$/,'').replaceAll('-',' ');
  const yes=await confirmModal('Delete "'+title+'"?',
-   'Permanently removes the recording, transcript, notes and all its parts. This cannot be undone.');
+   'Permanently removes the recording, transcript, notes and all its parts. This cannot be undone.','Delete',true);
  if(!yes) return;
  const x=await (await fetch('/api/delete',{method:'POST',body:(segs||[sel]).join(',')})).json();
  if(x.ok){sel=null;detail=null;showLib();load()}
- else confirmModal('Delete failed','Something went wrong — the meeting was not removed.');
+ else toast('Delete failed — the meeting was not removed.');
 }
 async function editTitle(){
  if(!sel) return;
@@ -1391,7 +1465,7 @@ async function editTitle(){
  if(to===null) return;  // cancelled
  const x=await (await fetch('/api/title/'+encodeURIComponent(sel)+'?to='+encodeURIComponent(to.trim()),{method:'POST'})).json();
  if(x.ok){ if(detail){ detail.title=to.trim()||sel.slice(11).replace(/-\d+$/,'').replaceAll('-',' '); detail.title_manual=!!to.trim(); } seg_(sel); load(); }
- else confirmModal('Save failed','Could not save the title.');
+ else toast('Could not save the title.');
 }
 function mom(){
  fetch('/api/mom/'+sel,{method:'POST'}).then(()=>{tab='MoM';seg_(sel)});
