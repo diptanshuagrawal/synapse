@@ -210,6 +210,21 @@ int main(int argc, const char *argv[]) {
                              }];
         };
         @try {
+            // Optional Acoustic Echo Cancellation (STENO_AEC=1): macOS Voice
+            // Processing on the mic input subtracts the speaker output in real
+            // time — kills the on-speakers echo/bleed (also adds noise-suppression
+            // + AGC). Enable BEFORE reading the input format so micFile + taps use
+            // the processed format. OFF by default: it lightly colors the voice and
+            // interacts with the AirPods re-tap; opt in per-machine when recording
+            // on speakers.
+            if (getenv("STENO_AEC") && !strcmp(getenv("STENO_AEC"), "1")) {
+                NSError *vpErr = nil;
+                if ([engine.inputNode setVoiceProcessingEnabled:YES error:&vpErr])
+                    fprintf(stderr, "AEC: echo cancellation ON (voice processing)\n");
+                else
+                    fprintf(stderr, "AEC: could not enable: %s\n",
+                            vpErr ? vpErr.description.UTF8String : "unknown error");
+            }
             AVAudioFormat *fmt = [engine.inputNode outputFormatForBus:0];
             NSError *err = nil;
             micFile = [[AVAudioFile alloc] initForWriting:micURL settings:fmt.settings error:&err];
