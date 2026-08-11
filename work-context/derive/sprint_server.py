@@ -202,11 +202,26 @@ class Handler(SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": str(e)}).encode())
             return
+        if self.path.split("?")[0] == "/api/retro-editmeta":
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            key = q.get("key", [""])[0]
+            months = [m for m in q.get("months", [""])[0].split(",") if m]
+            try:
+                r = capacity_engine.retro_editmeta(key, months)
+                self._reply(500 if "__error__" in r else 200, r)
+            except Exception as e:
+                self._reply(500, {"__error__": str(e)})
+            return
         if self.path.split("?")[0] == "/api/retro-notes":
             from urllib.parse import urlparse, parse_qs
-            months = [m for m in parse_qs(urlparse(self.path).query).get("months", [""])[0].split(",") if m]
+            q = parse_qs(urlparse(self.path).query)
+            months = [m for m in q.get("months", [""])[0].split(",") if m]
+            frm = q.get("from", [""])[0]
+            to = q.get("to", [""])[0]
             try:
-                body = json.dumps(capacity_engine.retro_notes(months)).encode()
+                body = json.dumps(capacity_engine.retro_notes(
+                    months, start=frm or None, end=to or None)).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Cache-Control", "no-store")
@@ -223,17 +238,22 @@ class Handler(SimpleHTTPRequestHandler):
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)
             months = [m for m in q.get("months", [""])[0].split(",") if m]
+            frm = q.get("from", [""])[0]
+            to = q.get("to", [""])[0]
             fresh = q.get("fresh", ["0"])[0] == "1"
-            tag = hashlib.md5(",".join(sorted(months)).encode()).hexdigest()[:8] if months else "none"
+            period = f"{frm}..{to}" if (frm and to) else ",".join(sorted(months))
+            tag = hashlib.md5(period.encode()).hexdigest()[:8] if period else "none"
             cachef = os.path.join(DERIVED, f"retro-{tag}.json")
             try:
                 if not fresh and os.path.exists(cachef):
                     with open(cachef, "rb") as f:
                         body = f.read()
                 else:
-                    body = json.dumps(capacity_engine.retro_summary(months)).encode()
-                    with open(cachef, "wb") as f:
-                        f.write(body)
+                    r = capacity_engine.retro_summary(months, start=frm or None, end=to or None)
+                    body = json.dumps(r).encode()
+                    if "__error__" not in r:        # never cache errors — they'd stick until fresh=1
+                        with open(cachef, "wb") as f:
+                            f.write(body)
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Cache-Control", "no-store")
@@ -311,6 +331,26 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        if self.path.split("?")[0] == "/api/retro-update":
+            # body: {key, fields?:{health|cycle|orgPriority|challenges: optionId(s)},
+            #        budgets?:{Month:sp}, transition?:id} — writes to Jira, then purges
+            # the retro caches so every window recomputes with the fresh values.
+            try:
+                p = self._json_body()
+                r = capacity_engine.retro_update(p.get("key", ""), fields=p.get("fields"),
+                                                 budgets=p.get("budgets"),
+                                                 transition=p.get("transition"))
+                if r.get("ok"):
+                    import glob
+                    for f in glob.glob(os.path.join(DERIVED, "retro-*.json")):
+                        try:
+                            os.remove(f)
+                        except OSError:
+                            pass
+                self._reply(500 if "__error__" in r else 200, r)
+            except Exception as e:
+                self._reply(500, {"__error__": str(e)})
+            return
         if self.path.split("?")[0] == "/api/link-epic":
             # body: {initiative, mode: preview|auto|link|create, epicKey?}
             try:

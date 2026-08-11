@@ -144,3 +144,10 @@ work-context/assets/synapse.iconset/
 # steno-agenda: compiled EventKit calendar reader — build artifact, not shipped.
 # Rebuild from source: see the header of bin/steno_agenda.swift.
 bin/steno-agenda
+
+# Generated / local-only sprint-planner + report data (real Jira epics, teammate
+# names, metrics) — NEVER commit to the public repo. Local scratch, regenerated.
+work-context/initiatives-in.json
+work-context/resolve-prefetch.json
+work-context/metrics-report/
+gather_err.txt

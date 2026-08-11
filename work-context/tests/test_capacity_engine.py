@@ -154,7 +154,7 @@ def test_parse_highs_lows_empty():
 # --- _opt_str: readable string from select / multi-select / user field values ---
 
 def test_opt_str_select_dict_prefers_value_then_name():
-    assert ce._opt_str({"value": "On Track"}) == "On Track"
+    assert ce._opt_str({"value": "On Time"}) == "On Time"
     assert ce._opt_str({"name": "In Progress"}) == "In Progress"
     assert ce._opt_str({"value": "Green", "name": "ignored"}) == "Green"
 
@@ -243,3 +243,33 @@ def test_backlog_pool_missing_reporter_and_parent_default_empty(monkeypatch):
     assert t["reporter"] == ""
     assert t["epicSummary"] == ""
     assert t["epic"] == ""
+
+
+# ---- _window_months: explicit from/to dates → sprint-cycle months ----------
+
+def test_window_months_sprint_cycle_window_maps_back():
+    # Jun-16 → Aug-05 is exactly the Jun+Jul sprint cycle; Aug (day<=5 tail) drops.
+    assert ce._window_months("2026-06-16", "2026-08-05") == ["2026-06", "2026-07"]
+
+
+def test_window_months_calendar_month():
+    assert ce._window_months("2026-07-01", "2026-07-31") == ["2026-07"]
+
+
+def test_window_months_end_day_6_keeps_end_month():
+    assert ce._window_months("2026-06-16", "2026-08-06") == ["2026-06", "2026-07", "2026-08"]
+
+
+def test_window_months_single_month_never_emptied():
+    # end.day <= 5 but only one month spanned → keep it.
+    assert ce._window_months("2026-07-01", "2026-07-04") == ["2026-07"]
+
+
+def test_window_months_year_boundary():
+    assert ce._window_months("2026-12-16", "2027-02-05") == ["2026-12", "2027-01"]
+
+
+def test_window_months_reversed_range_raises():
+    import pytest
+    with pytest.raises(ValueError):
+        ce._window_months("2026-08-01", "2026-07-01")

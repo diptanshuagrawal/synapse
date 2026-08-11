@@ -67,3 +67,8 @@ work-context/derive/meetings/live_asr_client.py
 work-context/derive/meetings/live_stream_daemon.py
 work-context/derive/meetings/rename_meeting.py
 work-context/derive/meetings/signals.py
+
+# Sprint-planner + doc-sync glue — CLI/IO drivers (read a dump / filter a CQL
+# list), exercised by live planner runs, not unit tests. Owner may add tests.
+work-context/derive/sprint_expand.py
+work-context/derive/_docsync_discover_filter.py
