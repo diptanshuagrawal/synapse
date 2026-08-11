@@ -710,29 +710,49 @@ def submit_budgets(epic_budgets, months, dry_run=True):
     return {"dryRun": False, "diffs": diffs, "applied": applied}
 
 
-def retro_summary(months):
-    """Retro data for a set of calendar months (['YYYY-MM', ...]):
+def _window_months(start, end):
+    """Sprint-cycle months ['YYYY-MM', ...] covered by an explicit [start, end]
+    date window. Months run from start's month through end's month; end's month
+    is dropped when the window only reaches its first days (day <= 5 = the tail
+    of the PREVIOUS sprint month, matching the <M>-16 → <M+1>-05 cycle)."""
+    import datetime as dt
+    s, e = dt.date.fromisoformat(start), dt.date.fromisoformat(end)
+    if e < s:
+        raise ValueError(f"to-date {end} is before from-date {start}")
+    yms, (y, m) = [], (s.year, s.month)
+    while (y, m) <= (e.year, e.month):
+        yms.append(f"{y:04d}-{m:02d}")
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    if len(yms) > 1 and e.day <= 5:
+        yms.pop()
+    return yms
+
+
+def retro_summary(months, start=None, end=None):
+    """Retro data for a set of calendar months (['YYYY-MM', ...]) OR an explicit
+    start/end date window ('YYYY-MM-DD'; overrides months when both are given):
     per epic, PLANNED SP (the epic's Budget fields for those months) vs ACTUAL SP
     (story points of Done / Mobile-Release-Pending tickets resolved in the period,
     rolled to their parent epic), plus the delta. Covers epics that had either
     planned budget OR actual work in the window."""
     import datetime as dt
-    yms = sorted(m for m in months if m)
-    if not yms:
-        return {"__error__": "no months selected"}
-
-    def _first(ym): y, m = map(int, ym.split("-")); return dt.date(y, m, 1)
-    def _last(ym):
-        y, m = map(int, ym.split("-"))
-        nxt = dt.date(y + 1, 1, 1) if m == 12 else dt.date(y, m + 1, 1)
-        return nxt - dt.timedelta(days=1)
+    if start and end:
+        try:
+            yms = _window_months(start, end)
+        except ValueError as e:
+            return {"__error__": str(e)}
+    else:
+        yms = sorted(m for m in months if m)
+        if not yms:
+            return {"__error__": "no months selected"}
     mnames = [BUDGET_MONTHS[int(ym.split("-")[1]) - 1] for ym in yms]
-    # ACTUAL uses resolution_sprint_end in the org's sprint-cycle window (matches the Epic
-    # Reports pivot): <first-month>-16 → <month-after-last>-05. Calendar bounds over-count.
-    ly, lm = map(int, yms[-1].split("-"))
-    nxt = dt.date(ly + 1, 1, 1) if lm == 12 else dt.date(ly, lm + 1, 1)
-    start = f"{yms[0]}-16"
-    end = f"{nxt.year}-{nxt.month:02d}-05"
+    if not (start and end):
+        # ACTUAL uses resolution_sprint_end in the org's sprint-cycle window (matches the Epic
+        # Reports pivot): <first-month>-16 → <month-after-last>-05. Calendar bounds over-count.
+        ly, lm = map(int, yms[-1].split("-"))
+        nxt = dt.date(ly + 1, 1, 1) if lm == 12 else dt.date(ly, lm + 1, 1)
+        start = f"{yms[0]}-16"
+        end = f"{nxt.year}-{nxt.month:02d}-05"
 
     def _search(jql, fields):
         out, tok, pages = [], None, 0
@@ -819,14 +839,20 @@ def retro_summary(months):
             "totalActual": round(sum(r["actual"] for r in rows), 1)}
 
 
-def retro_notes(months):
+def retro_notes(months, start=None, end=None):
     """Highs/Lows parsed from the routine-generated retro artifacts,
     <repo>/management/retros/<since>-to-<until>.md (numbered '## Highs' / '## Lows'),
-    for the given calendar months. Picks the canonical monthly file per month (start
-    and end in the same month, no variant suffix) and reads only the top-level numbered
-    items (not the indented sub-bullets)."""
+    for the given calendar months — or for the sprint-cycle months covered by an
+    explicit start/end date window (overrides months when both are given). Picks the
+    canonical monthly file per month (start and end in the same month, no variant
+    suffix) and reads only the top-level numbered items (not the indented sub-bullets)."""
     import glob
     import re
+    if start and end:
+        try:
+            months = _window_months(start, end)
+        except ValueError as e:
+            return {"__error__": str(e)}
     base = os.path.join(os.path.dirname(ROOT), "management", "retros")   # repo-root/management/retros
     canon = re.compile(r"^\d{4}-\d{2}-\d{2}-to-\d{4}-\d{2}-\d{2}\.md$")
     highs, lows, srcs = [], [], []
@@ -841,6 +867,102 @@ def retro_notes(months):
         highs += h
         lows += l
     return {"months": sorted(set(months)), "highs": highs, "lows": lows, "sources": srcs}
+
+
+def _retro_edit_fids():
+    """Editor-name → Jira field id for the retro row's editable fields."""
+    return {"health": EPIC_HEALTH_FIELD, "cycle": EPIC_CYCLE_FIELD,
+            "orgPriority": EPIC_ORGPRI_FIELD, "challenges": CHALLENGES_FIELD}
+
+
+def retro_editmeta(key, months):
+    """Editor metadata for one epic row: allowed options per editable field (from
+    /editmeta, so it is permission- and screen-aware), available status transitions,
+    and current values incl. the per-month Budget fields for the given month names.
+    A month whose Budget field is not on the edit screen comes back editable=False."""
+    fids = _retro_edit_fids()
+    em = _jira("GET", f"/rest/api/3/issue/{key}/editmeta").get("fields", {})
+    out = {"key": key, "fields": {}, "budgets": {}, "transitions": []}
+    for name, fid in fids.items():
+        f = em.get(fid) if fid else None
+        if not f:
+            out["fields"][name] = {"editable": False, "options": []}
+            continue
+        out["fields"][name] = {
+            "editable": True,
+            "multi": (f.get("schema") or {}).get("type") == "array",
+            "options": [{"id": str(o.get("id")), "label": o.get("value") or o.get("name") or ""}
+                        for o in f.get("allowedValues", [])]}
+    want = [f for f in fids.values() if f] + ["status"] + \
+           [BUDGET_FIELDS[m] for m in months if m in BUDGET_FIELDS]
+    cur = _jira("GET", f"/rest/api/3/issue/{key}?fields={','.join(want)}").get("fields", {})
+    for name, fid in fids.items():
+        if fid and out["fields"][name]["editable"]:
+            v = cur.get(fid)
+            out["fields"][name]["current"] = [str(x["id"]) for x in (v if isinstance(v, list) else [v])
+                                              if isinstance(x, dict) and x.get("id")]
+    out["status"] = _opt_str(cur.get("status"))
+    for m in months:
+        fid = BUDGET_FIELDS.get(m)
+        if fid:
+            out["budgets"][m] = {"value": cur.get(fid) or 0, "editable": fid in em}
+    out["transitions"] = [{"id": str(t["id"]), "label": t["to"]["name"]}
+                          for t in _jira("GET", f"/rest/api/3/issue/{key}/transitions").get("transitions", [])]
+    return out
+
+
+def retro_update(key, fields=None, budgets=None, transition=None):
+    """Apply retro-editor changes to one epic: select/multi-select fields (by option
+    id), per-month Budget SP, and an optional status transition. Post-write verified:
+    re-reads the issue and returns the fresh display values for the row."""
+    fids = _retro_edit_fids()
+    payload, em = {}, None
+    for name, val in (fields or {}).items():
+        fid = fids.get(name)
+        if not fid:
+            return {"__error__": f"field '{name}' is not configured (jira_fields)"}
+        if em is None:
+            em = _jira("GET", f"/rest/api/3/issue/{key}/editmeta").get("fields", {})
+        if fid not in em:
+            return {"__error__": f"field '{name}' is not editable on {key}"}
+        if (em[fid].get("schema") or {}).get("type") == "array":
+            payload[fid] = [{"id": str(i)} for i in (val or [])]
+        else:
+            payload[fid] = {"id": str(val)} if val else None
+    for m, sp in (budgets or {}).items():
+        fid = BUDGET_FIELDS.get(m)
+        if not fid:
+            return {"__error__": f"no Budget field configured for month '{m}'"}
+        payload[fid] = round(float(sp), 1)
+    import urllib.error
+    def _err(e):
+        detail = ""
+        if isinstance(e, urllib.error.HTTPError):
+            try:
+                detail = e.read().decode()[:300]
+            except Exception:
+                pass
+        return {"__error__": f"{e} {detail}".strip()}
+    try:
+        if payload:
+            _jira("PUT", f"/rest/api/3/issue/{key}", {"fields": payload})
+        if transition:
+            _jira("POST", f"/rest/api/3/issue/{key}/transitions",
+                  {"transition": {"id": str(transition)}})
+    except Exception as e:
+        return _err(e)
+    # post-write verification: read back exactly what the row displays
+    want = [f for f in fids.values() if f] + ["status"] + \
+           [BUDGET_FIELDS[m] for m in (budgets or {}) if m in BUDGET_FIELDS]
+    cur = _jira("GET", f"/rest/api/3/issue/{key}?fields={','.join(want)}").get("fields", {})
+    return {"ok": True, "row": {
+        "key": key, "status": _opt_str(cur.get("status")),
+        "health": _opt_str(cur.get(EPIC_HEALTH_FIELD)) if EPIC_HEALTH_FIELD else "",
+        "cycle": _opt_str(cur.get(EPIC_CYCLE_FIELD)) if EPIC_CYCLE_FIELD else "",
+        "orgPriority": _opt_str(cur.get(EPIC_ORGPRI_FIELD)) if EPIC_ORGPRI_FIELD else "",
+        "challenges": _opt_str(cur.get(CHALLENGES_FIELD)) if CHALLENGES_FIELD else "",
+        "budgets": {m: (cur.get(BUDGET_FIELDS[m]) or 0) for m in (budgets or {})
+                    if m in BUDGET_FIELDS}}}
 
 
 def _parse_highs_lows(text):

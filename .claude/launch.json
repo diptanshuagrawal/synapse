@@ -8,6 +8,12 @@
       "port": 8793
     },
     {
+      "name": "sprint-server",
+      "runtimeExecutable": "work-context/.venv/bin/python",
+      "runtimeArgs": ["work-context/derive/sprint_server.py", "8791"],
+      "port": 8791
+    },
+    {
       "name": "meet-ui",
       "runtimeExecutable": "python3",
       "runtimeArgs": ["bin/meet_ui.py"],

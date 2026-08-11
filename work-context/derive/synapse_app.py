@@ -44,7 +44,25 @@ def _wait_up(port, timeout=30):
     return False
 
 
+def _port_busy(port):
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1)
+        return True
+    except urllib.error.HTTPError:
+        return True    # any HTTP response = something is serving there
+    except Exception:
+        return False
+
+
 def main():
+    # Fail loud if the port is already serving: _wait_up would otherwise accept a
+    # STALE orphaned stack and the window would silently show old server code.
+    if _port_busy(PORT):
+        sys.stderr.write(
+            f"[synapse-app] port {PORT} is already serving — another Synapse window or a "
+            f"stale orphaned stack is running. Kill it first:\n"
+            f"  lsof -nP -iTCP:{PORT} -sTCP:LISTEN   # then kill <pid>\n")
+        sys.exit(1)
     server = subprocess.Popen([sys.executable, SERVER, "--port", str(PORT)])
     try:
         if not _wait_up(PORT):

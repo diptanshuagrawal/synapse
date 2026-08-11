@@ -9,7 +9,7 @@ issueFunction here), so we compute the epic set via the API and store it as a
 The pivot set = epics that EITHER:
   - are the parent of a Done / "Mobile Release Pending" Story/Task/Bug whose
     resolution_sprint_end falls in (start, end), OR
-  - carry an "Epic Planning Cycle" in the given cycle labels.
+  - carry a "Planning Cycle" in the given cycle labels.
 
 Usage:
   .venv/bin/python derive/pivot_epics.py                       # dry-run (prints JQL + count)
@@ -81,7 +81,7 @@ def epic_keys(start: str, end: str, cycles):
     b_epics = 0
     if cycles:
         clause = ", ".join(cycles)
-        for ep in _search(f'project = {proj} AND issuetype = Epic AND "Epic Planning Cycle" in ({clause})',
+        for ep in _search(f'project = {proj} AND issuetype = Epic AND "Planning Cycle[Checkboxes]" in ({clause})',
                           ["summary"]):
             keys.add(ep["key"]); b_epics += 1
     return sorted(keys), len(children), a_epics, b_epics
@@ -108,7 +108,7 @@ def main():
     ap.add_argument("--start", default="2026-05-16")
     ap.add_argument("--end", default="2026-07-05")
     ap.add_argument("--cycles", default="May-26,Jun-26",
-                    help="comma-separated Epic Planning Cycle labels, or '' to skip")
+                    help="comma-separated Planning Cycle labels, or '' to skip")
     ap.add_argument("--apply", action="store_true", help="create/update the saved Jira filter")
     args = ap.parse_args()
     cycles = [c.strip() for c in args.cycles.split(",") if c.strip()]
