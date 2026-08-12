@@ -105,6 +105,8 @@ work-context/config/*.yaml
 !work-context/config/*.example.yaml
 work-context/config/steno.local.sh
 !work-context/config/steno.local.example.sh
+work-context/config/em_review.local.yaml
+!work-context/config/em_review.example.yaml
 
 # ──────────────────────────────────────────────────────────────────────
 # Private work output (narratives, retros, sessions, handoffs) — sensitive.
