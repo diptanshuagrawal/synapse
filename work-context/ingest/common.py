@@ -723,18 +723,32 @@ SLACK_MENTION_RE = re.compile(r"<@([UB][A-Z0-9]+)(?:\|[^>]*)?>")
 
 
 def _load_people() -> list[dict]:
+    # people.yaml is gitignored (real identities) — absent on a fresh clone/CI.
+    # A missing identity map is not fatal: resolution just returns None (the
+    # documented "known-but-unmapped" contract), so degrade to empty instead
+    # of crashing every enrich_refs caller.
     global _people_config
     if _people_config is None:
-        with open(CONFIG_DIR / "people.yaml") as f:
-            _people_config = yaml.safe_load(f).get("people", [])
+        try:
+            with open(CONFIG_DIR / "people.yaml") as f:
+                # empty/comment-only file → safe_load returns None; `or {}` keeps
+                # .get from raising AttributeError.
+                _people_config = (yaml.safe_load(f) or {}).get("people", [])
+        except FileNotFoundError:
+            _people_config = []
     return _people_config
 
 
 def _load_projects() -> list[dict]:
+    # projects.yaml is gitignored too — same graceful-degrade rationale as
+    # _load_people(): missing → empty project list, no keyword tagging.
     global _projects_config
     if _projects_config is None:
-        with open(CONFIG_DIR / "projects.yaml") as f:
-            _projects_config = yaml.safe_load(f).get("projects", [])
+        try:
+            with open(CONFIG_DIR / "projects.yaml") as f:
+                _projects_config = (yaml.safe_load(f) or {}).get("projects", [])
+        except FileNotFoundError:
+            _projects_config = []
     return _projects_config
 
 
