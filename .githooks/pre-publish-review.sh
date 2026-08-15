@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Claude Code PreToolUse(Bash) gate — IN-SESSION code review before a publish.
 #
-# Fires BEFORE a `git push` / `git publish` Bash command runs, so it is the FIRST
-# gate in the publish chain. When it allows the push, the repo's own git pre-push
-# hook (.githooks/pre-push) runs next: leak gate -> test-coverage gate -> tests.
-#   order:  [this review]  ->  leak gate  ->  tests
+# Fires BEFORE a `git push` / `git publish` Bash command runs, after the docs gate
+# (.githooks/pre-publish-docs.sh). When it allows the push, the repo's own git
+# pre-push hook (.githooks/pre-push) runs next: leak gate -> test-coverage gate -> tests.
+#   order:  docs pass  ->  [this review]  ->  leak gate  ->  tests
 #
 # Unlike a git hook (which can only spawn a detached `claude -p`), this runs in the
 # session that issued the push: it DENIES the command and instructs that session to
@@ -122,8 +122,9 @@ if head and os.path.exists(marker):
         pass
 
 reason = (
-    "PRE-PUBLISH REVIEW REQUIRED before this push (runs first, ahead of the leak "
-    "gate and tests).\n"
+    "PRE-PUBLISH REVIEW REQUIRED before this push (runs after the repo-docs gate, "
+    "ahead of the leak gate and tests — finish any docs commit BEFORE approving, "
+    "since a new commit moves HEAD and invalidates this marker).\n"
     "1. Spin up a NEW review subagent (Agent tool, subagent_type 'cavecrew-reviewer') "
     "over the diff about to be pushed:\n"
     "     git diff @{push}..HEAD   (fallback: git diff origin/main...HEAD)\n"
