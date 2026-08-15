@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
-# Claude Code PreToolUse(Bash) gate — IN-SESSION code review before a publish.
+# Claude Code PreToolUse(Bash) gate — IN-SESSION repo-docs refresh before a publish.
 #
-# Fires BEFORE a `git push` / `git publish` Bash command runs, after the docs gate
-# (.githooks/pre-publish-docs.sh). When it allows the push, the repo's own git
-# pre-push hook (.githooks/pre-push) runs next: leak gate -> test-coverage gate -> tests.
-#   order:  docs pass  ->  [this review]  ->  leak gate  ->  tests
+# Fires BEFORE a `git push` / `git publish` Bash command runs, AHEAD of the review
+# gate. Full publish chain:
+#   order:  [this docs pass]  ->  review  ->  leak gate  ->  tests
 #
-# Unlike a git hook (which can only spawn a detached `claude -p`), this runs in the
-# session that issued the push: it DENIES the command and instructs that session to
-# spin up a NEW review subagent over the push diff. The review therefore uses the
-# live session's auth and is visible in the conversation. The push is only allowed
-# once the session records an approval marker for the EXACT commit being pushed.
+# Docs MUST be updated before the review is approved: the docs commit moves HEAD,
+# and the review marker is HEAD-scoped — approving first would just be invalidated.
+# Because the docs commit lands before the push retry, the updated docs ride along
+# in the SAME push that triggered this gate.
 #
 # Decision protocol (PreToolUse):
-#   exit 0, no output  -> no objection (push proceeds to the git pre-push gates)
-#   permissionDecision=deny -> blocked; reason tells the session how to review+approve
+#   exit 0, no output  -> no objection (push proceeds to the review gate)
+#   permissionDecision=deny -> blocked; reason tells the session how to update+approve
 #
-# Approval marker (gitignored, HEAD-scoped): work-context/state/.publish_review_ok
-# Bypass for a true emergency:  SKIP_REVIEW=1 git publish   (or --no-verify)
+# Approval marker (gitignored, HEAD-scoped): work-context/state/.publish_docs_ok
+# Bypass docs only:      SKIP_DOCS=1 git publish
+# Full emergency bypass: SKIP_REVIEW=1 git publish   (skips this gate too, or --no-verify)
 set -uo pipefail
 
 input="$(cat)"
@@ -39,13 +38,15 @@ except Exception:
 
 cmd = (payload.get("tool_input") or {}).get("command", "") or ""
 
-# Explicit bypass / non-publishing variants — never gate these.
-if any(t in cmd for t in ("--dry-run", "--help", " -h", "SKIP_REVIEW=1", "--no-verify")):
+# Explicit bypass / non-publishing variants — never gate these. SKIP_REVIEW=1 is
+# the documented full-emergency bypass, so it skips this gate as well.
+if any(t in cmd for t in ("--dry-run", "--help", " -h", "SKIP_DOCS=1",
+                          "SKIP_REVIEW=1", "--no-verify")):
     sys.exit(0)
 
 # Fire ONLY when the command actually runs `git push` / `git publish` as a
 # SUBCOMMAND — not when "push"/"publish" merely appears in a path arg or a commit
-# message. So `git status .githooks/pre-publish-review.sh` and
+# message. So `git status .githooks/pre-publish-docs.sh` and
 # `git commit -m "fix push bug"` must pass; `git push origin main` must not.
 _VAL_OPTS = {"-c", "-C", "--git-dir", "--work-tree", "--namespace",
              "--exec-path", "--config-env", "--super-prefix"}
@@ -105,15 +106,15 @@ def git(*a):
 root = git("rev-parse", "--show-toplevel")
 # Repo-scope: only enforce in repos that have this gate installed (i.e. this one).
 # A global registration is therefore a silent no-op everywhere else.
-if not root or not os.path.exists(os.path.join(root, ".githooks", "pre-publish-review.sh")):
+if not root or not os.path.exists(os.path.join(root, ".githooks", "pre-publish-docs.sh")):
     sys.exit(0)
 
 head = git("rev-parse", "HEAD")
-marker = os.path.join(root, "work-context", "state", ".publish_review_ok")
+marker = os.path.join(root, "work-context", "state", ".publish_docs_ok")
 
 # Approved already? Marker must name the exact commit being pushed. Left in place
-# (not consumed) so a same-HEAD retry after a flaky test gate is not re-reviewed;
-# any new commit changes HEAD and forces a fresh review.
+# (not consumed) so a same-HEAD retry after a downstream gate is not re-checked;
+# any new commit changes HEAD and forces a fresh docs pass.
 if head and os.path.exists(marker):
     try:
         if open(marker).read().strip() == head:
@@ -122,21 +123,23 @@ if head and os.path.exists(marker):
         pass
 
 reason = (
-    "PRE-PUBLISH REVIEW REQUIRED before this push (runs after the repo-docs gate, "
-    "ahead of the leak gate and tests — finish any docs commit BEFORE approving, "
-    "since a new commit moves HEAD and invalidates this marker).\n"
-    "1. Spin up a NEW review subagent (Agent tool, subagent_type 'cavecrew-reviewer') "
-    "over the diff about to be pushed:\n"
+    "REPO-DOCS UPDATE REQUIRED before this push (runs FIRST, ahead of the review "
+    "gate — a docs commit moves HEAD and would invalidate a review marker written "
+    "beforehand, so do docs BEFORE approving the review).\n"
+    "1. Diff the push range:\n"
     "     git diff @{push}..HEAD   (fallback: git diff origin/main...HEAD)\n"
-    "2. It flags HIGH-SEVERITY issues ONLY: correctness bugs, data loss, leaked "
-    "secrets/PII, broken logic, crashes, removed or weakened tests. Skip style nits.\n"
-    "3. If it finds blocking issues, FIX them (or check with the user), then re-review.\n"
-    "4. Only once the review passes with NO high-severity findings, approve and retry "
-    "the push:\n"
+    "2. Identify repo docs the diff makes stale: README.md, docs/**, any *.md that "
+    "describes the changed code (skill SKILL.md files, derive/*.md, prd/*.md that "
+    "document behaviour the diff changed).\n"
+    "3. Update those docs and COMMIT the changes so they ride in this same push. "
+    "If NOTHING is stale, that's a valid outcome — verify, then approve without a "
+    "docs commit.\n"
+    "4. Approve for the FINAL HEAD (after any docs commit) and retry the push:\n"
     f"     git rev-parse HEAD > {marker}\n"
     "     <re-run the original push command>\n"
-    "Do NOT write the marker without actually running the review subagent. "
-    "True emergency bypass: SKIP_REVIEW=1 git publish"
+    "Do NOT write the marker without actually checking the docs against the diff. "
+    "Bypass docs only: SKIP_DOCS=1 git publish. "
+    "Full emergency bypass: SKIP_REVIEW=1 git publish"
 )
 print(json.dumps({"hookSpecificOutput": {
     "hookEventName": "PreToolUse",
