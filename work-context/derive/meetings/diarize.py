@@ -66,6 +66,14 @@ def _fail(msg: str, code: int = 3) -> None:
 # Tune with STENO_DIARIZE_MERGE_SIM; skipped entirely when the caller passed an
 # explicit --num-speakers (we then trust the requested count).
 MERGE_SIM = float(os.environ.get("STENO_DIARIZE_MERGE_SIM", "0.82"))
+# Second over-split guard: a fragment too SHORT to embed gets no voiceprint, so
+# _merge_oversplit (voiceprint-only) can't catch it — it survives as a phantom
+# speaker (a lone far-side voice came back as a 27-segment real cluster + a
+# 2-segment phantom → "Them · Speaker 1" AND "Speaker 2" for one person). Any
+# cluster with less than this much TOTAL speech is folded into a surviving one.
+# A real participant who speaks <2.5s across a whole meeting is negligible; tune
+# with STENO_DIARIZE_MIN_CLUSTER_SEC (0 disables).
+MIN_CLUSTER_SEC = float(os.environ.get("STENO_DIARIZE_MIN_CLUSTER_SEC", "2.5"))
 
 
 def _merge_oversplit(turns: list[dict], emb_map: dict[str, list[float]], threshold: float):
@@ -105,6 +113,57 @@ def _merge_oversplit(turns: list[dict], emb_map: dict[str, list[float]], thresho
     for lab in labels:  # keep one voiceprint per surviving root
         new_emb.setdefault(remap[lab], emb_map[remap[lab]])
     return new_turns, new_emb, merges
+
+
+def _absorb_tiny_clusters(turns: list[dict], emb_map: dict[str, list[float]], min_sec: float):
+    """Fold negligible clusters (total speech < min_sec) into a surviving one.
+    Unlike _merge_oversplit this is duration-based, so it catches fragments that
+    were too short to embed (no voiceprint) and thus escape the similarity merge.
+    Routes each tiny cluster to its nearest cluster by voiceprint when it has one,
+    else to the dominant (longest-talking) cluster. Returns (turns, emb_map, absorbed)."""
+    import collections
+    import numpy as np
+
+    if min_sec <= 0:
+        return turns, emb_map, []
+    dur: dict[str, float] = collections.defaultdict(float)
+    for t in turns:
+        dur[t["speaker"]] += max(0, t.get("end_ms", 0) - t.get("start_ms", 0)) / 1000.0
+    if len(dur) < 2:
+        return turns, emb_map, []
+    dominant = max(dur, key=dur.get)
+    # Speakers that will be absorbed. Routing targets are drawn ONLY from
+    # survivors (not in `tiny`), so a remap target is never itself absorbed —
+    # that guarantees no remap chain/cycle when two tiny clusters are mutually
+    # nearest (the single-pass remap below can't follow a chain).
+    tiny = {sp for sp, d in dur.items() if sp != dominant and d < min_sec}
+
+    def _unit(lab):
+        v = np.asarray(emb_map[lab], dtype=float)
+        n = float(np.linalg.norm(v))
+        return v / n if n else v
+
+    remap: dict[str, str] = {}
+    absorbed = []
+    for sp in sorted(tiny):
+        target = dominant  # default: fold into the longest-talking speaker
+        if sp in emb_map:  # if it did embed, prefer its nearest SURVIVING peer
+            best, best_sim = None, -1.0
+            for other in dur:
+                if other == sp or other in tiny or other not in emb_map:
+                    continue
+                sim = float(_unit(sp) @ _unit(other))
+                if sim > best_sim:
+                    best_sim, best = sim, other
+            if best is not None:
+                target = best
+        remap[sp] = target
+        absorbed.append((sp, target, round(dur[sp], 1)))
+    if not absorbed:
+        return turns, emb_map, []
+    new_turns = [{**t, "speaker": remap.get(t["speaker"], t["speaker"])} for t in turns]
+    new_emb = {k: v for k, v in emb_map.items() if k not in remap}
+    return new_turns, new_emb, absorbed
 
 
 def main() -> None:
@@ -206,6 +265,12 @@ def main() -> None:
         turns, emb_map, merges = _merge_oversplit(turns, emb_map, MERGE_SIM)
         for absorbed, kept, sim in merges:
             print(f"diarize: merged over-split {absorbed} -> {kept} (voiceprint sim {sim} >= {MERGE_SIM})", file=sys.stderr)
+    # Duration-based pass — catches short phantom fragments that never embedded
+    # (so _merge_oversplit's voiceprint check couldn't reach them).
+    if not args.num_speakers:
+        turns, emb_map, tiny = _absorb_tiny_clusters(turns, emb_map, MIN_CLUSTER_SEC)
+        for sp, target, secs in tiny:
+            print(f"diarize: absorbed tiny cluster {sp} ({secs}s < {MIN_CLUSTER_SEC}s) -> {target}", file=sys.stderr)
 
     out: dict = {"turns": turns}
     if emb_map:

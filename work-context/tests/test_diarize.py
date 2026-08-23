@@ -9,11 +9,15 @@ side-loaded models and is exercised live.
 """
 from __future__ import annotations
 
-from derive.meetings.diarize import _merge_oversplit
+from derive.meetings.diarize import _absorb_tiny_clusters, _merge_oversplit
 
 
 def _turn(speaker: str) -> dict:
     return {"start_ms": 0, "end_ms": 100, "speaker": speaker}
+
+
+def _dur_turn(speaker: str, secs: float) -> dict:
+    return {"start_ms": 0, "end_ms": int(secs * 1000), "speaker": speaker}
 
 
 def _spk(turns: list[dict]) -> int:
@@ -54,3 +58,70 @@ def test_no_voiceprints_is_noop():
     turns = [_turn("SPEAKER_00"), _turn("SPEAKER_01")]
     out_turns, out_emb, merges = _merge_oversplit(turns, {}, 0.82)
     assert out_turns == turns and merges == []
+
+
+# --- _absorb_tiny_clusters: duration-based phantom guard -------------------
+# The real bug: a lone far-side voice diarized as a 47.8s real cluster + a 0.4s
+# phantom that was too short to embed (no voiceprint), so _merge_oversplit could
+# not reach it. The duration pass folds it in.
+
+def test_tiny_phantom_without_voiceprint_absorbed():
+    # No voiceprints at all (the phantom never embedded) — must still collapse.
+    turns = [_dur_turn("SPEAKER_00", 47.8), _dur_turn("SPEAKER_01", 0.4)]
+    out_turns, out_emb, absorbed = _absorb_tiny_clusters(turns, {}, 2.5)
+    assert _spk(out_turns) == 1
+    assert absorbed == [("SPEAKER_01", "SPEAKER_00", 0.4)]
+    assert {t["speaker"] for t in out_turns} == {"SPEAKER_00"}
+
+
+def test_two_real_speakers_above_floor_kept():
+    # Both well above the floor → genuine 2-party call, never collapsed.
+    turns = [_dur_turn("SPEAKER_00", 30.0), _dur_turn("SPEAKER_01", 20.0)]
+    out_turns, _, absorbed = _absorb_tiny_clusters(turns, {}, 2.5)
+    assert _spk(out_turns) == 2 and absorbed == []
+
+
+def test_tiny_cluster_routes_to_nearest_by_voiceprint():
+    # 3 clusters; the tiny one embeds and is acoustically closest to B, not the
+    # dominant A → it must fold into B, not the longest-talker.
+    turns = [
+        _dur_turn("A", 40.0), _dur_turn("B", 10.0), _dur_turn("C", 0.5),
+    ]
+    emb = {
+        "A": [1.0, 0.0] + [0.0] * 254,
+        "B": [0.0, 1.0] + [0.0] * 254,
+        "C": [0.02, 0.98] + [0.0] * 254,  # ~= B
+    }
+    out_turns, out_emb, absorbed = _absorb_tiny_clusters(turns, emb, 2.5)
+    assert absorbed == [("C", "B", 0.5)]
+    assert "C" not in {t["speaker"] for t in out_turns}
+    assert "C" not in out_emb
+
+
+def test_two_mutually_nearest_tiny_clusters_no_cycle():
+    # Two tiny clusters whose voiceprints are closest to EACH OTHER must not
+    # remap into each other (a cycle the single-pass remap can't resolve) — both
+    # fold into a surviving speaker. Result: 1 speaker, consistent emb_map.
+    turns = [_dur_turn("A", 40.0), _dur_turn("B", 0.5), _dur_turn("C", 0.4)]
+    emb = {
+        "A": [1.0, 0.0] + [0.0] * 254,
+        "B": [0.0, 1.0] + [0.0] * 254,
+        "C": [0.01, 0.99] + [0.0] * 254,  # B and C ~= each other, both far from A
+    }
+    out_turns, out_emb, absorbed = _absorb_tiny_clusters(turns, emb, 2.5)
+    survivors = {t["speaker"] for t in out_turns}
+    assert survivors == {"A"}                       # both tiny folded away
+    assert all(target not in ("B", "C") for _, target, _ in absorbed)  # no cycle
+    assert set(out_emb) == survivors                # emb_map stays consistent
+
+
+def test_min_sec_zero_disables():
+    turns = [_dur_turn("SPEAKER_00", 47.8), _dur_turn("SPEAKER_01", 0.4)]
+    out_turns, _, absorbed = _absorb_tiny_clusters(turns, {}, 0.0)
+    assert _spk(out_turns) == 2 and absorbed == []
+
+
+def test_single_cluster_is_noop():
+    turns = [_dur_turn("SPEAKER_00", 0.4)]
+    out_turns, _, absorbed = _absorb_tiny_clusters(turns, {}, 2.5)
+    assert out_turns == turns and absorbed == []
