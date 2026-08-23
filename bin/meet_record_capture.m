@@ -47,6 +47,38 @@ static NSString *DefaultInputName(void) {
     return CFBridgingRelease(name);
 }
 
+// The far-end ('them') stream is the ScreenCaptureKit system-audio tap. When the
+// default OUTPUT device is a Bluetooth headset (AirPods), a call app forces it
+// into HFP/SCO mode so its mic works — and in HFP the far-end voice is rendered
+// over the SCO channel, which the SCK system-audio tap does NOT see. Result: a
+// silent 'them' stream, i.e. the whole call comes out mic-only (only your voice).
+// Detect this at start so meet_ui can warn BEFORE the meeting is lost. Returns
+// the output device name via *outName (may be nil) and YES iff it's Bluetooth.
+static BOOL DefaultOutputIsBluetooth(NSString **outName) {
+    if (outName) *outName = nil;
+    AudioDeviceID dev = 0;
+    UInt32 sz = sizeof(dev);
+    AudioObjectPropertyAddress addr = {kAudioHardwarePropertyDefaultOutputDevice,
+                                       kAudioObjectPropertyScopeGlobal,
+                                       kAudioObjectPropertyElementMain};
+    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &addr, 0, NULL, &sz, &dev) != noErr || !dev)
+        return NO;
+    CFStringRef name = NULL;
+    sz = sizeof(name);
+    addr.mSelector = kAudioDevicePropertyDeviceNameCFString;
+    if (AudioObjectGetPropertyData(dev, &addr, 0, NULL, &sz, &name) == noErr && name && outName)
+        *outName = CFBridgingRelease(name);
+    else if (name)
+        CFRelease(name);
+    UInt32 transport = 0;
+    sz = sizeof(transport);
+    addr.mSelector = kAudioDevicePropertyTransportType;
+    if (AudioObjectGetPropertyData(dev, &addr, 0, NULL, &sz, &transport) != noErr)
+        return NO;
+    return transport == kAudioDeviceTransportTypeBluetooth ||
+           transport == kAudioDeviceTransportTypeBluetoothLE;
+}
+
 // Voice-activity sidecar: whenever captured audio is above a speech-ish level,
 // touch <capture-dir>/voice_active (throttled to once per 5s). The auto-stop
 // logic uses its mtime to keep recording through meetings that run past their
@@ -155,6 +187,23 @@ int main(int argc, const char *argv[]) {
                          URLByAppendingPathComponent:@"voice_active"].path;
         gMicFile = [micURL.URLByDeletingLastPathComponent
                        URLByAppendingPathComponent:@"mic_active"].path;
+
+        // Bluetooth-output guard: a BT output device (AirPods) forces HFP during
+        // a call, which silences the SCK far-end tap → mic-only recording. Drop
+        // a marker naming the device so meet_ui can surface a live warning; clear
+        // any stale marker when the output is a normal (wired/built-in) device.
+        NSString *btOutFile = [micURL.URLByDeletingLastPathComponent
+                                  URLByAppendingPathComponent:@"bt_output"].path;
+        NSString *outName = nil;
+        if (DefaultOutputIsBluetooth(&outName)) {
+            fprintf(stderr, "WARN: output is Bluetooth (%s) — far-end (them) will NOT be "
+                            "recorded; switch to wired/built-in for both sides\n",
+                    (outName ?: @"?").UTF8String);
+            [(outName ?: @"Bluetooth") writeToFile:btOutFile atomically:YES
+                                          encoding:NSUTF8StringEncoding error:NULL];
+        } else {
+            [[NSFileManager defaultManager] removeItemAtPath:btOutFile error:NULL];
+        }
 
         SystemAudioSink *sink = [SystemAudioSink new];
         sink.url = sysURL;
