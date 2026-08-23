@@ -47,38 +47,6 @@ static NSString *DefaultInputName(void) {
     return CFBridgingRelease(name);
 }
 
-// The far-end ('them') stream is the ScreenCaptureKit system-audio tap. When the
-// default OUTPUT device is a Bluetooth headset (AirPods), a call app forces it
-// into HFP/SCO mode so its mic works — and in HFP the far-end voice is rendered
-// over the SCO channel, which the SCK system-audio tap does NOT see. Result: a
-// silent 'them' stream, i.e. the whole call comes out mic-only (only your voice).
-// Detect this at start so meet_ui can warn BEFORE the meeting is lost. Returns
-// the output device name via *outName (may be nil) and YES iff it's Bluetooth.
-static BOOL DefaultOutputIsBluetooth(NSString **outName) {
-    if (outName) *outName = nil;
-    AudioDeviceID dev = 0;
-    UInt32 sz = sizeof(dev);
-    AudioObjectPropertyAddress addr = {kAudioHardwarePropertyDefaultOutputDevice,
-                                       kAudioObjectPropertyScopeGlobal,
-                                       kAudioObjectPropertyElementMain};
-    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &addr, 0, NULL, &sz, &dev) != noErr || !dev)
-        return NO;
-    CFStringRef name = NULL;
-    sz = sizeof(name);
-    addr.mSelector = kAudioDevicePropertyDeviceNameCFString;
-    if (AudioObjectGetPropertyData(dev, &addr, 0, NULL, &sz, &name) == noErr && name && outName)
-        *outName = CFBridgingRelease(name);
-    else if (name)
-        CFRelease(name);
-    UInt32 transport = 0;
-    sz = sizeof(transport);
-    addr.mSelector = kAudioDevicePropertyTransportType;
-    if (AudioObjectGetPropertyData(dev, &addr, 0, NULL, &sz, &transport) != noErr)
-        return NO;
-    return transport == kAudioDeviceTransportTypeBluetooth ||
-           transport == kAudioDeviceTransportTypeBluetoothLE;
-}
-
 // Voice-activity sidecar: whenever captured audio is above a speech-ish level,
 // touch <capture-dir>/voice_active (throttled to once per 5s). The auto-stop
 // logic uses its mtime to keep recording through meetings that run past their
@@ -145,7 +113,7 @@ static AVAudioPCMBuffer *PCMBufferFromSampleBuffer(CMSampleBufferRef sb) {
     return st == noErr ? pcm : nil;
 }
 
-@interface SystemAudioSink : NSObject <SCStreamOutput>
+@interface SystemAudioSink : NSObject <SCStreamOutput, SCStreamDelegate>
 @property(nonatomic, strong) NSURL *url;
 @property(nonatomic, strong) AVAudioFile *file;
 @property(atomic) long long frames;
@@ -173,6 +141,17 @@ static AVAudioPCMBuffer *PCMBufferFromSampleBuffer(CMSampleBufferRef sb) {
         NoteVoiceLevel(pcm);
     }
 }
+// Without a delegate a stream that fails AFTER a successful start dies silently
+// (no buffers, no error) — which is exactly how a stale-replayd / mid-OS-update
+// state (SCStreamError -3805, connection interrupted) produced weeks of mic-only
+// recordings with no signal that anything was wrong. Log the stop reason so the
+// next such outage is visible in capture.log instead of silent.
+- (void)stream:(SCStream *)stream didStopWithError:(NSError *)error {
+    fprintf(stderr, "WARN: system-audio stream stopped: %s (code=%ld domain=%s) — "
+                    "far-end may be missing; if persistent, reboot to reset replayd\n",
+            error.localizedDescription.UTF8String, (long)error.code,
+            error.domain.UTF8String);
+}
 @end
 
 int main(int argc, const char *argv[]) {
@@ -187,23 +166,6 @@ int main(int argc, const char *argv[]) {
                          URLByAppendingPathComponent:@"voice_active"].path;
         gMicFile = [micURL.URLByDeletingLastPathComponent
                        URLByAppendingPathComponent:@"mic_active"].path;
-
-        // Bluetooth-output guard: a BT output device (AirPods) forces HFP during
-        // a call, which silences the SCK far-end tap → mic-only recording. Drop
-        // a marker naming the device so meet_ui can surface a live warning; clear
-        // any stale marker when the output is a normal (wired/built-in) device.
-        NSString *btOutFile = [micURL.URLByDeletingLastPathComponent
-                                  URLByAppendingPathComponent:@"bt_output"].path;
-        NSString *outName = nil;
-        if (DefaultOutputIsBluetooth(&outName)) {
-            fprintf(stderr, "WARN: output is Bluetooth (%s) — far-end (them) will NOT be "
-                            "recorded; switch to wired/built-in for both sides\n",
-                    (outName ?: @"?").UTF8String);
-            [(outName ?: @"Bluetooth") writeToFile:btOutFile atomically:YES
-                                          encoding:NSUTF8StringEncoding error:NULL];
-        } else {
-            [[NSFileManager defaultManager] removeItemAtPath:btOutFile error:NULL];
-        }
 
         SystemAudioSink *sink = [SystemAudioSink new];
         sink.url = sysURL;
@@ -337,11 +299,18 @@ int main(int argc, const char *argv[]) {
             SCStreamConfiguration *cfg = [SCStreamConfiguration new];
             cfg.capturesAudio = YES;
             cfg.excludesCurrentProcessAudio = YES;
-            // Video is mandatory plumbing for SCStream; make it as cheap as possible.
-            cfg.width = 2;
-            cfg.height = 2;
-            cfg.minimumFrameInterval = CMTimeMake(1, 1);
-            stream = [[SCStream alloc] initWithFilter:filter configuration:cfg delegate:nil];
+            // Explicit audio format — macOS 26 no longer infers it and drops audio.
+            cfg.sampleRate = 48000;
+            cfg.channelCount = 2;
+            // Video is mandatory plumbing for SCStream. It must be cheap but NOT
+            // degenerate: macOS 26 (26.4.x) stopped delivering ANY audio buffers
+            // when the video config was 2x2 @ 1fps (worked fine through macOS ≤26.3;
+            // silently gave frames=0 after). A small real frame size + ~10fps keeps
+            // the audio pipeline alive at negligible CPU since we discard the video.
+            cfg.width = 128;
+            cfg.height = 72;
+            cfg.minimumFrameInterval = CMTimeMake(1, 10);
+            stream = [[SCStream alloc] initWithFilter:filter configuration:cfg delegate:sink];
             NSError *addErr = nil;
             [stream addStreamOutput:sink
                                type:SCStreamOutputTypeAudio
@@ -352,6 +321,19 @@ int main(int argc, const char *argv[]) {
                 dispatch_semaphore_signal(startSem);
                 return;
             }
+            // macOS 26 regression: the SCStream audio pipeline only pumps when a
+            // SCREEN output is ALSO registered (and its frames consumed). Without
+            // it, audio delivers 0 buffers (worked through ≤26.3, silently broke
+            // after). Register a discard-only video output on its own queue — the
+            // sink ignores non-audio buffers, so the frames are dropped for free.
+            NSError *vidErr = nil;
+            [stream addStreamOutput:sink
+                               type:SCStreamOutputTypeScreen
+                 sampleHandlerQueue:dispatch_queue_create("meet-record.video", NULL)
+                              error:&vidErr];
+            if (vidErr)
+                fprintf(stderr, "WARN: screen output add failed (%s) — audio may stay silent on macOS 26\n",
+                        vidErr.localizedDescription.UTF8String);
             [stream startCaptureWithCompletionHandler:^(NSError *serr) {
                 startError = serr;
                 dispatch_semaphore_signal(startSem);

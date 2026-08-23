@@ -78,13 +78,6 @@ def rec_status() -> dict:
         ma = CAP / "mic_active"
         silent_for = (time.time() - ma.stat().st_mtime) if ma.exists() else out["elapsed"]
         out["mic_silent"] = out["elapsed"] > 20 and silent_for > 20
-        # Bluetooth-output guard: the capture writes .capture/bt_output (device
-        # name) when the system output is a BT headset (AirPods). On a call that
-        # forces HFP, silencing the far-end tap → mic-only. Surface it live so the
-        # user can switch devices before the other side is lost for good.
-        bt = CAP / "bt_output"
-        if bt.exists():
-            out["bt_output"] = bt.read_text(errors="replace").strip() or "Bluetooth"
     except Exception:
         pass
     # Persistent in-person nudge (meet_watch writes it while a calendar meeting is
@@ -868,10 +861,9 @@ async function poll(){
    const warns=[];
    if(s.mode!=='full') warns.push('⚠️ System audio NOT captured — recording your mic only. The other side will be missing. (Screen-Recording permission is off.)');
    if(s.mic_silent) warns.push('🔴 Mic is silent — no voice detected. Check your input device / unmute now, or this recording will be empty.');
-   if(s.bt_output) warns.push('🔴 On Bluetooth ('+esc(s.bt_output)+') — the OTHER SIDE will NOT be recorded. Bluetooth forces call audio into a mode Steno can\'t capture. Switch output to wired earphones or the built-in speaker NOW for both sides.');
    const rw=$('recwarn');
    if(warns.length){
-     const crit=!!s.mic_silent||!!s.bt_output;
+     const crit=!!s.mic_silent;
      rw.style.display='block';
      rw.style.background=crit?'#3a0f0f':'var(--recbg)';
      rw.style.color=crit?'#ff6b6b':'var(--accent)';
