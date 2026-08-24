@@ -16,6 +16,7 @@ outside the existing pipeline paths (.capture/live.notes.md).
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -415,6 +416,41 @@ def _speakers_payload(mid: str, month: str) -> dict | None:
     return {"list": lst, "roster": roster}
 
 
+def _transcribe_eta(mid: str):
+    """Rough ETA for a not-yet-transcribed recording, or None if no raw audio.
+    Estimate = audio duration x factor (both streams whispered + diarize) minus time
+    already elapsed since the recording landed. Fuzzy by nature — transcription runs
+    only on AC / above the battery floor and whisper throughput varies — so it's
+    surfaced as '~N min', never a promise. Factor tunable via STENO_TRANSCRIBE_FACTOR."""
+    slug = mid[11:]
+    audio = None
+    for cand in (INBOX / f"{slug}.m4a", ARCHIVE / mid[:7] / f"{slug}.m4a"):
+        if cand.exists():
+            audio = cand
+            break
+    if not audio:
+        return None
+    try:
+        import subprocess
+        ff = "/opt/homebrew/bin/ffprobe"
+        ff = ff if os.path.exists(ff) else "ffprobe"
+        dur = float(subprocess.run(
+            [ff, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(audio)],
+            capture_output=True, text=True, timeout=10).stdout.strip() or 0)
+    except Exception:
+        return None
+    if dur <= 0:
+        return None
+    factor = float(os.environ.get("STENO_TRANSCRIBE_FACTOR", "2.0"))
+    total_min = max(1, round(dur * factor / 60))
+    elapsed_min = max(0.0, (time.time() - audio.stat().st_mtime) / 60)
+    return {
+        "audio_min": max(1, round(dur / 60)),
+        "eta_min": max(1, round(total_min - elapsed_min)),
+    }
+
+
 def meeting_detail(mid: str) -> dict:
     mid = re.sub(r"[^a-zA-Z0-9_-]", "", mid)
     month = mid[:7]
@@ -456,6 +492,8 @@ def meeting_detail(mid: str) -> dict:
         "transcribed": txt.exists(),
         "transcript_mtime": txt.stat().st_mtime if txt.exists() else 0,  # freshness stamp (changes on re-transcribe)
         "transcript": txt.read_text(errors="replace") if txt.exists() else "(not transcribed yet)",
+        # Rough ETA while a recording is still in the transcription queue (None once done).
+        "transcribe_eta": None if txt.exists() else _transcribe_eta(mid),
         "note": note.read_text(errors="replace") if note.exists() else "",
         "scratchpad": scratch.read_text(errors="replace") if scratch else "",
         "links": links,
@@ -1313,6 +1351,7 @@ function render(){
         return mt ? '<div style="font-size:11.5px;color:var(--muted);margin-bottom:8px">transcript · updated '+mt.toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+'</div>' : '';
      })()}
      ${detail.speakers && detail.speakers.list.some(s=>!s.name) ? '<div style="font-size:11.5px;color:var(--muted);margin-bottom:8px">Tip: click any <span style="color:var(--accent);border-bottom:1px dashed var(--accent)">Speaker&nbsp;▾</span> in the transcript to name them — no need to open the Speakers tab.</div>' : ''}
+     ${(!detail.transcribed && detail.transcribe_eta) ? '<div style="font-size:12px;color:var(--accent);background:var(--recbg);border:1px solid var(--recline);border-radius:8px;padding:7px 12px;margin-bottom:9px">⏳ Transcribing… est. ready in <b>~'+detail.transcribe_eta.eta_min+' min</b> ('+detail.transcribe_eta.audio_min+' min of audio). Runs only on AC / above the battery floor, so it can take longer — reopen to refresh.</div>' : ''}
      <pre>${mapTranscriptHTML(detail.transcript)}</pre>`
    : `<textarea id="mpad" style="width:100%;min-height:320px;border:1px solid var(--line);border-radius:12px;background:var(--card);padding:14px 16px;font:14px/1.6 ui-monospace,Menlo,monospace;resize:vertical;outline:none" placeholder="Add your own context — what mattered, corrections, decisions the transcript garbled. Autosaves; used on the next (re)generation.">${detail.scratchpad.replace(/</g,'&lt;')}</textarea>
       <div style="font-size:12px;color:var(--muted);margin-top:6px">autosaves · attach links above · hit ↻ regenerate when ready</div>`}</div>`;
