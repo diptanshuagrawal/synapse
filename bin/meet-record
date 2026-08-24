@@ -43,7 +43,8 @@ ensure_built() {
     echo "building capture binary..."
     clang -fobjc-arc -O2 "$SRC" -o "$BIN" \
       -framework Foundation -framework AVFoundation -framework CoreMedia \
-      -framework ScreenCaptureKit -framework CoreAudio || { echo "ERROR: clang build failed"; exit 1; }
+      -framework ScreenCaptureKit -framework CoreAudio -framework AudioToolbox \
+      || { echo "ERROR: clang build failed"; exit 1; }
     # Sign with the persistent self-signed identity so the TCC Screen-Recording
     # grant survives rebuilds (TCC matches identifier+cert, not the ad-hoc hash;
     # an unsigned rebuild silently loses system audio on this admin-gated Mac).

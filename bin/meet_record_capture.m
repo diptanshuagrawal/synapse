@@ -18,7 +18,7 @@
 // Build (done by the meet-record wrapper when missing/stale):
 //   clang -fobjc-arc -O2 meet_record_capture.m -o meet-record-capture \
 //     -framework Foundation -framework AVFoundation -framework CoreMedia \
-//     -framework ScreenCaptureKit -framework CoreAudio
+//     -framework ScreenCaptureKit -framework CoreAudio -framework AudioToolbox
 
 #import <AVFoundation/AVFoundation.h>
 #import <CoreAudio/CoreAudio.h>
@@ -45,6 +45,70 @@ static NSString *DefaultInputName(void) {
     if (AudioObjectGetPropertyData(dev, &addr, 0, NULL, &sz, &name) != noErr || !name)
         return @"?";
     return CFBridgingRelease(name);
+}
+
+// True if the current default INPUT device is Bluetooth (AirPods on a call sit in
+// HFP/SCO — the flaky, low-bandwidth mic mode that drops to silence mid-recording,
+// losing the owner's whole side). Used by the opt-in built-in-mic safety override.
+static BOOL DefaultInputIsBluetooth(void) {
+    AudioDeviceID dev = 0;
+    UInt32 sz = sizeof(dev);
+    AudioObjectPropertyAddress addr = {kAudioHardwarePropertyDefaultInputDevice,
+                                       kAudioObjectPropertyScopeGlobal,
+                                       kAudioObjectPropertyElementMain};
+    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &addr, 0, NULL, &sz, &dev) != noErr || !dev)
+        return NO;
+    UInt32 transport = 0;
+    sz = sizeof(transport);
+    addr.mSelector = kAudioDevicePropertyTransportType;
+    if (AudioObjectGetPropertyData(dev, &addr, 0, NULL, &sz, &transport) != noErr)
+        return NO;
+    return transport == kAudioDeviceTransportTypeBluetooth ||
+           transport == kAudioDeviceTransportTypeBluetoothLE;
+}
+
+// The built-in microphone's device id (transport type == BuiltIn, has input
+// channels), or 0 if none. The reliable fallback when the default input is a
+// flaky Bluetooth mic.
+static AudioDeviceID BuiltInInputDeviceID(void) {
+    AudioObjectPropertyAddress addr = {kAudioHardwarePropertyDevices,
+                                       kAudioObjectPropertyScopeGlobal,
+                                       kAudioObjectPropertyElementMain};
+    UInt32 sz = 0;
+    if (AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &addr, 0, NULL, &sz) != noErr || !sz)
+        return 0;
+    UInt32 n = sz / sizeof(AudioDeviceID);
+    AudioDeviceID *devs = (AudioDeviceID *)malloc(sz);
+    if (!devs) return 0;
+    AudioDeviceID found = 0;
+    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &addr, 0, NULL, &sz, devs) == noErr) {
+        for (UInt32 i = 0; i < n; i++) {
+            // must have input channels
+            AudioObjectPropertyAddress in = {kAudioDevicePropertyStreamConfiguration,
+                                             kAudioObjectPropertyScopeInput,
+                                             kAudioObjectPropertyElementMain};
+            UInt32 cfgSz = 0;
+            if (AudioObjectGetPropertyDataSize(devs[i], &in, 0, NULL, &cfgSz) != noErr || !cfgSz)
+                continue;
+            AudioBufferList *bl = (AudioBufferList *)malloc(cfgSz);
+            BOOL hasInput = NO;
+            if (bl && AudioObjectGetPropertyData(devs[i], &in, 0, NULL, &cfgSz, bl) == noErr)
+                hasInput = bl->mNumberBuffers > 0;
+            free(bl);
+            if (!hasInput) continue;
+            UInt32 transport = 0, tsz = sizeof(transport);
+            AudioObjectPropertyAddress tp = {kAudioDevicePropertyTransportType,
+                                             kAudioObjectPropertyScopeGlobal,
+                                             kAudioObjectPropertyElementMain};
+            if (AudioObjectGetPropertyData(devs[i], &tp, 0, NULL, &tsz, &transport) == noErr &&
+                transport == kAudioDeviceTransportTypeBuiltIn) {
+                found = devs[i];
+                break;
+            }
+        }
+    }
+    free(devs);
+    return found;
 }
 
 // Voice-activity sidecar: whenever captured audio is above a speech-ish level,
@@ -220,6 +284,26 @@ int main(int argc, const char *argv[]) {
                                NoteVoiceLevel(out);
                              }];
         };
+        // Opt-in reliability override (STENO_MIC_FORCE_BUILTIN=1): when the default
+        // input is a Bluetooth mic (AirPods HFP drops to silence mid-call, losing
+        // the owner's whole side), record the owner's voice from the BUILT-IN mic
+        // instead. Output is untouched — you still LISTEN on AirPods, and the call
+        // app keeps the AirPods mic; Steno just captures a reliable local copy.
+        // Re-applied on every config-change re-tap so an A2DP↔HFP flip can't revert
+        // it. Default OFF — a critical-path override enabled per-machine.
+        BOOL wantBuiltin = getenv("STENO_MIC_FORCE_BUILTIN") &&
+                           !strcmp(getenv("STENO_MIC_FORCE_BUILTIN"), "1");
+        void (^forceBuiltIn)(void) = ^{
+            if (!wantBuiltin || !DefaultInputIsBluetooth()) return;
+            AudioDeviceID builtin = BuiltInInputDeviceID();
+            if (!builtin) return;
+            OSStatus st = AudioUnitSetProperty(engine.inputNode.audioUnit,
+                kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global,
+                0, &builtin, sizeof(builtin));
+            fprintf(stderr, st == noErr
+                ? "mic: default input is Bluetooth — forced to built-in mic for reliability\n"
+                : "mic: could not force built-in — using default input\n");
+        };
         @try {
             // Optional Acoustic Echo Cancellation (STENO_AEC=1): macOS Voice
             // Processing on the mic input subtracts the speaker output in real
@@ -236,6 +320,7 @@ int main(int argc, const char *argv[]) {
                     fprintf(stderr, "AEC: could not enable: %s\n",
                             vpErr ? vpErr.description.UTF8String : "unknown error");
             }
+            forceBuiltIn();  // opt-in: swap a Bluetooth default input for the built-in mic
             AVAudioFormat *fmt = [engine.inputNode outputFormatForBus:0];
             NSError *err = nil;
             micFile = [[AVAudioFile alloc] initForWriting:micURL settings:fmt.settings error:&err];
@@ -264,6 +349,7 @@ int main(int argc, const char *argv[]) {
                       if (shuttingDown || !micFile) return;
                       @try {
                           [engine.inputNode removeTapOnBus:0];
+                          forceBuiltIn();  // keep built-in through an A2DP↔HFP flip
                           installMicTap();
                           NSError *rerr = nil;
                           if (![engine startAndReturnError:&rerr])
