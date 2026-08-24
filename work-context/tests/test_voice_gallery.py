@@ -33,6 +33,30 @@ def test_enroll_then_identify_above_and_below_threshold():
     assert handle is None and score < 0.55
 
 
+def test_default_threshold_rejects_midband_false_match():
+    # Real far-end audio: DIFFERENT speakers reach cosine ~0.66 (measured
+    # 2026-08-24), which the old 0.55 default wrongly prefilled as a name. The
+    # precision-biased default must REJECT a ~0.66 (ambiguous-band) match.
+    g = {}
+    vg.enroll(np, g, "alex", [1.0, 0.0, 0.0])
+    probe = [0.66, (1 - 0.66**2) ** 0.5, 0.0]  # cosine ≈ 0.66 to alex
+    handle, score = vg.identify(np, g, probe, vg.DEFAULT_THRESHOLD)
+    assert 0.6 < score < 0.7            # squarely in the ambiguous band
+    assert handle is None               # ...and NOT prefilled at the new default
+    assert vg.DEFAULT_THRESHOLD >= 0.7  # precision-biased, above the FP band
+
+
+def test_threshold_env_override(monkeypatch):
+    import importlib
+    monkeypatch.setenv("STENO_VOICE_MATCH_THRESHOLD", "0.9")
+    reloaded = importlib.reload(vg)
+    try:
+        assert reloaded.DEFAULT_THRESHOLD == 0.9
+    finally:
+        monkeypatch.delenv("STENO_VOICE_MATCH_THRESHOLD", raising=False)
+        importlib.reload(reloaded)  # restore module default for other tests
+
+
 def test_enroll_running_mean():
     g = {}
     vg.enroll(np, g, "alex", [2.0, 0.0])
