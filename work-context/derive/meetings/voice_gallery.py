@@ -32,11 +32,17 @@ from pathlib import Path
 HOME = Path(os.path.expanduser("~"))
 DIAR_HOME = Path(os.environ.get("STENO_DIARIZE_HOME", HOME / ".steno-diarize"))
 GALLERY = DIAR_HOME / "voices.json"
-# Empirical (TTS A/B 2026-07-21): cross-speaker cosine ~0.29, same-speaker
-# ~0.59-0.69. 0.55 sits safely above the cross-speaker floor and catches genuine
-# matches. This only gates whether to PRE-FILL a UI suggestion — the owner still
-# confirms before a name reaches a note — so a borderline suggestion is low-risk.
-DEFAULT_THRESHOLD = 0.55
+# Threshold to PRE-FILL a name suggestion. The old 0.55 came from a clean TTS A/B
+# (cross-speaker ~0.29) that did NOT hold on real phone-quality far-end audio:
+# measured 2026-08-24 on live huddles, DIFFERENT people reach cosine ~0.66 and
+# false matches fired at 0.65-0.69 (a speaker's voice prefilled as an unrelated
+# enrolled person). Same- and
+# different-speaker similarities overlap in ~0.60-0.66 on this audio, so no cutoff
+# gives clean recall — bias hard for PRECISION: a wrong prefilled name is worse
+# than none (the owner would rather assign once, which enrolls a real sample and
+# sharpens the gallery). 0.72 sits above the observed false-positive band; tune
+# with STENO_VOICE_MATCH_THRESHOLD. Suggestion only — never a silently-applied name.
+DEFAULT_THRESHOLD = float(os.environ.get("STENO_VOICE_MATCH_THRESHOLD", "0.72"))
 
 
 def _np():
