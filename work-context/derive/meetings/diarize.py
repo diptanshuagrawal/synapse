@@ -74,6 +74,18 @@ MERGE_SIM = float(os.environ.get("STENO_DIARIZE_MERGE_SIM", "0.82"))
 # A real participant who speaks <2.5s across a whole meeting is negligible; tune
 # with STENO_DIARIZE_MIN_CLUSTER_SEC (0 disables).
 MIN_CLUSTER_SEC = float(os.environ.get("STENO_DIARIZE_MIN_CLUSTER_SEC", "2.5"))
+# Third over-split guard — IDENTITY-based, for the far-end ('them') stream only.
+# On a 1:1 call the far side is ONE person, but pyannote still over-splits them
+# into 2+ clusters whose cluster-to-cluster voiceprints are too different to merge
+# (measured: same-person 0.61 overlaps different-people 0.66, so _merge_oversplit's
+# similarity check can't separate them). The signal cluster-sim can't give: both
+# fragments independently match the SAME enrolled person in the voice gallery.
+# Merge clusters that resolve to the same gallery voice — needs one confident
+# anchor match (>= ANCHOR) plus the others at least plausible (>= FLOOR). Far-end
+# only: an in-person room mic has many REAL speakers, so identity-collision there
+# would be a false-merge risk. FLOOR<=0 disables.
+IDENTITY_MERGE_FLOOR = float(os.environ.get("STENO_DIARIZE_IDENTITY_FLOOR", "0.5"))
+IDENTITY_MERGE_ANCHOR = float(os.environ.get("STENO_DIARIZE_IDENTITY_ANCHOR", "0.65"))
 
 
 def _merge_oversplit(turns: list[dict], emb_map: dict[str, list[float]], threshold: float):
@@ -164,6 +176,44 @@ def _absorb_tiny_clusters(turns: list[dict], emb_map: dict[str, list[float]], mi
     new_turns = [{**t, "speaker": remap.get(t["speaker"], t["speaker"])} for t in turns]
     new_emb = {k: v for k, v in emb_map.items() if k not in remap}
     return new_turns, new_emb, absorbed
+
+
+def _merge_by_gallery(turns: list[dict], emb_map: dict[str, list[float]],
+                      gallery: dict, floor: float, anchor: float):
+    """Merge clusters that the voiceprint gallery maps to the SAME enrolled person.
+    Each cluster is matched to its nearest gallery voice (>= floor); clusters that
+    share a handle are folded into the highest-scoring one, but only if that group
+    has at least one CONFIDENT anchor match (>= anchor) — so two weak/ambiguous
+    matches to the same person don't merge on noise. Returns (turns, emb_map,
+    merges) where merges is a list of (absorbed, kept, handle, score)."""
+    import collections
+
+    if floor <= 0 or not gallery or len(emb_map) < 2:
+        return turns, emb_map, []
+    import numpy as np  # noqa: F401 (used via voice_gallery.identify)
+    from derive.meetings import voice_gallery as vg
+
+    groups: dict[str, list[tuple[str, float]]] = collections.defaultdict(list)
+    for lab, emb in emb_map.items():
+        handle, score = vg.identify(np, gallery, emb, floor)
+        if handle:
+            groups[handle].append((lab, score))
+
+    remap: dict[str, str] = {}
+    merges = []
+    for handle, members in groups.items():
+        if len(members) < 2 or max(s for _, s in members) < anchor:
+            continue
+        members.sort(key=lambda x: -x[1])  # keep the strongest match
+        keep = members[0][0]
+        for lab, score in members[1:]:
+            remap[lab] = keep
+            merges.append((lab, keep, handle, round(score, 3)))
+    if not remap:
+        return turns, emb_map, []
+    new_turns = [{**t, "speaker": remap.get(t["speaker"], t["speaker"])} for t in turns]
+    new_emb = {k: v for k, v in emb_map.items() if k not in remap}
+    return new_turns, new_emb, merges
 
 
 def main() -> None:
@@ -271,6 +321,20 @@ def main() -> None:
         turns, emb_map, tiny = _absorb_tiny_clusters(turns, emb_map, MIN_CLUSTER_SEC)
         for sp, target, secs in tiny:
             print(f"diarize: absorbed tiny cluster {sp} ({secs}s < {MIN_CLUSTER_SEC}s) -> {target}", file=sys.stderr)
+    # Identity-based pass — FAR-END ('them') only: merge clusters that map to the
+    # same enrolled voice (over-split of one remote person the sim check can't see).
+    # The ENTIRE pass (gallery import + load + merge) is best-effort: any failure
+    # degrades to the un-merged turns — a broken gallery must never fail diarization.
+    if not args.num_speakers and ".them." in args.out:
+        try:
+            from derive.meetings import voice_gallery as vg
+            gallery = vg.load_gallery()
+            turns, emb_map, idm = _merge_by_gallery(
+                turns, emb_map, gallery, IDENTITY_MERGE_FLOOR, IDENTITY_MERGE_ANCHOR)
+            for sp, keep, handle, score in idm:
+                print(f"diarize: merged {sp} -> {keep} (same gallery voice '{handle}', score {score})", file=sys.stderr)
+        except Exception as e:  # broken/undeployable gallery → keep un-merged turns
+            print(f"diarize: identity-merge skipped ({e})", file=sys.stderr)
 
     out: dict = {"turns": turns}
     if emb_map:

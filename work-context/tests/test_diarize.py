@@ -9,7 +9,14 @@ side-loaded models and is exercised live.
 """
 from __future__ import annotations
 
-from derive.meetings.diarize import _absorb_tiny_clusters, _merge_oversplit
+import numpy as np
+
+from derive.meetings import voice_gallery as vg
+from derive.meetings.diarize import (
+    _absorb_tiny_clusters,
+    _merge_by_gallery,
+    _merge_oversplit,
+)
 
 
 def _turn(speaker: str) -> dict:
@@ -125,3 +132,61 @@ def test_single_cluster_is_noop():
     turns = [_dur_turn("SPEAKER_00", 0.4)]
     out_turns, _, absorbed = _absorb_tiny_clusters(turns, {}, 2.5)
     assert out_turns == turns and absorbed == []
+
+
+# --- _merge_by_gallery: identity-based far-end merge -----------------------
+# The real case: a 1:1 call's far side over-split into two clusters that BOTH
+# match the same enrolled person (Sanket 0.77 + 0.50) — cluster-sim can't merge
+# them (0.6/0.66 overlap) but the shared gallery identity can.
+
+def _gallery():
+    g = {}
+    vg.enroll(np, g, "sanket", [1.0, 0.0, 0.0])
+    vg.enroll(np, g, "other", [0.0, 0.0, 1.0])
+    return g
+
+
+def test_gallery_merge_same_voice():
+    emb = {
+        "A": [0.77, (1 - 0.77**2) ** 0.5, 0.0],   # ~0.77 to sanket
+        "B": [0.505, (1 - 0.505**2) ** 0.5, 0.0], # ~0.505 to sanket
+        "C": [0.0, 0.0, 1.0],                      # = other (lone → stays)
+    }
+    turns = [_turn("A"), _turn("B"), _turn("C")]
+    out_turns, out_emb, merges = _merge_by_gallery(turns, emb, _gallery(), 0.5, 0.65)
+    assert _spk(out_turns) == 2                    # A+B collapsed, C kept
+    assert "B" not in {t["speaker"] for t in out_turns}
+    assert "B" not in out_emb
+    assert merges and merges[0][2] == "sanket"
+
+
+def test_gallery_no_confident_anchor_no_merge():
+    # Both match sanket but weakly (max < anchor 0.65) → don't merge on noise.
+    emb = {
+        "A": [0.55, (1 - 0.55**2) ** 0.5, 0.0],
+        "B": [0.52, (1 - 0.52**2) ** 0.5, 0.0],
+    }
+    turns = [_turn("A"), _turn("B")]
+    out_turns, _, merges = _merge_by_gallery(turns, emb, _gallery(), 0.5, 0.65)
+    assert _spk(out_turns) == 2 and merges == []
+
+
+def test_gallery_different_people_not_merged():
+    emb = {"A": [1.0, 0.0, 0.0], "B": [0.0, 0.0, 1.0]}  # sanket vs other
+    turns = [_turn("A"), _turn("B")]
+    out_turns, _, merges = _merge_by_gallery(turns, emb, _gallery(), 0.5, 0.65)
+    assert _spk(out_turns) == 2 and merges == []
+
+
+def test_gallery_floor_zero_disables():
+    emb = {"A": [1.0, 0.0, 0.0], "B": [0.99, 0.01, 0.0]}
+    turns = [_turn("A"), _turn("B")]
+    out_turns, _, merges = _merge_by_gallery(turns, emb, _gallery(), 0.0, 0.65)
+    assert out_turns == turns and merges == []
+
+
+def test_gallery_empty_is_noop():
+    emb = {"A": [1.0, 0.0, 0.0], "B": [0.99, 0.01, 0.0]}
+    turns = [_turn("A"), _turn("B")]
+    out_turns, _, merges = _merge_by_gallery(turns, emb, {}, 0.5, 0.65)
+    assert out_turns == turns and merges == []
