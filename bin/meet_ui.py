@@ -72,12 +72,24 @@ def rec_status() -> dict:
             "mode": "mic-only" if "mic-only" in log else "full",
             "auto": (CAP / "auto").exists(),
         }
-        # Live silent-mic detection: the capture touches .capture/mic_active when
-        # the mic carries voice. If it stays stale >20s into a recording (or was
-        # never created), the mic is dead/muted → the recording is going silent.
+        # Live dead-mic detection. The capture touches .capture/mic_active when the
+        # mic carries voice. The old rule (stale >20s) fired on every normal
+        # LISTENING pause — you go quiet for 20s and it screamed "mic silent",
+        # which trains you to ignore it and miss a REAL failure. A quiet mic is not
+        # a dead mic. Only flag the two shapes a pause can't explain:
+        #   (a) NEVER carried signal well into the recording → muted / wrong input
+        #       device (the common real failure — caught fast);
+        #   (b) worked, then went silent for an implausibly long stretch → a genuine
+        #       mid-call drop. A listening pause (even a long monologue from the
+        #       other side) stays under (b)'s window, so it won't false-fire.
         ma = CAP / "mic_active"
-        silent_for = (time.time() - ma.stat().st_mtime) if ma.exists() else out["elapsed"]
-        out["mic_silent"] = out["elapsed"] > 20 and silent_for > 20
+        ever_active = ma.exists()
+        silent_for = (time.time() - ma.stat().st_mtime) if ever_active else out["elapsed"]
+        dead_start = float(os.environ.get("STENO_MIC_DEAD_START_SEC", "60"))
+        drop_window = float(os.environ.get("STENO_MIC_DROP_SEC", "180"))
+        out["mic_silent"] = (
+            (out["elapsed"] > dead_start) if not ever_active else (silent_for > drop_window)
+        )
     except Exception:
         pass
     # Persistent in-person nudge (meet_watch writes it while a calendar meeting is
