@@ -1275,6 +1275,16 @@ async function open_(id,ss){
  syncTodoNav(); render(); load();
 }
 async function seg_(id){sel=id;detail=await (await fetch('/api/meeting/'+id)).json();render()}
+// Tab switch. MoM/note are generated ASYNC (routine/skill) AFTER the meeting was
+// first opened, so the cached `detail` can be stale — re-fetch when switching to a
+// tab whose content may have just landed, else a fresh MoM shows only after a full
+// app refresh (owner hit this on the DR-drill MoM).
+async function setTab(t){
+  tab=t;
+  const stalePending=(t==='MoM'&&!detail.mom)||(t==='note'&&(!detail.note||detail.queued));
+  if(stalePending&&sel){try{detail=await (await fetch('/api/meeting/'+sel)).json()}catch(e){}}
+  render();
+}
 function render(){
  if(!detail) return;
  const tabs=['note','transcript','my notes'].concat((detail.mom||detail.mom_queued)?['MoM']:[]).concat(detail.speakers?['Speakers']:[]).concat(detail.share?['Share']:[]);
@@ -1299,7 +1309,7 @@ function render(){
      style="border:1px solid var(--line);background:var(--card);color:var(--muted);border-radius:7px;padding:2px 8px;font-size:11.5px;min-width:180px;outline:none"></div>
  ${parts}
  ${linkbar}
- <div class="tabs">${tabs.map(t=>`<button class="${t===tab?'on':''}" onclick="tab='${t}';render()">${t}</button>`).join('')}
+ <div class="tabs">${tabs.map(t=>`<button class="${t===tab?'on':''}" onclick="setTab('${t}')">${t}</button>`).join('')}
    <span style="margin-left:auto;display:flex;gap:6px">
    ${(!detail.mom&&!detail.mom_queued)?`<button style="border:1px solid var(--line);background:var(--card);border-radius:9px;padding:5px 14px;font-size:13px;cursor:pointer;color:var(--muted)" onclick="mom()">MoM</button>`:''}
    ${(detail.note||detail.mom)?`<button style="border:1px solid var(--line);background:var(--card);border-radius:9px;padding:5px 14px;font-size:13px;cursor:pointer;color:var(--muted)" onclick="share()">Share (redact)</button>`:''}
