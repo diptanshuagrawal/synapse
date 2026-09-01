@@ -171,6 +171,27 @@ def test_opt_str_scalar_and_empty():
     assert ce._opt_str([]) == ""
 
 
+def test_cycles_multiselect_list_returns_nonempty_values():
+    assert ce._cycles([{"value": "Sep-26"}, {"value": "Oct-26"}]) == ["Sep-26", "Oct-26"]
+    assert ce._cycles(["Sep-26", {"value": "Oct-26"}]) == ["Sep-26", "Oct-26"]
+    # falsy entries and value-less dicts are filtered out, never surface as ""
+    assert ce._cycles([{"value": "Sep-26"}, {"name": "no-value"}, None]) == ["Sep-26"]
+
+
+def test_cycles_single_dict():
+    assert ce._cycles({"value": "Sep-26"}) == ["Sep-26"]
+    # a dict without a usable value yields [] (not [""]) — the review-flagged case
+    assert ce._cycles({"name": "no-value"}) == []
+    assert ce._cycles({}) == []
+
+
+def test_cycles_scalar_and_empty():
+    assert ce._cycles("Sep-26") == ["Sep-26"]
+    assert ce._cycles(None) == []
+    assert ce._cycles("") == []
+    assert ce._cycles([]) == []
+
+
 # --- build(start_override): custom start date overrides the active-sprint start
 #     and switches the sprint header (label + cadence). build() fans out to many
 #     Jira/state helpers, so stub them and exercise ONLY the override branch. ---
