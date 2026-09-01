@@ -57,6 +57,8 @@ The unified `Event` schema, event-type tables, classification mechanics, and ide
 - **Slack team-search safety net** — `ingest/slack_ingest_app.py --search-net` catches late team replies to threads the `team_involved` filter originally dropped.
 - **Company-holiday calendar** — `config/holidays-<year>.yaml` + `derive/holidays.py`; display-only shading in leave views + dashboard.
 - **Slack user-group auto-discovery** — `derive/slack_discover_usergroups.py` proposes user-groups the team is in for the `team_involved` filter (owner applies explicitly).
+- **Incident-Commander rota bot** — `bin/ic_rota_bot.py` (+ `ingest/run-ic-rota.sh`): T-N-day heads-up to the next IC and keeps the on-call channel topic = current IC. Config in `config/ic_rota.example.yaml`.
+- **Namespace cost tracker** — `derive/ns_cost.py` (+ `/ns-cost`): pulls per-namespace chargeback $/day for owned namespaces and trends it vs a baseline. Config in `config/ns_cost.example.yaml`.
 
 ---
 
