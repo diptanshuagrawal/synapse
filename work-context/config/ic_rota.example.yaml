@@ -1,0 +1,41 @@
+# Incident-Commander rota bot (bin/ic_rota_bot.py) — skeleton. Copy to
+# ic_rota.yaml (gitignored) and fill real IDs. No org identity here.
+#
+# Automates two failure-prone manual steps in an IC rotation:
+#   --remind     : T-N days heads-up to the next IC (call out leaves, arrange
+#                  swap + Opsgenie override) in the IC channel.
+#   --sync-topic : keeps the oncall channel topic = current IC; posts a
+#                  handover note on change.
+#
+# Slack app scopes needed for live mode: chat:write, channels:read,
+# channels:manage (setTopic), and either chat:write.public or an invite to
+# the IC channel. Bot must be a member of the oncall channel to set topic.
+
+mode: test                       # test | live
+test_channel: ""                 # fill real id — private owner-only channel for test posts
+owner_slack_id: ""               # fill real Slack user id
+
+rota_source: static              # static | opsgenie
+
+slack:
+  oncall_channel: ""             # channel whose topic names the current IC
+  ic_channel: ""                 # IC working-group channel (reminders land here)
+  ic_usergroup: ""               # IC Slack user-group
+
+topic_template: "Incident Commander: {mention}"
+remind_days_before: 3
+
+opsgenie:
+  schedule_id: 00000000-0000-0000-0000-000000000000  # EXAMPLE placeholder
+  schedule_url: https://example.app.opsgenie.com/settings/schedule/detail/...
+  interval_weeks: 4
+  # If the schedule mixes the rota with permanent escalation rotations,
+  # name the one that is the actual rota; omit to take all rotations.
+  rotation_filter: "Primary Incident Commander"
+
+# Used when rota_source: static. End date INCLUSIVE, dates IST.
+static_rota: []
+#  - {start: 2026-01-05, end: 2026-01-09, email: person@example.com}
+
+# Email → Slack ID overrides for people not in people.yaml.
+slack_ids: {}

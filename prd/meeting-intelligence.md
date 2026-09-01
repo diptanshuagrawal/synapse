@@ -50,9 +50,17 @@ huddles, Meet, Zoom — anything that makes sound.
   an iCloud-synced folder for in-person capture (Granola's mobile story).
 
 ### F2. Transcription
-Local whisper.cpp (or mlx-whisper on Apple Silicon). Timestamped segments. Language
-auto-detect (Granola supports multi-language; Whisper does too, including code-switched
-Hindi/English common in our meetings). Phase 2+: whisperX for real diarization.
+Local whisper.cpp (or mlx-whisper on Apple Silicon). Timestamped segments.
+- **Language (revised 2026-07-27):** explicit control, not auto-detect. Whisper picks ONE
+  language and auto-detect is unreliable on code-switched Hindi/English (it decodes Hindi
+  as confident-but-garbled English — measured on a real huddle). Default stays `auto`
+  (fine for English meetings); Hinglish meetings set `TRANSCRIBE_LANG=hi` explicitly —
+  the Steno UI's re-transcribe control passes it.
+- **VAD (2026-08-05):** silero VAD is DISABLED by default — the current whisper-cpp
+  1.9.1 / ggml-0.16.0 + silero-v5.1.2 combo detects 0 speech on all audio (total
+  transcription outage; upstream regression, not fixed at root). `STENO_VAD=1` opts back
+  in for re-testing.
+- Diarization is a pyannote overlay, not a whisperX swap — see the P5 decision note.
 
 ### F3. Human-in-the-loop notes (Granola's core mechanic)
 During the call the owner jots rough bullets into a scratchpad
@@ -220,6 +228,46 @@ RCA template asks for (detection time, decisions, action items with owners).
     Me:/Them:. Isolated torch venv (`~/.steno-diarize`), gated models side-loaded past the
     Zscaler HF-CDN block (`bin/steno-diarize-setup.sh`), soft-dependency fallback. v1 =
     anonymous Speaker N; name resolution stays synthesis-time (`.people` + direct address).
+  - **Update (2026-08-15):** shipped, and extended past the note above:
+    - **Far side of CALLS is now diarized too** (2026-07-27): on the dual-stream call
+      path the them-stream wav runs through the diarizer → `Them · Speaker N` when
+      multiple remote people share one stream (e.g. a room on one Teams mic). Soft
+      overlay — diarizer failure degrades to flat `Them:`. The "only fires when the
+      them-stream is silent / calls keep ground-truth Me:/Them:" restriction no longer
+      holds; Me:/Them: stream separation itself is unchanged.
+    - **Over-split cluster merging**: acoustically-same diarization clusters are merged
+      (one voice → one speaker) before labeling; clusters also match against a local
+      voiceprint gallery (`speakers.json`).
+    - **"v1 = anonymous Speaker N" is superseded**: the Steno UI supports custom speaker
+      names and inline speaker tagging on the transcript, and a re-transcribe
+      auto-regenerates the note.
+    - The "silero VAD" item in the tuning list above is disabled by default since
+      2026-08-05 (upstream regression — see F2); the rest of the tuning stands.
+
+## Status (2026-08-15)
+
+- **P1 live** since 2026-07-16: inbox → whisper.cpp → events.db `source=meeting` +
+  `/meeting-notes` (ingest at `work-context/derive/meetings/ingest_transcript.py`).
+- **P2 shipped** — and grew a UI: `meet-record` ScreenCaptureKit capture plus the Steno
+  local web UI (`bin/meet_ui.py`) + thin native macOS wrapper. Library views, editable
+  meeting titles / one-click rename (mislabel fix), distinct same-day huddles split into
+  separate meetings (merge only true sub-5-min reconnect fragments), live capture-health
+  warnings (mic-only + silent-mic), re-transcribe with explicit language control,
+  per-stream me/them audio retained (~64k AAC) for re-runs, in-session transcript
+  correction (STEP 2.5), inline speaker tagging, auto-regenerated note after a
+  re-transcribe.
+- **P3 shipped**: local EventKit calendar reader (`bin/steno-agenda`, 2026-08-05 —
+  replaced the blocked published-ICS feed), calendar auto-match, `/meeting-brief`.
+- **P4 not started**: said-vs-done, commitment tracker, owner-asks + ticketize feeds
+  still planned (`state/meeting_commitments.json` / `meeting_asks.json` don't exist yet).
+- **P5 partial**: diarization shipped and extended (see the decision-note update);
+  `/meeting-share` redacted export shipped. Decision log + meeting-hygiene dashboard
+  lane still open.
+- **Latency**: notes land ~5 min after a meeting (was ~15) — priority-queue sweep
+  (starred first, shortest first) + turbo tiering; power policy in
+  `prd/meeting-transcription-power-policy.md`.
+- The "no GUI app" non-goal below is superseded by the Steno UI; the non-goals text is
+  kept as the original intent record.
 
 ## Non-goals
 

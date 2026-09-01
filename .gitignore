@@ -153,3 +153,6 @@ work-context/initiatives-in.json
 work-context/resolve-prefetch.json
 work-context/metrics-report/
 gather_err.txt
+
+# machine-specific migration runbook — real paths/labels, local only
+runbook/laptop-migration.md
