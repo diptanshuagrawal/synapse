@@ -502,9 +502,10 @@ def pod_initiatives(pods=None):
         # Planning Cycle is a multi-select of "Mon-YY" options (e.g. "Sep-26").
         v = f.get(EPIC_CYCLE_FIELD) if EPIC_CYCLE_FIELD else None
         if isinstance(v, list):
-            return [x.get("value", "") if isinstance(x, dict) else str(x) for x in v if x]
+            vals = [x.get("value", "") if isinstance(x, dict) else str(x) for x in v if x]
+            return [s for s in vals if s]
         if isinstance(v, dict):
-            return [v.get("value", "")]
+            return [v["value"]] if v.get("value") else []
         return [str(v)] if v else []
 
     inits = []
