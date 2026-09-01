@@ -72,3 +72,7 @@ work-context/derive/meetings/signals.py
 # list), exercised by live planner runs, not unit tests. Owner may add tests.
 work-context/derive/sprint_expand.py
 work-context/derive/_docsync_discover_filter.py
+
+# Namespace cost tracker — CLI/IO driver (pulls chargeback $/day, trends vs
+# baseline); exercised by live /ns-cost runs, not unit tests.
+work-context/derive/ns_cost.py

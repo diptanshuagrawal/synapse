@@ -414,6 +414,17 @@ def _opt_str(v):
     return v or ""
 
 
+def _cycles(v):
+    """Planning Cycle is a multi-select of "Mon-YY" options (e.g. "Sep-26").
+    Return the non-empty cycle strings as a list (empty list when absent)."""
+    if isinstance(v, list):
+        vals = [x.get("value", "") if isinstance(x, dict) else str(x) for x in v if x]
+        return [s for s in vals if s]
+    if isinstance(v, dict):
+        return [v["value"]] if v.get("value") else []
+    return [str(v)] if v else []
+
+
 def pod_options():
     """Distinct values of the OINT 'PODs' multi-select field, derived by scanning the
     initiatives (the field-option admin API is 403 for us). Cached by the server; falls
@@ -498,16 +509,6 @@ def pod_initiatives(pods=None):
                         "summary": (o.get("fields") or {}).get("summary", "")}
         return None
 
-    def _cycles(f):
-        # Planning Cycle is a multi-select of "Mon-YY" options (e.g. "Sep-26").
-        v = f.get(EPIC_CYCLE_FIELD) if EPIC_CYCLE_FIELD else None
-        if isinstance(v, list):
-            vals = [x.get("value", "") if isinstance(x, dict) else str(x) for x in v if x]
-            return [s for s in vals if s]
-        if isinstance(v, dict):
-            return [v["value"]] if v.get("value") else []
-        return [str(v)] if v else []
-
     inits = []
     for i in issues:
         f = i["fields"]
@@ -520,7 +521,7 @@ def pod_initiatives(pods=None):
             "engDri": _user_name(f.get(INITIATIVE_ENG_DRI_FIELD)),
             "prodDri": _user_name(f.get(INITIATIVE_PROD_DRI_FIELD)),
             "epic": _linked_epic(f),
-            "cycles": _cycles(f),
+            "cycles": _cycles(f.get(EPIC_CYCLE_FIELD)) if EPIC_CYCLE_FIELD else [],
             "budgets": {m: 0 for m in BUDGET_MONTHS},
         })
 
