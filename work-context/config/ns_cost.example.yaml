@@ -1,0 +1,40 @@
+# ns_cost.example.yaml — template for the /ns-cost skill.
+# Copy to ns_cost.yaml (gitignored) and fill in your org's values.
+# NO real org identity in this file — hosts, UUIDs, slice ids live in ns_cost.yaml only.
+
+superset:
+  base_url: "https://<your-superset-host>"        # chargeback Superset origin
+  dashboard_uuid: "<dashboard-uuid>"              # AWS FinOps Chargeback dashboard
+  # Chart slice ids. Leave 0 to auto-resolve by chart_name via /api/v1/chart/?q=...
+  slices:
+    daily_by_namespace:
+      id: 0
+      chart_name: "Daily EKS cost trend by Namespace"
+    eks_by_namespace:                              # has the %idle column
+      id: 0
+      chart_name: "EKS cost by namespace"
+  # Column names in the chargeback dataset (used when patching query_context filters)
+  columns:
+    namespace: "namespace"
+    billing_period: "billing_period"
+
+# Baseline month readings are compared against (weekday average).
+baseline_month: "2026-07"
+# Flag a namespace when recent weekday avg is this % above baseline.
+threshold_pct: 20
+# Chargeback is weekday-matched; keep true unless your org bills flat.
+weekdays_only: true
+
+# Namespaces you own / track. keywords drive the events.db cause-recall
+# (Slack/Jira/GitHub mentions). jira_projects narrows ticket matches.
+namespaces:
+  - name: example-service
+    keywords: [example, exmpl]
+    jira_projects: [ABC]
+
+# Optional kubectl capacity snapshots (requests/replicas/HPA per run).
+# Snapshots accumulate under work-context/state/ns_cost/ and are diffed
+# between runs to catch silent capacity changes.
+kube:
+  enabled: false
+  context: ""          # explicit kubectl context name; empty = disabled

@@ -26,6 +26,12 @@ routines:
     needs: []
     permissions: []
 
+  - id: meeting-copilot
+    cron: "5,15,25,35,45,55 9-20 * * *"  # EXPERIMENTAL P6 — daily every 10 min (max 10-min analyst wait); STEP 0 idles unless ARMED + no live analyst (copilot.session heartbeat <90s stops double-latch); sticky arm; back-to-back meetings covered by one session
+    enabled: true
+    needs: []                     # writes ONLY .capture working files; read-only everywhere else
+    permissions: [Bash]
+
   - id: track-work-ticketize
     cron: "15,45 6-23 * * 1-5"    # weekdays, every 30 min 06:15–23:45 IST (retry until 1 success/day; SKILL.md run-once gate)
     enabled: true
@@ -123,6 +129,21 @@ routines:
     # auto-merged, never auto-team. Re-runs the validators + refreshes cached state so cron-status
     # reflects clean. Slack drift/orphan + pipeline-coverage WARNs are REPORTED only (not auto-fixable).
     # NO Anthropic API (scripts strip auth; identity judgment happens in-chat).
+
+  - id: meeting-notes-auto
+    cron: "5,20,35,50 9-21 * * 1-5"  # weekdays, every 15 min 09:05–21:50 IST (idempotent render gate; SKILL.md STEP-0 idles when nothing pending)
+    enabled: true
+    needs: []                     # local-only: reads events.db, writes note/MoM files under management/meetings (gitignored). No channel, no token.
+    permissions: [Bash]
+    # RENDER-ONLY (2026-07-20): this routine NEVER transcribes. Transcription (whisper) is owned
+    # solely by the always-on launchd watcher `com.example.transcripts-watch` (WatchPaths on the
+    # inbox + 10-min backstop) plus the on-demand Steno "Transcribe" button. A routine session is
+    # short-lived; a long meeting's whisper run outlives it, so a sweep launched from the routine
+    # gets SIGTERM'd on session end and can NEVER finish (CBS-audit 92-min / Jayanth 1-1 72-min all
+    # died with `Terminated: 15`). The routine only reads already-transcribed+ingested
+    # `meeting_recorded` events and renders their notes + any `.mom.request` MoMs. NO Anthropic API
+    # (synthesis happens in-session); NO Slack posts. Battery gates stay in transcripts_process.sh
+    # and only the watcher/button trigger it now.
 
   - id: housekeeping-review
     cron: "0,30 6-13 * * 1"      # Mondays, every 30 min 06:00–13:30 IST (retry until 1 success/WEEK; SKILL.md run-once gate, week-stamp)
