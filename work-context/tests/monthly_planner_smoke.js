@@ -759,6 +759,47 @@ const renderNow = () => w.eval('renderBoard()');
         JSON.stringify([...w.document.querySelectorAll('tr.row')].map(r => r.dataset.k)) === JSON.stringify(ranked),
         JSON.stringify([...w.document.querySelectorAll('tr.row')].map(r => r.dataset.k)));
 
+  console.log('\n--- 9. Jira free text is escaped, never parsed as HTML ---');
+  // Anyone who can edit an initiative in Jira controls these strings, and the board
+  // injects them via innerHTML. Unescaped, a crafted summary would run script in the
+  // planner, which can POST to /api/set-field and /api/submit-budgets as the user.
+  const XSS = '<img src=x onerror="window.__pwned=1">';
+  w.__pwned = undefined;
+  w.eval(`INITS.initiatives.forEach(i => { if(i.key === 'OINT-1'){
+            i.summary = ${JSON.stringify(XSS)}; i.engDri = ${JSON.stringify(XSS)};
+            i.prodDri = ${JSON.stringify(XSS)}; i.orgPriority = ${JSON.stringify(XSS)}; } });
+          ST.cols = ['pri','eng','prod']; renderBoard();`);
+  await new Promise(r => setTimeout(r, 50));
+  const xrow = [...w.document.querySelectorAll('tr.row')].find(r => r.dataset.k === 'OINT-1');
+  check('no injected element in the row', xrow && xrow.querySelector('img') === null,
+        xrow && xrow.innerHTML.slice(0, 140));
+  check('payload survives as literal text', xrow && xrow.textContent.includes('<img src=x'),
+        xrow && xrow.textContent.slice(0, 140));
+  check('onerror never fired', w.__pwned === undefined, String(w.__pwned));
+
+  // The expanded detail row renders Impact + Description, both Jira free text, and was the
+  // spot the first pass of this fix missed.
+  w.eval(`DETAILS['OINT-1'] = { impact: ${JSON.stringify(XSS)},
+                                descriptionText: ${JSON.stringify(XSS + ' a & b')} };
+          ST.initOpen['OINT-1'] = true; renderBoard();`);
+  await new Promise(r => setTimeout(r, 50));
+  const xdet = [...w.document.querySelectorAll('tr.detail')].find(t => t.dataset.k === 'OINT-1');
+  check('detail row parses no injected element', xdet && xdet.querySelector('img') === null,
+        xdet && xdet.innerHTML.slice(0, 140));
+  check('impact kept as literal text', xdet && xdet.textContent.includes('<img src=x'),
+        xdet && xdet.textContent.slice(0, 100));
+  check('ampersand in description survives intact', xdet && xdet.textContent.includes('a & b'),
+        xdet && xdet.textContent.slice(-60));
+  w.eval("ST.initOpen['OINT-1']=false; DETAILS={}; renderBoard();");
+
+  // Pod names are Jira multi-select option values and render into the filter menu.
+  w.eval(`PODS = [${JSON.stringify(XSS)}]; renderPodMenu();`);
+  const menu = w.document.querySelector('#ddPods .menu');
+  check('pod filter menu parses no injected element', menu && menu.querySelector('img') === null,
+        menu && menu.innerHTML.slice(0, 140));
+  check('pod name kept as literal text', menu && menu.textContent.includes('<img src=x'),
+        menu && menu.textContent.slice(0, 100));
+
   console.log(fail.length ? `\n${fail.length} of ${ran} FAILED: ${fail.join(', ')}`
                           : `\nall ${ran} checks passed`);
   process.exit(fail.length ? 1 : 0);
