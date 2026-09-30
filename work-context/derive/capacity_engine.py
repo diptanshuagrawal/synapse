@@ -414,6 +414,25 @@ def _opt_str(v):
     return v or ""
 
 
+def _opt_list(v):
+    """Values of a multi-select field as a list of strings (empty list when absent)."""
+    if isinstance(v, list):
+        return [x.get("value", "") if isinstance(x, dict) else str(x) for x in v if x]
+    if isinstance(v, dict):
+        return [v["value"]] if v.get("value") else []
+    return [str(v)] if v else []
+
+
+def current_user():
+    """The signed-in Jira user — used to offer a 'where I am Tech DRI' filter."""
+    try:
+        me = _jira("GET", "/rest/api/3/myself")
+    except Exception as e:
+        return {"__error__": str(e)}
+    return {"accountId": me.get("accountId", ""), "name": me.get("displayName", ""),
+            "email": me.get("emailAddress", "")}
+
+
 def _cycles(v):
     """Planning Cycle is a multi-select of "Mon-YY" options (e.g. "Sep-26").
     Return the non-empty cycle strings as a list (empty list when absent)."""
@@ -457,6 +476,11 @@ def pod_options():
     return sorted(pods) or [OINT_POD]
 
 
+# Shape version of the pod_initiatives payload. Bump whenever a field is added/renamed so
+# sprint_server discards on-disk initiatives-*.json caches written by an older build.
+INITIATIVES_SCHEMA = 4
+
+
 def pod_initiatives(pods=None):
     """Org initiatives (OINT project) for the given pod(s), each with its linked board
     epic (a JIRA_PROJECT issue on either side of an issue link) and that epic's monthly
@@ -483,7 +507,7 @@ def pod_initiatives(pods=None):
     jql = (f'project = {OINT_PROJECT} AND issuetype = Initiative '
            f'AND cf[{pod_cf}] in ({pod_list}) AND statusCategory != Done ORDER BY created DESC')
     fields = ["summary", "status", INITIATIVE_ORGPRI_FIELD, "issuelinks",
-              INITIATIVE_ENG_DRI_FIELD, INITIATIVE_PROD_DRI_FIELD] + \
+              INITIATIVE_ENG_DRI_FIELD, INITIATIVE_PROD_DRI_FIELD, INITIATIVE_POD_FIELD] + \
              ([EPIC_CYCLE_FIELD] if EPIC_CYCLE_FIELD else [])
     issues, token_page = [], None
     try:
@@ -499,6 +523,17 @@ def pod_initiatives(pods=None):
     except Exception as e:
         sys.stderr.write(f"[pod_initiatives] {e}\n")
         return {"__error__": str(e)}
+
+    def _linked_keys(f):
+        """Every linked issue outside the initiative project — i.e. candidate delivery epics
+        across all pods, not just our own board."""
+        out = []
+        for l in f.get("issuelinks", []):
+            o = l.get("outwardIssue") or l.get("inwardIssue") or {}
+            k = o.get("key", "")
+            if k and "-" in k and not k.startswith(f"{OINT_PROJECT}-"):
+                out.append(k)
+        return sorted(set(out))
 
     def _linked_epic(f):
         for l in f.get("issuelinks", []):
@@ -521,28 +556,52 @@ def pod_initiatives(pods=None):
             "engDri": _user_name(f.get(INITIATIVE_ENG_DRI_FIELD)),
             "prodDri": _user_name(f.get(INITIATIVE_PROD_DRI_FIELD)),
             "epic": _linked_epic(f),
+            # every pod on the initiative, not just the one filtered on: the pods beyond
+            # your own are the teams you have to coordinate with
+            "podTags": _opt_list(f.get(INITIATIVE_POD_FIELD)),
+            "linkedKeys": _linked_keys(f),
             "cycles": _cycles(f.get(EPIC_CYCLE_FIELD)) if EPIC_CYCLE_FIELD else [],
             "budgets": {m: 0 for m in BUDGET_MONTHS},
         })
 
-    # Attach each linked epic's monthly budget (batch by key).
+    # Attach each linked epic's monthly budget + planning fields (batch by key). The extra
+    # fields ride along on the same search — the planner's column picker surfaces them, and
+    # due date / health / overall budget are what the handover score is graded on.
     epic_keys = sorted({x["epic"]["key"] for x in inits if x["epic"]})
-    ebud = {}
+    epic_extra_fields = [f for f in (EPIC_HEALTH_FIELD, EPIC_CYCLE_FIELD,
+                                     BUDGET_OVERALL_FIELD, CHALLENGES_FIELD) if f]
+    ebud, emeta = {}, {}
     for j in range(0, len(epic_keys), 80):
         chunk = epic_keys[j:j + 80]
         try:
             data = _post({"jql": f"key in ({','.join(chunk)})",
-                          "fields": list(BUDGET_FIELDS.values()), "maxResults": 100})
+                          "fields": list(BUDGET_FIELDS.values())
+                                    + ["duedate", "status", "assignee", "priority", "labels"]
+                                    + epic_extra_fields,
+                          "maxResults": 100})
             for it in data.get("issues", []):
                 ff = it["fields"]
                 ebud[it["key"]] = {m: (ff.get(BUDGET_FIELDS[m]) or 0) for m in BUDGET_MONTHS}
+                emeta[it["key"]] = {
+                    "dueDate": ff.get("duedate") or "",
+                    "status": _opt_str(ff.get("status")),
+                    "assignee": _user_name(ff.get("assignee")),
+                    "priority": _opt_str(ff.get("priority")),
+                    "labels": ", ".join(ff.get("labels") or []),
+                    "health": _opt_str(ff.get(EPIC_HEALTH_FIELD)) if EPIC_HEALTH_FIELD else "",
+                    "cycles": _cycles(ff.get(EPIC_CYCLE_FIELD)) if EPIC_CYCLE_FIELD else [],
+                    "overallBudget": ff.get(BUDGET_OVERALL_FIELD) if BUDGET_OVERALL_FIELD else None,
+                    "challenges": _opt_str(ff.get(CHALLENGES_FIELD)) if CHALLENGES_FIELD else "",
+                }
         except Exception as e:
             sys.stderr.write(f"[pod_initiatives budgets] {e}\n")
     for x in inits:
         if x["epic"] and x["epic"]["key"] in ebud:
             x["budgets"] = {m: round(ebud[x["epic"]["key"]][m], 1) for m in BUDGET_MONTHS}
+        if x["epic"] and x["epic"]["key"] in emeta:
+            x["epic"].update(emeta[x["epic"]["key"]])
 
-    return {"generated": dt.date.today().isoformat(), "pods": pods,
+    return {"generated": dt.date.today().isoformat(), "v": INITIATIVES_SCHEMA, "pods": pods,
             "months": BUDGET_MONTHS, "initiatives": inits}
 
 
@@ -631,11 +690,270 @@ def _link_initiative_epic(initiative_key, epic_key):
         o = l.get("outwardIssue") or l.get("inwardIssue") or {}
         if o.get("key") == epic_key:
             return {"already": True}
+    # Direction matters and the field names are the opposite of what they read like: a stored
+    # link means "inwardIssue <type.outward> outwardIssue". For 'Polaris work item link'
+    # (outward='implements', inward='is implemented by') we want "EPIC implements INITIATIVE",
+    # which is how JPD shows the epic under the idea. So the EPIC is the inwardIssue.
+    # Reversing these two silently produces "epic is implemented by initiative" — the link
+    # still resolves, so the planner never noticed, but JPD stops treating it as the idea's
+    # delivery epic. See audit_epic_links() for the repair of links made the wrong way.
     _jira("POST", "/rest/api/3/issueLink",
           {"type": {"name": INITIATIVE_LINK_TYPE},
-           "inwardIssue": {"key": initiative_key},   # 'is implemented by'
-           "outwardIssue": {"key": epic_key}})        # 'implements'
+           "inwardIssue": {"key": epic_key},          # epic 'implements' ...
+           "outwardIssue": {"key": initiative_key}})  # ... the initiative
     return {"already": False}
+
+
+# Shape version of the pod_dependencies payload; bump to discard stale deps-*.json caches.
+DEPENDENCIES_SCHEMA = 2
+
+
+def _pod_project(pod):
+    """Pod label -> Jira project key. 'BOPS - BRANCH-BANKING' -> 'BOPS'. The org names pods
+    after the project their delivery epics live in, which is how a counterpart's epic is
+    found. Two pods can share a project (BOARD Payments / BOARD Ledger) — callers get
+    an `ambiguous` flag for those rather than a guess."""
+    return (pod or "").split(" - ")[0].strip()
+
+
+def _fetch_epics(keys, months):
+    """Delivery-epic facts for any project: status, due date, assignee, health, and the
+    per-month Budget fields (which are org-wide, so they read on every pod's epics)."""
+    keys = sorted(set(k for k in keys if k))
+    if not keys:
+        return {}
+    fields = (list(BUDGET_FIELDS.values()) + ["summary", "status", "duedate", "assignee"]
+              + ([EPIC_HEALTH_FIELD] if EPIC_HEALTH_FIELD else []))
+    out = {}
+    for i in range(0, len(keys), 80):
+        chunk = keys[i:i + 80]
+        try:
+            d = _jira("POST", "/rest/api/3/search/jql",
+                      {"jql": f"key in ({','.join(chunk)})", "fields": fields, "maxResults": 100})
+        except Exception as e:
+            sys.stderr.write(f"[dep epics] {e}\n")
+            continue
+        for it in d.get("issues", []):
+            f = it["fields"]
+            out[it["key"]] = {
+                "key": it["key"], "url": f"https://{JIRA_HOST}/browse/{it['key']}",
+                "summary": f.get("summary", ""),
+                "status": _opt_str(f.get("status")),
+                "dueDate": f.get("duedate") or "",
+                "assignee": _user_name(f.get("assignee")),
+                "health": _opt_str(f.get(EPIC_HEALTH_FIELD)) if EPIC_HEALTH_FIELD else "",
+                "budgets": {m: round(float(f.get(BUDGET_FIELDS[m]) or 0), 1) for m in months},
+            }
+    return out
+
+
+def pod_dependencies(pods=None, months=None, dri_only=True):
+    """Dependency register from the COUNTERPART pod's side.
+
+    For each initiative you are Tech DRI on that also tags another pod, this answers the
+    question you actually need for coordination: has THAT pod created its delivery epic,
+    dated it and budgeted it? Their epic is the one linked to the same initiative living in
+    their project — so a row is (initiative x tagged pod) with that pod's own fields, and
+    "Missing" means the team is tagged but has no delivery epic of its own yet."""
+    data = pod_initiatives(pods)
+    if "__error__" in data:
+        return data
+    yms = [m for m in (months or []) if m] or _default_window()
+    mnames = [BUDGET_MONTHS[int(m.split("-")[1]) - 1] for m in yms]
+    labels = {m: f"{BUDGET_MONTHS[int(m.split('-')[1]) - 1]}-{m.split('-')[0][2:]}" for m in yms}
+
+    me = current_user()
+    me_name = "" if "__error__" in me else me.get("name", "")
+    mine = set(data.get("pods") or [])
+    my_projects = {_pod_project(p) for p in mine}
+
+    scope = []
+    for it in data.get("initiatives", []):
+        if dri_only and me_name and it.get("engDri") != me_name:
+            continue
+        if [p for p in (it.get("podTags") or []) if p and p not in mine]:
+            scope.append(it)
+    epics = _fetch_epics([k for it in scope for k in (it.get("linkedKeys") or [])], mnames)
+
+    rows = []
+    for it in scope:
+        linked = [epics[k] for k in (it.get("linkedKeys") or []) if k in epics]
+        my_epic = it.get("epic") or {}
+        cycles = it.get("cycles") or []
+        for pod in [p for p in it["podTags"] if p not in mine]:
+            proj = _pod_project(pod)
+            theirs = [e for e in linked if e["key"].split("-")[0] == proj]
+            # their project is also ours -> the linked epic cannot be attributed to one pod
+            ambiguous = proj in my_projects
+            e = theirs[0] if theirs else None
+            months_sp = ({labels[y]: e["budgets"].get(m, 0) for y, m in zip(yms, mnames)}
+                         if e else {labels[y]: 0 for y in yms})
+            sp = round(sum(months_sp.values()), 1)
+            if not e:
+                state = "Missing epic"
+                action = f"{proj} is tagged but has no delivery epic — ask them to create and link one"
+            elif sp <= 0:
+                state = "Missing budget"
+                action = f"Ask {proj} to budget {e['key']} for {'/'.join(labels[y] for y in yms)}"
+            elif not e["dueDate"]:
+                state = "No due date"
+                action = f"Ask {proj} for a due date on {e['key']}"
+            else:
+                state = "Ready"
+                action = f"{e['key']} dated {e['dueDate']} — confirm sequencing"
+            rows.append({
+                "key": it["key"], "url": it["url"], "summary": it.get("summary", ""),
+                "pod": pod, "project": proj, "ambiguous": ambiguous,
+                "orgPriority": it.get("orgPriority", ""), "cycles": cycles,
+                "status": it.get("status", ""), "state": state, "nextAction": action,
+                "techDri": it.get("engDri", ""), "prodDri": it.get("prodDri", ""),
+                "epic": e["key"] if e else "", "epicUrl": e["url"] if e else "",
+                "epicStatus": e["status"] if e else "", "epicDue": e["dueDate"] if e else "",
+                "epicOwner": e["assignee"] if e else "", "epicHealth": e["health"] if e else "",
+                "months": months_sp, "sp": sp,
+                "myEpic": my_epic.get("key", ""), "myEpicUrl": my_epic.get("url", ""),
+                "myMonths": {labels[y]: round(float((it.get("budgets") or {}).get(m) or 0), 1)
+                             for y, m in zip(yms, mnames)},
+                "allPods": [p for p in it["podTags"] if p not in mine],
+                # every pod on the initiative, own pod included — the raw PODs field
+                "podTags": list(it.get("podTags") or []),
+            })
+
+    groups = {}
+    for r in rows:
+        g = groups.setdefault(r["pod"], {"pod": r["pod"], "project": r["project"], "count": 0,
+                                         "sp": 0.0, "missingEpic": 0, "missingBudget": 0,
+                                         "ready": 0, "ambiguous": r["ambiguous"],
+                                         "months": {labels[y]: 0.0 for y in yms}})
+        g["count"] += 1
+        g["sp"] = round(g["sp"] + r["sp"], 1)
+        for k, v in r["months"].items():
+            g["months"][k] = round(g["months"][k] + v, 1)
+        if r["state"] == "Missing epic":
+            g["missingEpic"] += 1
+        elif r["state"] == "Missing budget":
+            g["missingBudget"] += 1
+        elif r["state"] == "Ready":
+            g["ready"] += 1
+    ordered = sorted(groups.values(), key=lambda g: (-g["missingEpic"], -g["count"], g["pod"]))
+
+    uniq = {r["key"] for r in rows}
+    top = ordered[0] if ordered else None
+    return {
+        "generated": dt.datetime.now().isoformat(timespec="seconds"),
+        "v": DEPENDENCIES_SCHEMA,
+        "me": {"name": me_name, "email": "" if "__error__" in me else me.get("email", "")},
+        "myPods": sorted(mine), "driOnly": bool(dri_only and me_name),
+        "months": [{"ym": y, "label": labels[y]} for y in yms],
+        "cards": {
+            "initiatives": len(uniq),
+            "pods": len(ordered),
+            "sp": round(sum(g["sp"] for g in ordered), 1),
+            "topPod": top["pod"] if top else "",
+            "topCount": top["missingEpic"] if top else 0,
+            "missingEpic": sum(g["missingEpic"] for g in ordered),
+            "missingBudget": sum(g["missingBudget"] for g in ordered),
+            "ready": sum(g["ready"] for g in ordered),
+        },
+        "groups": ordered, "rows": rows,
+    }
+
+
+def _default_window(today=None):
+    """This month and the next, as ['YYYY-MM', ...] — the planner's default window."""
+    today = today or dt.date.today()
+    nxt = (today.replace(day=1) + dt.timedelta(days=32)).replace(day=1)
+    return [f"{today.year:04d}-{today.month:02d}", f"{nxt.year:04d}-{nxt.month:02d}"]
+
+
+def audit_epic_links(pods=None, fix=False):
+    """Find initiative↔epic links stored the wrong way round, and optionally repair them.
+
+    A reversed link reads "epic is implemented by initiative" instead of "epic implements
+    initiative". Both resolve, so the planner shows the epic either way — but JPD only
+    treats the correctly-directed one as the idea's delivery epic.
+
+    Repair is delete-then-recreate (Jira has no way to flip a link in place). If the
+    recreate fails the pair is reported under `broken` with both keys, so nothing is left
+    silently unlinked."""
+    data = pod_initiatives(pods)
+    if "__error__" in data:
+        return data
+    rows = [i for i in data.get("initiatives", []) if i.get("epic")]
+    reversed_, fixed, broken = [], [], []
+    for row in rows:
+        try:
+            det = _jira("GET", f"/rest/api/3/issue/{row['key']}?fields=issuelinks")
+        except Exception as e:
+            broken.append({"initiative": row["key"], "epic": row["epic"]["key"],
+                           "error": f"read: {e}"})
+            continue
+        for l in det.get("fields", {}).get("issuelinks", []):
+            other = l.get("outwardIssue") or l.get("inwardIssue") or {}
+            if not other.get("key", "").startswith(f"{JIRA_PROJECT}-"):
+                continue
+            if (l.get("type") or {}).get("name") != INITIATIVE_LINK_TYPE:
+                continue
+            # from the initiative's side the epic must sit in inwardIssue
+            if l.get("inwardIssue"):
+                continue
+            reversed_.append({"initiative": row["key"], "epic": other["key"],
+                              "linkId": str(l.get("id"))})
+    if not fix:
+        return {"checked": len(rows), "reversed": reversed_, "fixed": [], "broken": broken}
+    for r in reversed_:
+        try:
+            _jira("DELETE", f"/rest/api/3/issueLink/{r['linkId']}")
+        except Exception as e:
+            broken.append({**r, "error": f"delete: {e}"})
+            continue
+        try:
+            _link_initiative_epic(r["initiative"], r["epic"])
+            fixed.append(r)
+        except Exception as e:
+            # the old link is already gone — surface both keys so it can be relinked by hand
+            broken.append({**r, "error": f"recreate FAILED, link now missing: {e}"})
+    return {"checked": len(rows), "reversed": reversed_, "fixed": fixed, "broken": broken}
+
+
+def unlink_epic(initiative_key, epic_key=None):
+    """Remove the initiative←epic link. Returns {ok, epic} so the caller can offer an undo
+    (re-linking is just resolve_epic(mode='link')). Deletes ONLY the issue link — the epic
+    itself, and any budgets already written to it, are left untouched.
+
+    `epic_key` pins which link to drop; without it the single board-project link is used,
+    and an ambiguous initiative (more than one) is refused rather than guessed at."""
+    initiative_key = (initiative_key or "").strip()
+    if not initiative_key:
+        return {"__error__": "no initiative key"}
+    try:
+        det = _jira("GET", f"/rest/api/3/issue/{initiative_key}?fields=issuelinks")
+    except Exception as e:
+        return _jira_err(e, f"read {initiative_key}")
+    found = []
+    for l in det.get("fields", {}).get("issuelinks", []):
+        other = l.get("outwardIssue") or l.get("inwardIssue") or {}
+        key = other.get("key", "")
+        if not key.startswith(f"{JIRA_PROJECT}-"):
+            continue
+        if epic_key and key != epic_key:
+            continue
+        found.append({"id": str(l.get("id")), "key": key,
+                      "summary": (other.get("fields") or {}).get("summary", "")})
+    if not found:
+        return {"__error__": f"{initiative_key} has no linked "
+                             f"{epic_key or JIRA_PROJECT} epic to unlink"}
+    if len(found) > 1:
+        return {"__error__": f"{initiative_key} has {len(found)} linked epics "
+                             f"({', '.join(f['key'] for f in found)}) — say which one"}
+    link = found[0]
+    try:
+        _jira("DELETE", f"/rest/api/3/issueLink/{link['id']}")
+    except Exception as e:
+        return _jira_err(e, f"unlink {link['key']}")
+    return {"ok": True, "initiative": initiative_key,
+            "epic": {"key": link["key"], "url": f"https://{JIRA_HOST}/browse/{link['key']}",
+                     "summary": link["summary"]}}
 
 
 def resolve_epic(initiative_key, mode="preview", epic_key=None):
@@ -976,6 +1294,229 @@ def retro_update(key, fields=None, budgets=None, transition=None):
         "challenges": _opt_str(cur.get(CHALLENGES_FIELD)) if CHALLENGES_FIELD else "",
         "budgets": {m: (cur.get(BUDGET_FIELDS[m]) or 0) for m in (budgets or {})
                     if m in BUDGET_FIELDS}}}
+
+
+# ── generic inline field editing for the monthly planner ────────────────────────────
+# retro_update/retro_editmeta do this for four hardcoded epic fields. The planner lets you
+# add any column to the view, so the same contract is generalised here: the column id maps
+# to (which issue, which Jira field), and /editmeta decides what is actually writable.
+STATUS_PSEUDO_FIELD = "@status"      # not a field — a workflow transition
+
+
+def planner_editable_fields():
+    """Planner column id -> {target: initiative|epic, field: <jira id> | '@status'}.
+
+    Columns absent from this map are not backed by a Jira field (local estimates and
+    derived totals), so the UI renders them read-only. Entries whose configured field
+    id is blank are dropped, so an unconfigured instance degrades to read-only rather
+    than writing to the wrong field."""
+    m = {
+        "status":     {"target": "initiative", "field": STATUS_PSEUDO_FIELD},
+        "orgPri":     {"target": "initiative", "field": INITIATIVE_ORGPRI_FIELD},
+        "engDri":     {"target": "initiative", "field": INITIATIVE_ENG_DRI_FIELD},
+        "prodDri":    {"target": "initiative", "field": INITIATIVE_PROD_DRI_FIELD},
+        "cycles":     {"target": "initiative", "field": EPIC_CYCLE_FIELD},
+        "pods":       {"target": "initiative", "field": INITIATIVE_POD_FIELD},
+        "epicSumm":   {"target": "epic", "field": "summary"},
+        "epicDue":    {"target": "epic", "field": "duedate"},
+        "epicStatus": {"target": "epic", "field": STATUS_PSEUDO_FIELD},
+        "epicOwner":  {"target": "epic", "field": "assignee"},
+        "epicHealth": {"target": "epic", "field": EPIC_HEALTH_FIELD},
+        "epicCycle":  {"target": "epic", "field": EPIC_CYCLE_FIELD},
+        "epicPri":    {"target": "epic", "field": "priority"},
+        "epicLabels": {"target": "epic", "field": "labels"},
+        "epicChal":   {"target": "epic", "field": CHALLENGES_FIELD},
+    }
+    return {k: v for k, v in m.items() if v["field"]}
+
+
+def _editor_kind(schema):
+    """Jira field schema -> the control the planner should render."""
+    t = (schema or {}).get("type")
+    items = (schema or {}).get("items")
+    if t == "array":
+        return "labels" if items == "string" else ("users" if items == "user" else "multi")
+    if t in ("date", "datetime"):
+        return "date"
+    if t == "number":
+        return "number"
+    if t == "user":
+        return "user"
+    if t in ("option", "priority", "resolution", "version", "component", "issuetype"):
+        return "select"
+    return "text"
+
+
+def _raw_value(fid, val):
+    """Current field value reduced to what set_issue_field() accepts back (for undo)."""
+    if val is None:
+        return None
+    if isinstance(val, list):
+        return [_raw_value(fid, v) for v in val]
+    if isinstance(val, dict):
+        return val.get("accountId") or val.get("id") or val.get("value") or val.get("name")
+    return val
+
+
+def field_editmeta(key, columns):
+    """What the planner may write on one issue, for the given planner column ids.
+
+    Wraps /editmeta (permission- and screen-aware, so a field the user cannot edit comes
+    back editable=False rather than failing at write time) plus the transition list for
+    the pseudo status column. Options are returned ready for a <select>."""
+    key = (key or "").strip()
+    if not key:
+        return {"__error__": "no issue key"}
+    spec = planner_editable_fields()
+    cols = [c for c in (columns or []) if c in spec]
+    if not cols:
+        return {"key": key, "fields": {}}
+    try:
+        em = _jira("GET", f"/rest/api/3/issue/{key}/editmeta").get("fields", {})
+    except Exception as e:
+        return {"__error__": f"editmeta {key}: {e}"}
+    want = sorted({spec[c]["field"] for c in cols if spec[c]["field"] != STATUS_PSEUDO_FIELD})
+    cur = {}
+    if want:
+        try:
+            cur = _jira("GET", f"/rest/api/3/issue/{key}?fields={','.join(want)}").get("fields", {})
+        except Exception as e:
+            return {"__error__": f"read {key}: {e}"}
+    out = {"key": key, "fields": {}}
+    for c in cols:
+        fid = spec[c]["field"]
+        if fid == STATUS_PSEUDO_FIELD:
+            try:
+                tr = _jira("GET", f"/rest/api/3/issue/{key}/transitions").get("transitions", [])
+            except Exception as e:
+                out["fields"][c] = {"editable": False, "why": str(e)}
+                continue
+            out["fields"][c] = {"editable": bool(tr), "kind": "transition",
+                                "options": [{"id": str(t["id"]), "label": t["to"]["name"]} for t in tr],
+                                "why": "" if tr else "no transitions available to you"}
+            continue
+        f = em.get(fid)
+        if not f:
+            out["fields"][c] = {"editable": False, "kind": "text",
+                                "why": "not on the edit screen, or you lack permission"}
+            continue
+        out["fields"][c] = {
+            "editable": True,
+            "kind": _editor_kind(f.get("schema")),
+            "options": [{"id": str(o.get("id", "")), "label": o.get("value") or o.get("name") or ""}
+                        for o in f.get("allowedValues", [])],
+            "value": _raw_value(fid, cur.get(fid)),
+        }
+    return out
+
+
+def set_issue_field(key, column, value):
+    """Write one planner column to Jira. Returns {ok, key, column, from, to, display}.
+
+    `value` is the raw form field_editmeta() hands back: an option/transition id, an
+    accountId, a list of those, a date string, or plain text. The payload shape comes
+    from the field's own schema, so a new column needs no special-casing here."""
+    key, column = (key or "").strip(), (column or "").strip()
+    spec = planner_editable_fields().get(column)
+    if not key:
+        return {"__error__": "no issue key"}
+    if not spec:
+        return {"__error__": f"column '{column}' is not backed by a Jira field"}
+    fid = spec["field"]
+
+    if fid == STATUS_PSEUDO_FIELD:
+        try:
+            before = _opt_str(_jira("GET", f"/rest/api/3/issue/{key}?fields=status")
+                              .get("fields", {}).get("status"))
+            _jira("POST", f"/rest/api/3/issue/{key}/transitions",
+                  {"transition": {"id": str(value)}})
+            after = _jira("GET", f"/rest/api/3/issue/{key}?fields=status").get("fields", {})
+        except Exception as e:
+            return _jira_err(e, f"transition {key}")
+        now = _opt_str(after.get("status"))
+        # a transition is not symmetric — the reverse may not exist, so no undo id here
+        return {"ok": True, "key": key, "column": column, "from": before, "to": now,
+                "display": now, "undoable": False}
+
+    try:
+        em = _jira("GET", f"/rest/api/3/issue/{key}/editmeta").get("fields", {})
+    except Exception as e:
+        return _jira_err(e, f"editmeta {key}")
+    if fid not in em:
+        return {"__error__": f"'{column}' is not editable on {key} "
+                             "(not on the edit screen, or you lack permission)"}
+    schema = em[fid].get("schema") or {}
+    kind = _editor_kind(schema)
+
+    try:
+        before_raw = _raw_value(fid, _jira("GET", f"/rest/api/3/issue/{key}?fields={fid}")
+                                .get("fields", {}).get(fid))
+    except Exception as e:
+        return _jira_err(e, f"read {key}")
+
+    empty = value in (None, "", [], {})
+    if kind == "date":
+        if not empty:
+            try:
+                value = dt.date.fromisoformat(str(value)).isoformat()
+            except ValueError:
+                return {"__error__": f"date must be YYYY-MM-DD, got {value!r}"}
+        payload = value or None
+    elif kind == "number":
+        payload = None if empty else float(value)
+    elif kind == "text":
+        payload = None if empty else str(value)
+    elif kind == "select":
+        payload = None if empty else {"id": str(value)}
+    elif kind == "user":
+        payload = None if empty else {"accountId": str(value)}
+    elif kind == "labels":
+        payload = [] if empty else [str(v).strip() for v in value if str(v).strip()]
+    elif kind == "users":
+        payload = [] if empty else [{"accountId": str(v)} for v in value]
+    else:  # multi-select
+        payload = [] if empty else [{"id": str(v)} for v in value]
+
+    if before_raw == (value if not empty else None) and kind not in ("labels", "users", "multi"):
+        return {"ok": True, "key": key, "column": column, "from": before_raw,
+                "to": before_raw, "unchanged": True}
+    try:
+        _jira("PUT", f"/rest/api/3/issue/{key}", {"fields": {fid: payload}})
+        after = _jira("GET", f"/rest/api/3/issue/{key}?fields={fid}").get("fields", {}).get(fid)
+    except Exception as e:
+        return _jira_err(e, f"write {key}")
+    display = ", ".join(x.strip() for x in after) if (kind == "labels" and after) else (
+        _user_name(after) if kind in ("user", "users") else _opt_str(after))
+    return {"ok": True, "key": key, "column": column, "from": before_raw,
+            "to": _raw_value(fid, after), "display": display, "undoable": True}
+
+
+def _jira_err(e, what):
+    """Jira errors carry the useful detail in the response body, not in str(e)."""
+    import urllib.error
+    detail = ""
+    if isinstance(e, urllib.error.HTTPError):
+        try:
+            detail = e.read().decode()[:300]
+        except Exception:
+            pass
+    return {"__error__": f"{what}: {e} {detail}".strip()}
+
+
+def search_users(query, limit=8):
+    """Assignee / DRI picker backing. Jira's own user search, trimmed to what the UI needs."""
+    query = (query or "").strip()
+    if len(query) < 2:
+        return {"users": []}
+    from urllib.parse import quote
+    try:
+        rows = _jira("GET", f"/rest/api/3/user/search?query={quote(query)}&maxResults={int(limit)}")
+    except Exception as e:
+        return {"__error__": str(e)}
+    return {"users": [{"accountId": u.get("accountId", ""),
+                       "label": u.get("displayName", ""),
+                       "email": u.get("emailAddress", "")}
+                      for u in rows if u.get("accountId") and u.get("accountType") == "atlassian"]}
 
 
 def _parse_highs_lows(text):

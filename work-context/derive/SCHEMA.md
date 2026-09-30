@@ -49,7 +49,7 @@ External-content table mirroring `events` (`content_rowid = rowid`).
 
 ### embedding (~43k rows)
 `subject` PK · `source` · `vector` BLOB · `model` · `dim` · `content_sha` · `computed_at`.
-Vectors are raw little-endian float32, `dim=1536`, model `text-embedding-3-small`.
+Vectors are raw little-endian float32, `dim=1024`, model `bge-m3` (local, via `derive/embedder.py`; was OpenAI `text-embedding-3-small`, `dim=1536`).
 Decode in bulk: `np.frombuffer(b"".join(blobs), dtype=np.float32).reshape(N, dim)`,
 then L2-normalize so cosine = dot. See `derive/embedding_query.py`.
 

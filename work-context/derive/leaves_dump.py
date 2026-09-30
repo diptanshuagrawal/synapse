@@ -4,6 +4,10 @@
 Phase 1 of the chat-classify leave pipeline (mirrors derive/dump_pending.py
 for subjects):
 
+  0. Re-drain leave-plan thread roots from the Slack API first, bypassing the
+     ingest-side ~24h per-thread cooldown. Thread replies never arrive via
+     conversations.history, so without this a leave plan posted this morning is
+     absent from events.db and the scan below misses it silently.
   1. Pull slack events from last 60 days authored by a team member
      (team = people.yaml scope:team direct reports, owner included).
   2. Filter messages whose body matches one of the leave-coordination
@@ -79,6 +83,70 @@ LEAVE_PLAN_PROMPT = re.compile(r"leave\s*plan|leave\s*calendar", re.IGNORECASE)
 
 # Body length cap for excerpt sent to chat.
 EXCERPT_MAX = 300
+
+
+def _refresh_leave_plan_threads(roots: set[tuple[str, str]]) -> None:
+    """Re-drain leave-plan thread roots from the Slack API before scanning.
+
+    Slack's conversations.history never returns thread replies — they land only
+    via a separate per-thread conversations.replies drain, which the ingest path
+    throttles to ~once/day per thread (see slack_backfill_app.active_thread_parents).
+    A leave plan posted this morning therefore sits in Slack but NOT in events.db
+    until that cooldown lapses, so the scan below silently misses it and the run
+    stamps success on an incomplete day (observed 2026-09-24: thread drained
+    00:46Z, three November plans posted 06:05Z, dump ran 07:39Z and saw none).
+
+    The dump owns this dependency, so the dump guarantees it — that way cron,
+    a manual /leaves and an ad-hoc backfill all get fresh threads, rather than
+    the guarantee living in one caller's task file.
+
+    Best-effort: a drain failure degrades freshness, it does not invalidate the
+    scan, so we warn loudly and continue on any error. Slack creds are absent by
+    design in the chat-classify path (run-leaves.sh strips LLM creds and
+    _assert_auth_clean refuses to run beside ANTHROPIC_API_KEY) — that is a
+    skip, not a crash.
+    """
+    if not roots:
+        return
+    try:
+        from ingest.slack_api_client import (  # noqa: PLC0415
+            SlackClient, _assert_auth_clean, _load_env, make_name_resolver,
+        )
+        from ingest.slack_backfill_app import fetch_threads  # noqa: PLC0415
+        from derive.slack_backfill_helper import _clamp_parent_after_drain  # noqa: PLC0415
+
+        token = _assert_auth_clean(_load_env())
+        client = SlackClient(token=token)
+        users_cache = client.build_users_cache()
+        name_resolver = make_name_resolver(client, users_cache)
+        subteams_cache = client.build_subteams_cache()
+    except Exception as e:
+        print(f"[leave-plan][WARN] drain skipped ({type(e).__name__}: {e}) — "
+              f"pending may miss replies posted since the last ingest drain")
+        return
+
+    inserted = 0
+    dconn = sqlite3.connect(DB_PATH)
+    try:
+        for cid, root_ts in sorted(roots):
+            try:
+                n, _, errs = fetch_threads(
+                    client, cid, [root_ts], False, users_cache,
+                    keep_bot_messages=False, name_resolver=name_resolver,
+                    subteams_cache=subteams_cache,
+                )
+                inserted += n
+                # Mirror fetch_threads_capped: keep reply_count honest and let
+                # the ingest-side cooldown see that this thread was just walked.
+                _clamp_parent_after_drain(dconn, cid, root_ts)
+                for err in errs:
+                    print(f"[leave-plan][WARN] drain {cid}:{root_ts}: {err}")
+            except Exception as e:
+                print(f"[leave-plan][WARN] drain {cid}:{root_ts} failed "
+                      f"({type(e).__name__}: {e})")
+    finally:
+        dconn.close()
+    print(f"[leave-plan] drained {len(roots)} root(s) · +{inserted} reply(ies)")
 
 
 def _thread_root_ts(event_id: str, thread_ts: str | None) -> str:
@@ -245,6 +313,9 @@ def main() -> int:
                     help=f"lookback window in days (default {DEFAULT_DAYS})")
     ap.add_argument("--reset", action="store_true",
                     help="clear team_leaves_processed first (reprocess everything)")
+    ap.add_argument("--no-drain", action="store_true",
+                    help="skip the pre-scan leave-plan thread drain (offline runs; "
+                         "pending may miss replies newer than the last ingest drain)")
     args = ap.parse_args()
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -274,14 +345,24 @@ def main() -> int:
     # The prompt itself is usually owner-authored (excluded from the team scan),
     # so scan ALL slack events in window, narrowed by a cheap LIKE prefilter.
     plan_root_ts: set[str] = set()
-    for rid, rthread, rbody in conn.execute(
-        "SELECT id, thread_ts, body FROM events "
+    plan_roots: set[tuple[str, str]] = set()
+    for rid, rthread, rbody, rcid in conn.execute(
+        "SELECT id, thread_ts, body, channel_id FROM events "
         "WHERE source = 'slack' AND ts >= ? AND body LIKE '%leave%'",
         [since_iso],
     ):
         if rbody and LEAVE_PLAN_PROMPT.search(rbody):
-            plan_root_ts.add(_thread_root_ts(rid, rthread))
+            root = _thread_root_ts(rid, rthread)
+            plan_root_ts.add(root)
+            if rcid:
+                plan_roots.add((rcid, root))
     print(f"[leave-plan] {len(plan_root_ts)} leave-plan thread root(s) in window")
+
+    # Freshen those threads BEFORE the scan below reads them — replies posted
+    # since the last ingest drain are not in events.db yet. See the function
+    # docstring for why this belongs to the dump and not to its callers.
+    if not args.no_drain:
+        _refresh_leave_plan_threads(plan_roots)
 
     # Slack events.actor stores raw U-ids — filter on slack_id, resolve to
     # canonical at emit time.

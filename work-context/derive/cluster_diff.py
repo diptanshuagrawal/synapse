@@ -147,8 +147,8 @@ def _fresh_clusters(conn, min_cluster_size: int, window_days: int | None = None)
     #     Rand Index vs cosine = 0.997 on an 8k sample.
     #   - euclidean lets HDBSCAN use a space-tree → peak RSS ~0.5 GB (no N×N
     #     matrix). Trade-off: slower wall-clock (~15 min at 38k) but memory-safe.
-    # OpenAI text-embedding-3 vectors are already ~unit-norm; the explicit
-    # normalize makes the cosine-equivalence exact regardless of source.
+    # bge-m3 vectors are stored normalized (and OpenAI's were ~unit-norm); the
+    # explicit normalize makes the cosine-equivalence exact regardless of source.
     norms = np.linalg.norm(vecs, axis=1, keepdims=True)
     vecs = vecs / np.clip(norms, 1e-12, None)
     labels = HDBSCAN(

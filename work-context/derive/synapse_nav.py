@@ -17,6 +17,7 @@ GROUPS = [
     ("Planning", [
         ("/sprint", "sprint", "\U0001F5D3️ Sprint"),
         ("/monthly", "monthly", "\U0001F4C6 Monthly"),
+        ("/deps", "deps", "\U0001F517 Dependencies"),
         ("/plan", "plan", "\U0001F9ED Plan"),
         ("/retro", "retro", "\U0001F501 Retro"),
         ("/leaves", "leaves", "\U0001F334 Leaves"),
@@ -81,7 +82,7 @@ def active_from_path(path: str) -> str:
     p = (path or "").split("?")[0]
     table = [
         ("people", "people"), ("/ask", "ask"), ("sprint", "sprint"),
-        ("monthly", "monthly"), ("retro", "retro"), ("pr-friction", "pr"),
+        ("monthly", "monthly"), ("deps", "deps"), ("retro", "retro"), ("pr-friction", "pr"),
         ("releases", "releases"), ("docs", "docs"), ("meetings", "meetings"),
         ("leaves", "leaves"), ("plan", "plan"), ("topics", "topics"),
         ("velocity", "velocity"), ("services", "services"), ("timeline", "timeline"),

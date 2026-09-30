@@ -59,7 +59,7 @@ from derive.sample_subjects import sample  # noqa: E402
 from derive.subject_content import get_content, content_sha, CONTENT_RECIPE_VERSION  # noqa: E402
 from derive import embed_subjects as _embed_mod  # noqa: E402
 from derive import cluster_diff as _diff_mod  # noqa: E402
-from derive import openai_client  # noqa: E402
+from derive import embedder  # noqa: E402  provider-agnostic; default backend = local bge-m3
 
 
 def _now_iso() -> str:
@@ -217,10 +217,10 @@ def cmd_refresh(args):
     elif not to_embed:
         summary["embed"] = {"skipped": True, "reason": "nothing to embed"}
     else:
-        if not openai_client.key_present():
+        if not embedder.available():
             summary["embed"] = {
                 "skipped": True,
-                "reason": "OpenAI key missing — delta would be silently dropped. Add key at ~/.secrets/openai_api_key and re-run.",
+                "reason": f"Embedding backend '{embedder.backend()}' unavailable — delta would be silently dropped. Install sentence-transformers (bge) or set EMBED_BACKEND=openai with a key at ~/.secrets/openai_api_key, then re-run.",
             }
             print(json.dumps(summary, indent=2))
             sys.exit(2)

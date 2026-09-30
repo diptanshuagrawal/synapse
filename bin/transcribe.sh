@@ -98,7 +98,7 @@ VAD_ARGS=""
 [ "${STENO_VAD:-0}" = "1" ] && [ -f "$VAD_MODEL" ] && VAD_ARGS="--vad --vad-model $VAD_MODEL"
 LANG="${TRANSCRIBE_LANG:-auto}"
 _run_whisper() {  # $1 = extra flags (e.g. "-mc 0" on the loop-recovery retry)
-  whisper-cli -m "$MODEL" -f "$WAV" -l "$LANG" -oj -otxt -of "$OUT" --no-prints -bs 5 -sns $VAD_ARGS $1 \
+  whisper-cli -m "$MODEL" -f "$WAV" -l "$LANG" -oj -otxt -of "$OUT" --no-prints -bs "${BEAM:-5}" -sns $VAD_ARGS $1 \
     ${PROMPT:+--prompt "This bank meeting discusses $PROMPT."} >/dev/null
 }
 _run_whisper ""
@@ -114,25 +114,48 @@ _run_whisper ""
 # 1 to the assignment → `set -e` exit. That was the exact regression that made a
 # silent 'them' stream return non-zero and get the meeting discarded. `|| true`
 # on BOTH keeps an empty transcript a clean 0/0.
-_tot=$(grep -cvE '^[[:space:]]*$' "$OUT.txt" 2>/dev/null || true); _tot=${_tot:-0}
-_uniq=$(grep -vE '^[[:space:]]*$' "$OUT.txt" 2>/dev/null | sort -u | wc -l | tr -d ' ' || true); _uniq=${_uniq:-0}
-# ABSOLUTE-REPEAT trigger (2026-07-24): the ratio test alone is not enough. A
-# real in-person Hinglish meeting decoded with ONE line repeated 148x + another
-# 78x buried in otherwise-varied speech kept overall uniqueness at 34.6% > 30%,
-# so the ratio test never fired and the loop shipped. A single non-trivial line
-# repeated dozens of times is ALWAYS a decoder loop regardless of overall ratio.
-# Count the max occurrences of any non-trivial line (>12 chars, so genuine short
-# filler like "Okay." never trips it) and force the retry past the threshold.
 _LOOP_MAX_REPEAT="${WHISPER_LOOP_MAX_REPEAT:-12}"
-_maxrep=$(awk '{ l=$0; gsub(/^[[:space:]]+|[[:space:]]+$/,"",l);
-                 if (length(l) > 12) { n=++c[l]; if (n>m) m=n } }
-             END { print m+0 }' "$OUT.txt" 2>/dev/null || true); _maxrep=${_maxrep:-0}
-if [ "$_tot" -gt 30 ] && [ "$(( _uniq * 100 / _tot ))" -lt 30 ]; then
-  echo "transcribe: repetition loop (${_uniq}/${_tot} unique) — retrying with -mc 0" >&2
+# _is_loop: returns 0 (true) when the current $OUT.txt looks like a decoder loop.
+# Two triggers — a pathological low-unique RATIO, or a single non-trivial line
+# (>12 chars, so genuine short filler like "Okay." never trips it) repeated past
+# the threshold (2026-07-24: a real Hinglish meeting kept 34.6% overall uniqueness
+# with one line repeated 148x, so the ratio test alone missed it). Both counts
+# tolerate an empty/all-blank .txt (grep exits 1 on no match; `|| true` + pipefail
+# keep it a clean 0/0, not a set -e exit — the regression that discarded a silent
+# 'them' stream). Sets _loop_reason for the log line.
+_is_loop() {
+  local tot uniq maxrep
+  tot=$(grep -cvE '^[[:space:]]*$' "$OUT.txt" 2>/dev/null || true); tot=${tot:-0}
+  uniq=$(grep -vE '^[[:space:]]*$' "$OUT.txt" 2>/dev/null | sort -u | wc -l | tr -d ' ' || true); uniq=${uniq:-0}
+  maxrep=$(awk '{ l=$0; gsub(/^[[:space:]]+|[[:space:]]+$/,"",l);
+                  if (length(l) > 12) { n=++c[l]; if (n>m) m=n } }
+              END { print m+0 }' "$OUT.txt" 2>/dev/null || true); maxrep=${maxrep:-0}
+  if [ "$tot" -gt 30 ] && [ "$(( uniq * 100 / tot ))" -lt 30 ]; then
+    _loop_reason="${uniq}/${tot} unique"; return 0
+  fi
+  if [ "$maxrep" -gt "$_LOOP_MAX_REPEAT" ]; then
+    _loop_reason="a line repeats ${maxrep}x > ${_LOOP_MAX_REPEAT}"; return 0
+  fi
+  return 1
+}
+
+# ESCALATION LADDER (2026-09-11): detection alone never rescued a looped file —
+# the -mc 0 retry drops context-CARRY but KEEPS the --prompt vocab bias, and on a
+# rough/near-silent intro that giant "This bank meeting discusses …" prompt is
+# itself the poison that latches the decoder (a 64-min interview shipped as 294
+# words of "Thank you.", then re-looped on the -mc 0 retry). Re-check after each
+# rung and stop at the first clean pass:
+#   rung 1: -mc 0                              (kill context-carry; keep vocab)
+#   rung 2: -mc 0, no --prompt, greedy -bs 1   (shed the poison; jargon is
+#           recovered downstream by correct.py + the cmap correction step)
+if _is_loop; then
+  echo "transcribe: repetition loop (${_loop_reason}) — retry 1: -mc 0" >&2
   _run_whisper "-mc 0"
-elif [ "$_maxrep" -gt "$_LOOP_MAX_REPEAT" ]; then
-  echo "transcribe: repetition loop (a line repeats ${_maxrep}x > ${_LOOP_MAX_REPEAT}) — retrying with -mc 0" >&2
-  _run_whisper "-mc 0"
+  if _is_loop; then
+    echo "transcribe: still looping (${_loop_reason}) — retry 2: drop --prompt + greedy" >&2
+    PROMPT=""; BEAM=1
+    _run_whisper "-mc 0"
+  fi
 fi
 
 # Post-ASR correction on the .txt (names + phrase map). The dual-stream path

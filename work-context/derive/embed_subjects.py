@@ -5,7 +5,7 @@ End-to-end:
   1. Resolve list of subjects (CLI args, file, or piped stdin)
   2. For each: fetch embeddable content via subject_content.get_content
   3. Hash content; skip if already embedded with same hash + same model
-  4. Batch-embed via OpenAI (or local fallback when key missing)
+  4. Batch-embed via derive.embedder (default backend: local bge-m3)
   5. INSERT OR REPLACE into embedding table
 
 Idempotent: re-running on the same subject set with same model is a no-op
@@ -47,13 +47,13 @@ if str(_PKG_ROOT) not in sys.path:
 
 from ingest.common import get_db  # noqa: E402
 from derive.subject_content import get_content, content_sha  # noqa: E402
-from derive import openai_client  # noqa: E402
+from derive import embedder  # noqa: E402  provider-agnostic; default backend = local bge-m3
 
-DEFAULT_MODEL = "text-embedding-3-small"
+DEFAULT_MODEL = embedder.DEFAULT_MODEL
 
 
 def _pack_vector(v: list[float]) -> bytes:
-    """float32 packed; ~6 KB per 1536-dim vector. Smaller than JSON, fast cosine in NumPy."""
+    """float32 packed; ~4 KB per 1024-dim bge-m3 vector. Smaller than JSON, fast cosine in NumPy."""
     return struct.pack(f"<{len(v)}f", *v)
 
 
@@ -143,10 +143,11 @@ def embed_subjects(
         return stats
 
     # Phase 2 — provider routing.
-    if not openai_client.key_present():
+    if not embedder.available():
         stats["errors"].append(
-            "No OpenAI key at ~/.secrets/openai_api_key. Local fallback not yet "
-            "implemented in this scaffold — drop the key file and re-run."
+            f"Embedding backend '{embedder.backend()}' unavailable: "
+            "install sentence-transformers (bge) or add ~/.secrets/openai_api_key "
+            "(EMBED_BACKEND=openai)."
         )
         stats["elapsed_sec"] = round(time.time() - started, 2)
         return stats
@@ -154,7 +155,7 @@ def embed_subjects(
     # Phase 3 — batch embed.
     texts = [c for _, _, c, _ in to_embed]
     try:
-        vectors = openai_client.embed(texts, model=model)
+        vectors = embedder.embed(texts, model=model)
     except Exception as e:
         stats["errors"].append(f"embed_failed: {type(e).__name__}: {e}")
         stats["elapsed_sec"] = round(time.time() - started, 2)
