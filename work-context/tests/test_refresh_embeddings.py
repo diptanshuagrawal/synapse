@@ -37,8 +37,8 @@ def test_delta_all_new_when_no_embeddings(wired):
 
 def test_delta_unchanged_after_embed(wired, monkeypatch):
     monkeypatch.setattr(es, "get_db", lambda *a, **k: wired)
-    monkeypatch.setattr(es.openai_client, "key_present", lambda: True)
-    monkeypatch.setattr(es.openai_client, "embed",
+    monkeypatch.setattr(es.embedder, "available", lambda: True)
+    monkeypatch.setattr(es.embedder, "embed",
                         lambda texts, model=None: [[0.1, 0.2, 0.3, 0.4] for _ in texts])
     es.embed_subjects(SUBJECTS, model=MODEL)
 

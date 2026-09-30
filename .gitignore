@@ -156,3 +156,7 @@ gather_err.txt
 
 # machine-specific migration runbook — real paths/labels, local only
 runbook/laptop-migration.md
+
+# IC-rota runbooks — real names, launchd labels and Slack channel ids; local only
+runbook/ic-rota-multichannel.md
+runbook/ic-rota-n8n-migration.md

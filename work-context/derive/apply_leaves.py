@@ -37,6 +37,59 @@ CONFIDENCE_MIN = 0.7
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
+def _months_spanned(date_start: str | None, date_end: str | None) -> set[tuple[int, int]]:
+    """(year, month) pairs a leave row touches. Open-ended rows count one month."""
+    if not date_start:
+        return set()
+    try:
+        ds = date.fromisoformat(date_start)
+        de = date.fromisoformat(date_end) if date_end else ds
+    except ValueError:
+        return set()
+    if de < ds:
+        ds, de = de, ds
+    out, y, m = set(), ds.year, ds.month
+    while (y, m) <= (de.year, de.month):
+        out.add((y, m))
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return out
+
+
+def _invalidate_capacity_caches(months: set[tuple[int, int]]) -> None:
+    """Drop the derived capacity caches that a leave change invalidates.
+
+    sprint_server serves derived/{capacity,monthly,month-YYYY-MM}.json straight
+    from disk and only rebuilds on ?fresh=1 — there is no TTL and nothing watches
+    team_leaves. So a leave written here stayed invisible in Synapse until someone
+    happened to force a refresh (observed 2026-09-24: November's cache was built
+    23 Sep, and six November leave rows landing on 24 Sep left it reporting 165
+    net days / 88% instead of 147 / 78%).
+
+    Deleting beats rewriting: the server regenerates on next request, so we do not
+    duplicate capacity_engine's OpsGenie probes here or race a running server.
+
+    capacity.json (current sprint) and monthly.json (rolling 3-month window) are
+    dropped unconditionally — both are relative to today, so we cannot tell from a
+    row's dates alone whether it falls inside them.
+    """
+    derived = _REPO_ROOT / "derived"
+    targets = [derived / "capacity.json", derived / "monthly.json"]
+    targets += [derived / f"month-{y:04d}-{m:02d}.json" for y, m in sorted(months)]
+    dropped = []
+    for path in targets:
+        try:
+            path.unlink()
+            dropped.append(path.name)
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            print(f"[cache][WARN] could not drop {path.name}: {e}")
+    if dropped:
+        print(f"[cache] invalidated {len(dropped)}: {', '.join(dropped)}")
+    else:
+        print("[cache] nothing to invalidate (no built caches on disk)")
+
+
 def _valid_date(s: str | None) -> bool:
     if s is None:
         return True
@@ -176,6 +229,7 @@ def main() -> int:
     now_iso = datetime.now(tz=timezone.utc).isoformat()
     n_rows = 0
     n_proc = 0
+    touched_months: set[tuple[int, int]] = set()
     for v in accepted:
         ev_id = v["event_id"]
         p = v["pending"]
@@ -189,6 +243,12 @@ def main() -> int:
         if not v["is_leave"]:
             continue
         # Wipe any prior rows for this event_id then insert fresh (allows re-classify).
+        # Capture the outgoing rows' months too — a re-classify that moves or drops
+        # a date range invalidates the month it left, not just the one it lands in.
+        for old_ds, old_de in conn.execute(
+            "SELECT date_start, date_end FROM team_leaves WHERE event_id = ?", (ev_id,)
+        ).fetchall():
+            touched_months |= _months_spanned(old_ds, old_de)
         conn.execute("DELETE FROM team_leaves WHERE event_id = ?", (ev_id,))
         for lv in v["leaves"]:
             conn.execute(
@@ -205,9 +265,15 @@ def main() -> int:
                     v["confidence"], "chat", now_iso,
                 ),
             )
+            touched_months |= _months_spanned(lv["date_start"], lv["date_end"])
             n_rows += 1
     conn.commit()
     print(f"[apply] +{n_rows} leaves rows · +{n_proc} processed gates")
+
+    # Only after the commit — a cache dropped before a failed write would be
+    # rebuilt from the old DB state and look authoritative again.
+    if touched_months:
+        _invalidate_capacity_caches(touched_months)
 
     # Archive verdicts file.
     archive = in_path.with_suffix(f".{now_iso[:19].replace(':','')}.json")

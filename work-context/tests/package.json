@@ -1,0 +1,11 @@
+{
+  "name": "work-context-ui-tests",
+  "private": true,
+  "description": "jsdom harness for the self-contained HTML pages in derived/. Install with: npm install --prefix tests",
+  "scripts": {
+    "test": "node monthly_planner_smoke.js"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0"
+  }
+}

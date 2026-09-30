@@ -12,3 +12,6 @@ __pycache__/
 .coverage
 .coverage.*
 htmlcov/
+# jsdom for the derived/*.html UI harness (npm install --prefix tests)
+tests/node_modules/
+tests/package-lock.json

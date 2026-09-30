@@ -10,7 +10,7 @@ Subcommands
     similar    --content "<text>" [--k 10]
         Embed an arbitrary string on the fly and find its nearest subjects.
         Useful for "find threads about X" without needing X to already exist
-        as a subject. Costs one embedding call (~$0.0000002).
+        as a subject. One local embed call (free; bge-m3 on-device).
 
     duplicates [--threshold 0.92] [--source S]
         Pairs with cosine sim above threshold. Catches near-duplicate Jira
@@ -95,7 +95,7 @@ def cmd_neighbors(args):
 
 def cmd_similar(args):
     import numpy as np
-    from derive.openai_client import embed
+    from derive.embedder import embed
     conn = get_db()
     subs, vecs, srcs = _load_all(conn)
     if not subs:

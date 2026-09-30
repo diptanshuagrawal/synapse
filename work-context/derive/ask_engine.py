@@ -146,7 +146,7 @@ def find_clusters_by_query(query: str, k_subjects: int = 20) -> list[dict]:
     Sorted by hit_count desc.
     """
     import numpy as np
-    from derive.openai_client import embed
+    from derive.embedder import embed
     conn = get_db()
 
     qvec = np.array(embed([query])[0], dtype=np.float32)

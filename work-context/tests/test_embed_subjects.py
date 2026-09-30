@@ -19,10 +19,10 @@ FAKE_VEC = [0.1, 0.2, 0.3, 0.4]
 
 @pytest.fixture
 def wired(seeded_db, monkeypatch):
-    """Point embed_subjects at the seeded DB + a fake OpenAI embedder."""
+    """Point embed_subjects at the seeded DB + a fake embedding backend."""
     monkeypatch.setattr(es, "get_db", lambda *a, **k: seeded_db)
-    monkeypatch.setattr(es.openai_client, "key_present", lambda: True)
-    monkeypatch.setattr(es.openai_client, "embed",
+    monkeypatch.setattr(es.embedder, "available", lambda: True)
+    monkeypatch.setattr(es.embedder, "embed",
                         lambda texts, model=None: [list(FAKE_VEC) for _ in texts])
     return seeded_db
 
@@ -66,18 +66,18 @@ def test_embed_skips_no_content(wired):
     assert stats["skipped_no_content"] == 1 and stats["to_embed"] == 0
 
 
-def test_embed_no_key_errors(seeded_db, monkeypatch):
+def test_embed_backend_unavailable_errors(seeded_db, monkeypatch):
     monkeypatch.setattr(es, "get_db", lambda *a, **k: seeded_db)
-    monkeypatch.setattr(es.openai_client, "key_present", lambda: False)
+    monkeypatch.setattr(es.embedder, "available", lambda: False)
     stats = es.embed_subjects(SUBJECTS)
-    assert stats["embedded"] == 0 and any("OpenAI key" in e for e in stats["errors"])
+    assert stats["embedded"] == 0 and any("backend" in e for e in stats["errors"])
 
 
 def test_embed_count_mismatch_errors(seeded_db, monkeypatch):
     monkeypatch.setattr(es, "get_db", lambda *a, **k: seeded_db)
-    monkeypatch.setattr(es.openai_client, "key_present", lambda: True)
+    monkeypatch.setattr(es.embedder, "available", lambda: True)
     # return the wrong number of vectors → mismatch guard fires.
-    monkeypatch.setattr(es.openai_client, "embed", lambda texts, model=None: [FAKE_VEC])
+    monkeypatch.setattr(es.embedder, "embed", lambda texts, model=None: [FAKE_VEC])
     stats = es.embed_subjects(SUBJECTS)
     assert any("mismatch" in e for e in stats["errors"]) and stats["embedded"] == 0
 
