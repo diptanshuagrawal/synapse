@@ -9,10 +9,12 @@ Static files are served from derived/. Run:
   OPSGENIE_API_KEY=... python3 derive/sprint_server.py [port]
 """
 import os, sys, json, re, glob
+import datetime as dt
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DERIVED = os.path.join(ROOT, "derived")
+STATE = os.path.join(ROOT, "state")
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "derive"))
 import capacity_engine
@@ -30,7 +32,7 @@ def _inject_nav(html_bytes, clean_path):
 # initiatives-<8 hex>.json. initiatives-in.json and initiatives-out.json share the prefix but
 # belong to the /plan sandbox and resolve-initiatives and have a different schema — matching
 # those with a bare initiatives-*.json glob would corrupt them.
-_CACHE_NAME = re.compile(r"^initiatives-(default|[0-9a-f]{8})\.json$")
+_CACHE_NAME = re.compile(r"^initiatives-(default|[0-9a-f]{8})(-arch)?\.json$")
 
 
 def _initiative_cache_files():
@@ -134,6 +136,18 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *a, **k):
         super().__init__(*a, directory=DERIVED, **k)
 
+    def end_headers(self):
+        """Never let a browser cache a planner page.
+
+        These pages are hand-edited constantly, and the static handler's default
+        Last-Modified caching meant a plain reload kept serving yesterday's copy: changes
+        looked like they had not shipped until someone thought to hard-reload. API routes
+        already set this per response; this covers the HTML.
+        """
+        if self.path.split("?")[0].endswith(".html"):
+            self.send_header("Cache-Control", "no-store, must-revalidate")
+        super().end_headers()
+
     def do_GET(self):
         if self.path.split("?")[0] == "/api/epic_sp":
             from urllib.parse import urlparse, parse_qs
@@ -216,6 +230,52 @@ class Handler(SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": str(e)}).encode())
             return
+        if self.path.split("?")[0] == "/api/handover":
+            # The program team's readiness CLI is slow (it walks every tagged team's epics
+            # across projects), so it is cached on disk and refreshed with ?fresh=1 or once
+            # a day. Every successful run also appends a snapshot, because the average on
+            # its own is not a trend: the denominator moves constantly.
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            fresh = q.get("fresh", ["0"])[0] == "1"
+            cachef = os.path.join(DERIVED, "handover.json")
+            histf = os.path.join(STATE, "handover_history.jsonl")
+            try:
+                doc = None
+                if not fresh and os.path.exists(cachef):
+                    try:
+                        with open(cachef) as fh:
+                            cached = json.load(fh)
+                        same_day = (cached.get("fetched") or "")[:10] == dt.date.today().isoformat()
+                        if cached.get("v") == capacity_engine.HANDOVER_SCHEMA and same_day:
+                            doc = cached
+                    except Exception:
+                        doc = None
+                if doc is None:
+                    doc = capacity_engine.handover_readiness()
+                    if not doc.get("__error__"):
+                        with open(cachef, "w") as fh:
+                            json.dump(doc, fh)
+                        capacity_engine.handover_snapshot(doc, histf)
+                hist = []
+                if os.path.exists(histf):
+                    with open(histf) as fh:
+                        hist = [json.loads(l) for l in fh if l.strip()]
+                out = {"readiness": doc, "history": hist,
+                       "acceptance": capacity_engine.em_acceptance(doc)
+                                     if not doc.get("__error__") else {"__error__": doc["__error__"]}}
+                body = json.dumps(out).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
         if self.path.split("?")[0] == "/api/month":
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)
@@ -225,12 +285,31 @@ class Handler(SimpleHTTPRequestHandler):
                 y, m = (int(x) for x in ym.split("-"))
                 if not (1 <= m <= 12):
                     raise ValueError("month out of range")
-                cachef = os.path.join(DERIVED, f"month-{y:04d}-{m:02d}.json")
+                # an explicit window from the planner's date pickers; cached separately
+                # from the default so switching back and forth stays cheap
+                win, suffix = None, ""
+                ws, we = q.get("start", [""])[0].strip(), q.get("end", [""])[0].strip()
+                if ws and we:
+                    a_, b_ = dt.date.fromisoformat(ws), dt.date.fromisoformat(we)
+                    if b_ < a_:
+                        raise ValueError("end is before start")
+                    if (b_ - a_).days > 200:
+                        raise ValueError("window longer than 200 days")
+                    win, suffix = (a_, b_), f"-{ws}_{we}"
+                cachef = os.path.join(DERIVED, f"month-{y:04d}-{m:02d}{suffix}.json")
+                body = None
                 if not fresh and os.path.exists(cachef):
                     with open(cachef, "rb") as f:
-                        body = f.read()
-                else:
-                    body = json.dumps(capacity_engine.month_capacity(y, m)).encode()
+                        cached = f.read()
+                    try:
+                        ok = json.loads(cached).get("v") == capacity_engine.MONTH_SCHEMA
+                    except Exception:
+                        ok = False
+                    if ok:
+                        body = cached
+                if body is None:
+                    body = json.dumps(
+                        capacity_engine.month_capacity(y, m, window=win)).encode()
                     with open(cachef, "wb") as f:
                         f.write(body)
                 self.send_response(200)
@@ -238,11 +317,18 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(body)
-            except Exception as e:
-                self.send_response(400 if "ym" not in q else 500)
+            except ValueError as e:
+                # bad ?ym= or an impossible ?start=/?end= window: the caller's fault
+                self.send_response(400)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": f"bad ?ym= (want YYYY-MM): {e}"}).encode())
+                self.wfile.write(json.dumps(
+                    {"error": f"bad window (ym=YYYY-MM, optional start/end as YYYY-MM-DD): {e}"}).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
             return
         if self.path.split("?")[0] == "/api/budgets":
             from urllib.parse import urlparse, parse_qs
@@ -439,7 +525,11 @@ class Handler(SimpleHTTPRequestHandler):
             q = parse_qs(urlparse(self.path).query)
             fresh = q.get("fresh", ["0"])[0] == "1"
             pods = [p for p in q.get("pods", [""])[0].split(",") if p] or None
-            tag = "default" if not pods else hashlib.md5(",".join(sorted(pods)).encode()).hexdigest()[:8]
+            archived = q.get("archived", ["0"])[0] == "1"
+            # archived rows are a different row SET, not a display filter, so they need their
+            # own cache file — otherwise the two views overwrite each other
+            sig = ",".join(sorted(pods)) if pods else ""
+            tag = ("default" if not pods else hashlib.md5(sig.encode()).hexdigest()[:8]) + ("-arch" if archived else "")
             cachef = os.path.join(DERIVED, f"initiatives-{tag}.json")
             try:
                 body = None
@@ -455,7 +545,8 @@ class Handler(SimpleHTTPRequestHandler):
                     if ok:
                         body = cached
                 if body is None:
-                    body = json.dumps(capacity_engine.pod_initiatives(pods)).encode()
+                    body = json.dumps(
+                        capacity_engine.pod_initiatives(pods, include_archived=archived)).encode()
                     with open(cachef, "wb") as f:
                         f.write(body)
                 self.send_response(200)

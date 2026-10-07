@@ -221,6 +221,84 @@ def _load_team_slack_map() -> dict[str, str]:
     return out
 
 
+def _check_identity_sane() -> list[str]:
+    """Fail loudly when one human carries two canonicals in people.yaml.
+
+    Both _load_team_canonical (keyed on email) and _load_team_slack_map
+    (keyed on slack_id) silently tolerate duplicate entries for the same
+    person: the canonical set just grows, and the slack map lets whichever
+    entry parses last win. Nothing downstream notices — capacity_engine
+    does `leaves.get(p["canonical"], {})`, so a handle mismatch reads as
+    "no leaves" rather than raising.
+
+    That cost us the 2026-10-06 run: a stale `scope: org` duplicate of
+    Sai Vignesh (canonical `saivignesh`, same email/slack_id/jira_id as his
+    `scope: team` entry with canonical `sai-vignesh`) won the slack_id map,
+    so every leave he announced was filed under a handle the Synapse
+    monthly tab never reads. His 19-23 Oct vacation showed as leave=0.
+
+    Returns a list of fatal errors; empty means the roster is coherent.
+    """
+    errs: list[str] = []
+    if not PEOPLE_YAML.exists():
+        return errs
+    with PEOPLE_YAML.open() as f:
+        cfg = yaml.safe_load(f) or {}
+    people = cfg.get("people", []) or []
+    team_emails = _load_team_emails()
+
+    by_email: dict[str, set[str]] = {}
+    by_slack: dict[str, set[str]] = {}
+    for p in people:
+        email, canon = p.get("email"), p.get("canonical")
+        if email not in team_emails or not canon:
+            continue
+        by_email.setdefault(email, set()).add(canon)
+        if p.get("slack_id"):
+            by_slack.setdefault(p["slack_id"], set()).add(canon)
+
+    for email, canons in sorted(by_email.items()):
+        if len(canons) > 1:
+            errs.append(f"email {email} maps to {len(canons)} canonicals: "
+                        f"{', '.join(sorted(canons))} — dedupe people.yaml")
+    for sid, canons in sorted(by_slack.items()):
+        if len(canons) > 1:
+            errs.append(f"slack_id {sid} maps to {len(canons)} canonicals: "
+                        f"{', '.join(sorted(canons))} — dedupe people.yaml")
+
+    # A team member with no slack_id is invisible to the scan below: their
+    # leave announcements can never be picked up. Not fatal (they may simply
+    # not be on Slack yet) but it must not pass unremarked.
+    missing = sorted(e for e in team_emails
+                     if not any(p.get("email") == e and p.get("slack_id")
+                                for p in people))
+    for email in missing:
+        print(f"[warn] team member {email} has no slack_id — their leave "
+              "announcements cannot be detected", file=sys.stderr)
+
+    return errs
+
+
+def _warn_orphan_leave_actors(conn, team_canonical: set[str]) -> None:
+    """Flag team_leaves rows whose actor is not a current team canonical.
+
+    Expected for people who have left the team (their old rows stay for
+    history), so this warns rather than fails — but a handle that drifts
+    from the roster shows up here first.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT actor, COUNT(*) FROM team_leaves GROUP BY actor").fetchall()
+    except Exception:
+        return
+    orphans = [(a, n) for a, n in rows if a not in team_canonical]
+    if orphans:
+        detail = ", ".join(f"{a} ({n})" for a, n in sorted(orphans))
+        print(f"[warn] {len(orphans)} leave actor(s) not on the current team: "
+              f"{detail} — ex-members are fine; a near-miss of a current "
+              "handle means an identity split", file=sys.stderr)
+
+
 def _load_channel_names() -> dict[str, str]:
     if not CHANNELS_YAML.exists():
         return {}
@@ -320,6 +398,15 @@ def main() -> int:
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
+    identity_errs = _check_identity_sane()
+    if identity_errs:
+        for e in identity_errs:
+            print(f"[err] identity: {e}", file=sys.stderr)
+        print("[err] refusing to classify against a split roster — leaves "
+              "would be filed under a handle the capacity engine never reads",
+              file=sys.stderr)
+        return 2
+
     team_canonical = _load_team_canonical()
     team_slack_map = _load_team_slack_map()
     if not team_canonical or not team_slack_map:
@@ -335,6 +422,7 @@ def main() -> int:
     since_iso = since_dt.isoformat().replace("+00:00", "Z")
 
     conn = get_db()
+    _warn_orphan_leave_actors(conn, team_canonical)
     if args.reset:
         n = conn.execute("DELETE FROM team_leaves_processed").rowcount
         conn.commit()

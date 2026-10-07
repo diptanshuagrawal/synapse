@@ -3,7 +3,7 @@
   "private": true,
   "description": "jsdom harness for the self-contained HTML pages in derived/. Install with: npm install --prefix tests",
   "scripts": {
-    "test": "node monthly_planner_smoke.js"
+    "test": "node monthly_planner_smoke.js && node deps_copy_smoke.js"
   },
   "devDependencies": {
     "jsdom": "^24.0.0"

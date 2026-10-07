@@ -702,6 +702,23 @@ GET: `/api/capacity` + `/api/monthly` (cached `capacity_engine.build()` / `build
 
 **Link direction matters.** A stored Jira link means `inwardIssue <type.outward> outwardIssue`, so for `Polaris work item link` (outward `implements`) the EPIC must be the `inwardIssue` — "epic implements initiative". Reversed links still resolve, so the planner renders them either way and nothing looks broken, but JPD stops treating the epic as the idea's delivery epic. `capacity_engine.audit_epic_links()` finds and repairs them (delete + recreate; Jira cannot flip a link in place).
 
+**Initiative fields (schema v5).** Three of these are not what they look like:
+
+* **Archive is a field, not a status.** JPD sets `idea_archived` and leaves the status alone
+  — an archived idea usually still reads "To Do" — so `statusCategory != Done` never excluded
+  them and their budgets were inflating the planned total. `pod_initiatives(include_archived=)`
+  filters on the field; archived rows come back flagged and `/monthly` keeps them out of every
+  capacity sum and out of submit. The two row sets get separate caches (`…-arch.json`).
+* **Target/Actual Go-Live and Handover declare schema type `string`** and store a date-range
+  blob (`{"start":…,"end":…}`). `_jpd_date()` unwraps it for display; `_is_jpd_date()` keys the
+  write path off the field id (not the schema) so an edit rewrites the blob instead of
+  replacing it with a bare date.
+* **`_adf_text()` drops every link.** A `link` mark is invisible to it and an inlineCard — how
+  a one-pager is normally attached — carries no text at all, so the reference vanished from the
+  planner and from any epic created off the initiative. `_adf_rich()` returns blocks of
+  `{t, h}` spans instead, the page renders real anchors (http/https only), and epic creation
+  now copies the initiative's raw ADF verbatim.
+
 **Invariant:** both pages build HTML by template-string interpolation into `innerHTML`, so every Jira-sourced value (summary, DRI and teammate names, impact/description bodies, pod and option labels, error text) must go through the page's `esc()` helper — the planner holds an authenticated session against `/api/set-field` and `/api/submit-budgets`, so an unescaped field is a write primitive, not just a display bug. `dash()` and `podChips()` escape internally; `toast()` uses `textContent`; `copyText()` in `deps.html` is deliberately raw because it builds clipboard plain text. `tests/monthly_planner_smoke.js` check 9 guards this.
 
 Hand-written page sources (`derived/monthly.html`, `derived/deps.html`) are tracked; the rest of `derived/` — generated HTML and `derived/*.json` — stays local-only/gitignored, so real names and tickets are never published. Leaves stays on the cron dashboard (separate port); the sidebar links out.

@@ -140,3 +140,80 @@ def test_team_emails_empty_when_people_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(ld, "PEOPLE_YAML", tmp_path / "missing.yaml")
     monkeypatch.setattr(ld, "OWNER_EMAIL", "owner@example.com")
     assert ld._load_team_emails() == set()
+
+
+# --- identity split guard -------------------------------------------------
+# Regression: a stale `scope: org` duplicate of Sai Vignesh (canonical
+# `saivignesh`) shared the email/slack_id of his `scope: team` entry
+# (`sai-vignesh`). It won _load_team_slack_map's dict race, so his leaves were
+# filed under a handle capacity_engine never reads and his 19-23 Oct vacation
+# rendered as leave=0 on the Synapse monthly tab. Silent: the engine does
+# `leaves.get(canonical, {})`, which returns empty rather than raising.
+
+def _people(tmp_path, entries):
+    import yaml
+    p = tmp_path / "people.yaml"
+    p.write_text(yaml.safe_dump({"people": entries}))
+    return p
+
+
+_TEAM_ENTRY = {"email": "dev1@example.com", "scope": "team",
+               "canonical": "dev-one", "slack_id": "U111"}
+
+
+def test_identity_sane_passes_on_clean_roster(tmp_path, monkeypatch):
+    p = _people(tmp_path, [
+        {"email": "owner@example.com", "scope": "team",
+         "canonical": "owner", "slack_id": "U000"},
+        _TEAM_ENTRY,
+        {"email": "friend@example.com", "scope": "org",
+         "canonical": "friend", "slack_id": "U999"},
+    ])
+    monkeypatch.setattr(ld, "PEOPLE_YAML", p)
+    monkeypatch.setattr(ld, "OWNER_EMAIL", "owner@example.com")
+    assert ld._check_identity_sane() == []
+
+
+def test_identity_sane_flags_duplicate_canonical_for_one_human(
+        tmp_path, monkeypatch):
+    """The exact 2026-10-06 shape: same email AND same slack_id, two handles."""
+    p = _people(tmp_path, [
+        {"email": "owner@example.com", "scope": "team", "canonical": "owner"},
+        _TEAM_ENTRY,
+        {"email": "dev1@example.com", "scope": "org",
+         "canonical": "devone", "slack_id": "U111"},
+    ])
+    monkeypatch.setattr(ld, "PEOPLE_YAML", p)
+    monkeypatch.setattr(ld, "OWNER_EMAIL", "owner@example.com")
+    errs = ld._check_identity_sane()
+    assert len(errs) == 2, errs
+    assert any("dev1@example.com" in e for e in errs)
+    assert any("U111" in e for e in errs)
+    # both clashing handles must be named so the fix is obvious
+    assert all("dev-one" in e and "devone" in e for e in errs)
+
+
+def test_identity_sane_ignores_org_duplicate_of_non_team_member(
+        tmp_path, monkeypatch):
+    """Only the team roster drives leaves — org-only collisions are not ours."""
+    p = _people(tmp_path, [
+        {"email": "owner@example.com", "scope": "team", "canonical": "owner"},
+        _TEAM_ENTRY,
+        {"email": "friend@example.com", "scope": "org", "canonical": "a"},
+        {"email": "friend@example.com", "scope": "org", "canonical": "b"},
+    ])
+    monkeypatch.setattr(ld, "PEOPLE_YAML", p)
+    monkeypatch.setattr(ld, "OWNER_EMAIL", "owner@example.com")
+    assert ld._check_identity_sane() == []
+
+
+def test_identity_sane_missing_slack_id_warns_not_fatal(
+        tmp_path, monkeypatch, capsys):
+    p = _people(tmp_path, [
+        {"email": "owner@example.com", "scope": "team", "canonical": "owner"},
+        {"email": "dev1@example.com", "scope": "team", "canonical": "dev-one"},
+    ])
+    monkeypatch.setattr(ld, "PEOPLE_YAML", p)
+    monkeypatch.setattr(ld, "OWNER_EMAIL", "owner@example.com")
+    assert ld._check_identity_sane() == []          # not fatal
+    assert "no slack_id" in capsys.readouterr().err  # but loud

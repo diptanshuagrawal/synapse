@@ -13,6 +13,7 @@ Emits a JSON capacity model (stdout + derived/capacity.json) consumed by the
 sprint planner UI and, later, the /sprint-capacity skill.
 """
 import os, sys, json, subprocess, datetime as dt
+import urllib.parse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import yaml
 from ingest.common import get_db
@@ -35,6 +36,8 @@ EPIC_ISSUETYPE_ID = "10000"
 BUDGET_FIELDS = {}
 SP_FIELD = ""
 EPIC_HEALTH_FIELD = EPIC_CYCLE_FIELD = EPIC_ORGPRI_FIELD = CHALLENGES_FIELD = ""
+INIT_GOLIVE_FIELD = INIT_HANDOVER_FIELD = INIT_ACT_GOLIVE_FIELD = INIT_ACT_HANDOVER_FIELD = ""
+INIT_ARCHIVED_FIELD = INIT_ARCHIVED_ON_FIELD = ""
 
 
 def _yaml(name):
@@ -78,6 +81,8 @@ def _load_cfg():
     global INITIATIVE_PROD_DRI_FIELD, INITIATIVE_IMPACT_FIELD, INITIATIVE_LINK_TYPE
     global EPIC_ISSUETYPE_ID, BUDGET_OVERALL_FIELD, BUDGET_FIELDS, SP_FIELD
     global EPIC_HEALTH_FIELD, EPIC_CYCLE_FIELD, EPIC_ORGPRI_FIELD, CHALLENGES_FIELD
+    global INIT_GOLIVE_FIELD, INIT_HANDOVER_FIELD, INIT_ACT_GOLIVE_FIELD
+    global INIT_ACT_HANDOVER_FIELD, INIT_ARCHIVED_FIELD, INIT_ARCHIVED_ON_FIELD
     jf = sp.get("jira_fields") or {}
     SP_FIELD = jf.get("story_points", "")
     EPIC_HEALTH_FIELD = jf.get("epic_health", "")
@@ -92,6 +97,12 @@ def _load_cfg():
     INITIATIVE_LINK_TYPE = jf.get("initiative_link_type", "")
     EPIC_ISSUETYPE_ID = str(jf.get("epic_issuetype_id", "10000"))
     BUDGET_OVERALL_FIELD = jf.get("overall_budget", "")
+    INIT_GOLIVE_FIELD = jf.get("target_go_live", "")
+    INIT_HANDOVER_FIELD = jf.get("target_handover", "")
+    INIT_ACT_GOLIVE_FIELD = jf.get("actual_go_live", "")
+    INIT_ACT_HANDOVER_FIELD = jf.get("actual_handover", "")
+    INIT_ARCHIVED_FIELD = jf.get("idea_archived", "")
+    INIT_ARCHIVED_ON_FIELD = jf.get("idea_archived_on", "")
     BUDGET_FIELDS = _budget_fields_from_base(jf.get("monthly_budget_base", ""))
 
 
@@ -255,9 +266,82 @@ def oncall_by_week(days):
     return out
 
 
+class LeaveActorSplit(RuntimeError):
+    """A team_leaves actor is the same human as a roster member, spelled differently."""
+
+
+def _norm_handle(h):
+    return "".join(ch for ch in (h or "").lower() if ch.isalnum())
+
+
+def _assert_leave_actors_resolve(actors):
+    """Raise when a leave actor is a roster member under a second handle.
+
+    Callers read leaves as `leaves.get(p["canonical"], {})`. A dict miss is
+    indistinguishable from "took no leave", so a handle that drifts from the
+    roster silently inflates capacity instead of failing. That is exactly how
+    Sai Vignesh's 19-23 Oct vacation showed as leave=0 on the monthly tab: his
+    rows were filed `saivignesh` while the roster said `sai-vignesh`.
+
+    Not every unknown actor is a bug — rows for people who left the team, or
+    who are excluded from the roster by role, are expected to go unread and
+    must keep doing so. The bug has a specific shape: the unknown handle is the
+    SAME HUMAN as someone on the roster. Two independent tells, either fatal:
+
+      1. it normalises to a roster handle (`saivignesh` == `sai-vignesh`), or
+      2. people.yaml gives it the email or slack_id of a roster member.
+
+    Tell 2 catches a split whose spellings differ too much to normalise; tell 1
+    catches a split whose duplicate people.yaml entry has already been removed
+    while the orphaned rows remain.
+    """
+    team = roster()
+    known = {p["canonical"] for p in team}
+    orphans = {a for a in actors if a and a not in known}
+    if not orphans:
+        return
+
+    by_norm = {}
+    for p in team:
+        by_norm.setdefault(_norm_handle(p["canonical"]), p["canonical"])
+
+    team_emails = {p["email"] for p in team if p.get("email")}
+    entries = {}
+    for p in _yaml("people.yaml")["people"]:
+        if p.get("canonical"):
+            entries.setdefault(p["canonical"], p)
+    team_slack = {entries[c].get("slack_id") for c in known
+                  if c in entries and entries[c].get("slack_id")}
+
+    splits = []
+    for a in sorted(orphans):
+        hit = by_norm.get(_norm_handle(a))
+        if hit:
+            splits.append(f"{a!r} normalises to roster handle {hit!r}")
+            continue
+        e = entries.get(a) or {}
+        if e.get("email") in team_emails:
+            splits.append(f"{a!r} shares email {e['email']} with a roster member")
+        elif e.get("slack_id") in team_slack:
+            splits.append(f"{a!r} shares slack_id {e['slack_id']} with a roster member")
+
+    if splits:
+        raise LeaveActorSplit(
+            "team_leaves actors are split across handles, so their leave would "
+            "read as zero: " + "; ".join(splits) +
+            ". Fix config/people.yaml (one canonical per human), then migrate "
+            "the rows: UPDATE team_leaves SET actor='<roster handle>' "
+            "WHERE actor='<orphan>'.")
+
+
 def leaves_for(window_start, window_end):
     """canonical -> {date_iso: 'W'|'L'} over [window_start, window_end]."""
     conn = get_db()
+    # Reconcile against every actor in the table, not just the windowed rows —
+    # a split that happens to fall outside this window is still a split, and
+    # would otherwise only surface on the month that reads it wrong.
+    _assert_leave_actors_resolve(
+        {r[0] for r in conn.execute("SELECT DISTINCT actor FROM team_leaves")})
     rows = conn.execute(
         "SELECT actor, date_start, date_end, reason FROM team_leaves "
         "WHERE date_start <= ? AND (date_end >= ? OR date_end IS NULL)",
@@ -280,15 +364,26 @@ def leaves_for(window_start, window_end):
 
 
 def holidays_for(year, days):
-    try:
-        h = _yaml(f"holidays-{year}.yaml")["holidays"]
-    except Exception:
-        return {}
-    inwin = {d.isoformat() for d in days}
+    """Holidays from config, keyed by ISO date string.
+
+    PyYAML parses an unquoted `2026-10-02` into a datetime.date, not a string, so comparing
+    it against ISO strings silently matched nothing and NO holiday was ever deducted from
+    capacity. Normalise both sides. A window can also straddle a year boundary, so load
+    every year the window touches rather than just `year`.
+    """
+    iso = lambda v: v.isoformat() if hasattr(v, "isoformat") else str(v).strip()
+    inwin = {iso(d) for d in days}
+    years = {int(s[:4]) for s in inwin} | {int(year)}
     out = {}
-    for x in h:
-        if x["date"] in inwin:
-            out[x["date"]] = {"type": x["type"], "occasion": x["occasion"]}
+    for y in sorted(years):
+        try:
+            h = _yaml(f"holidays-{y}.yaml")["holidays"] or []
+        except Exception:
+            continue
+        for x in h:
+            d = iso(x.get("date"))
+            if d in inwin:
+                out[d] = {"type": x.get("type"), "occasion": x.get("occasion")}
     return out
 
 
@@ -478,13 +573,21 @@ def pod_options():
 
 # Shape version of the pod_initiatives payload. Bump whenever a field is added/renamed so
 # sprint_server discards on-disk initiatives-*.json caches written by an older build.
-INITIATIVES_SCHEMA = 4
+INITIATIVES_SCHEMA = 9
+# Bump when month_capacity() changes shape OR its arithmetic, so cached months are dropped.
+MONTH_SCHEMA = 4
 
 
-def pod_initiatives(pods=None):
+def pod_initiatives(pods=None, include_archived=False):
     """Org initiatives (OINT project) for the given pod(s), each with its linked board
     epic (a JIRA_PROJECT issue on either side of an issue link) and that epic's monthly
-    budget. `pods` defaults to the configured OINT_POD. Read-only planning input."""
+    budget. `pods` defaults to the configured OINT_POD. Read-only planning input.
+
+    Archived ideas are excluded unless `include_archived`. JPD archiving sets a FIELD and
+    leaves the status alone — an archived idea usually still reads "To Do" — so the
+    statusCategory filter never caught them and their budgets were silently inflating the
+    planned total. When they are included they come back flagged `archived`, and the
+    caller is expected to keep them out of any capacity sum."""
     if not OINT_PROJECT:
         return {"__error__": "oint_project not set in sprint_planning.yaml"}
     pods = [p for p in (pods or [OINT_POD]) if p]
@@ -504,11 +607,17 @@ def pod_initiatives(pods=None):
     pod_list = ", ".join('"' + p.replace('"', '\\"') + '"' for p in pods)
     # Exclude terminal (Done / Cancelled) initiatives — a forward planning board only
     # cares about open, plannable work; finished cycles just add noise.
+    arch_cf = INIT_ARCHIVED_FIELD.split("_")[1] if INIT_ARCHIVED_FIELD else ""
+    arch_clause = "" if (include_archived or not arch_cf) else f'AND cf[{arch_cf}] is EMPTY '
     jql = (f'project = {OINT_PROJECT} AND issuetype = Initiative '
-           f'AND cf[{pod_cf}] in ({pod_list}) AND statusCategory != Done ORDER BY created DESC')
+           f'AND cf[{pod_cf}] in ({pod_list}) AND statusCategory != Done '
+           f'{arch_clause}ORDER BY created DESC')
+    init_extra = [f for f in (INIT_GOLIVE_FIELD, INIT_HANDOVER_FIELD, INIT_ACT_GOLIVE_FIELD,
+                              INIT_ACT_HANDOVER_FIELD, INIT_ARCHIVED_FIELD,
+                              INIT_ARCHIVED_ON_FIELD) if f]
     fields = ["summary", "status", INITIATIVE_ORGPRI_FIELD, "issuelinks",
               INITIATIVE_ENG_DRI_FIELD, INITIATIVE_PROD_DRI_FIELD, INITIATIVE_POD_FIELD] + \
-             ([EPIC_CYCLE_FIELD] if EPIC_CYCLE_FIELD else [])
+             ([EPIC_CYCLE_FIELD] if EPIC_CYCLE_FIELD else []) + init_extra
     issues, token_page = [], None
     try:
         while True:
@@ -536,12 +645,22 @@ def pod_initiatives(pods=None):
         return sorted(set(out))
 
     def _linked_epic(f):
+        """The board epic linked to this initiative, with the link's DIRECTION.
+
+        A stored link reads "inwardIssue <type.outward> outwardIssue", so for the Polaris
+        link type the epic must be the inwardIssue ("epic implements initiative"). Stored
+        the other way round both ends still resolve, so the planner renders normally, but
+        JPD stops treating it as the idea's delivery epic and the handover score drops it
+        entirely. Carry the flag so readiness can say so instead of showing a false green.
+        """
         for l in f.get("issuelinks", []):
-            o = l.get("outwardIssue") or l.get("inwardIssue") or {}
-            k = o.get("key", "")
-            if k.startswith(f"{JIRA_PROJECT}-"):
-                return {"key": k, "url": f"https://{JIRA_HOST}/browse/{k}",
-                        "summary": (o.get("fields") or {}).get("summary", "")}
+            inward, outward = l.get("inwardIssue") or {}, l.get("outwardIssue") or {}
+            for side, o in (("inward", inward), ("outward", outward)):
+                k = o.get("key", "")
+                if k.startswith(f"{JIRA_PROJECT}-"):
+                    return {"key": k, "url": f"https://{JIRA_HOST}/browse/{k}",
+                            "summary": (o.get("fields") or {}).get("summary", ""),
+                            "linkReversed": side == "outward"}
         return None
 
     inits = []
@@ -561,6 +680,12 @@ def pod_initiatives(pods=None):
             "podTags": _opt_list(f.get(INITIATIVE_POD_FIELD)),
             "linkedKeys": _linked_keys(f),
             "cycles": _cycles(f.get(EPIC_CYCLE_FIELD)) if EPIC_CYCLE_FIELD else [],
+            "targetGoLive": _jpd_date(f.get(INIT_GOLIVE_FIELD)) if INIT_GOLIVE_FIELD else "",
+            "targetHandover": _jpd_date(f.get(INIT_HANDOVER_FIELD)) if INIT_HANDOVER_FIELD else "",
+            "actualGoLive": _jpd_date(f.get(INIT_ACT_GOLIVE_FIELD)) if INIT_ACT_GOLIVE_FIELD else "",
+            "actualHandover": _jpd_date(f.get(INIT_ACT_HANDOVER_FIELD)) if INIT_ACT_HANDOVER_FIELD else "",
+            "archived": bool(f.get(INIT_ARCHIVED_FIELD)) if INIT_ARCHIVED_FIELD else False,
+            "archivedOn": (f.get(INIT_ARCHIVED_ON_FIELD) or "")[:10] if INIT_ARCHIVED_ON_FIELD else "",
             "budgets": {m: 0 for m in BUDGET_MONTHS},
         })
 
@@ -570,7 +695,7 @@ def pod_initiatives(pods=None):
     epic_keys = sorted({x["epic"]["key"] for x in inits if x["epic"]})
     epic_extra_fields = [f for f in (EPIC_HEALTH_FIELD, EPIC_CYCLE_FIELD,
                                      BUDGET_OVERALL_FIELD, CHALLENGES_FIELD) if f]
-    ebud, emeta = {}, {}
+    ebud, emeta, eset = {}, {}, {}
     for j in range(0, len(epic_keys), 80):
         chunk = epic_keys[j:j + 80]
         try:
@@ -582,6 +707,8 @@ def pod_initiatives(pods=None):
             for it in data.get("issues", []):
                 ff = it["fields"]
                 ebud[it["key"]] = {m: (ff.get(BUDGET_FIELDS[m]) or 0) for m in BUDGET_MONTHS}
+                eset[it["key"]] = {m: ff.get(BUDGET_FIELDS[m]) is not None
+                                   for m in BUDGET_MONTHS}
                 emeta[it["key"]] = {
                     "dueDate": ff.get("duedate") or "",
                     "status": _opt_str(ff.get("status")),
@@ -598,11 +725,15 @@ def pod_initiatives(pods=None):
     for x in inits:
         if x["epic"] and x["epic"]["key"] in ebud:
             x["budgets"] = {m: round(ebud[x["epic"]["key"]][m], 1) for m in BUDGET_MONTHS}
+            # the SOP treats a budget field that is merely non-null as filled, so "unset"
+            # and "set to 0" are different states and must survive the payload
+            x["budgetsSet"] = dict(eset.get(x["epic"]["key"], {}))
         if x["epic"] and x["epic"]["key"] in emeta:
             x["epic"].update(emeta[x["epic"]["key"]])
 
     return {"generated": dt.date.today().isoformat(), "v": INITIATIVES_SCHEMA, "pods": pods,
-            "months": BUDGET_MONTHS, "initiatives": inits}
+            "months": BUDGET_MONTHS, "includeArchived": bool(include_archived),
+            "bars": handover_bars(), "initiatives": inits}
 
 
 # INITIATIVE_LINK_TYPE + EPIC_ISSUETYPE_ID are org/instance-specific → loaded from
@@ -671,6 +802,10 @@ def _initiative_detail(key):
     return {"key": key, "url": f"https://{JIRA_HOST}/browse/{key}",
             "summary": f.get("summary", ""),
             "descriptionText": _adf_text(f.get("description") or {}).strip(),
+            # rich = same description with links kept (the page renders real anchors);
+            # adf = the untouched source doc, copied verbatim onto a new epic.
+            "descriptionRich": _adf_rich(f.get("description") or {}),
+            "descriptionAdf": f.get("description") or None,
             "impact": imp or "",
             "linkedEpic": linked}
 
@@ -705,7 +840,7 @@ def _link_initiative_epic(initiative_key, epic_key):
 
 
 # Shape version of the pod_dependencies payload; bump to discard stale deps-*.json caches.
-DEPENDENCIES_SCHEMA = 2
+DEPENDENCIES_SCHEMA = 3
 
 
 def _pod_project(pod):
@@ -743,6 +878,7 @@ def _fetch_epics(keys, months):
                 "assignee": _user_name(f.get("assignee")),
                 "health": _opt_str(f.get(EPIC_HEALTH_FIELD)) if EPIC_HEALTH_FIELD else "",
                 "budgets": {m: round(float(f.get(BUDGET_FIELDS[m]) or 0), 1) for m in months},
+                "budgetSet": {m: f.get(BUDGET_FIELDS[m]) is not None for m in months},
             }
     return out
 
@@ -788,6 +924,8 @@ def pod_dependencies(pods=None, months=None, dri_only=True):
             e = theirs[0] if theirs else None
             months_sp = ({labels[y]: e["budgets"].get(m, 0) for y, m in zip(yms, mnames)}
                          if e else {labels[y]: 0 for y in yms})
+            months_set = ({labels[y]: bool(e.get("budgetSet", {}).get(m)) for y, m in zip(yms, mnames)}
+                          if e else {labels[y]: False for y in yms})
             sp = round(sum(months_sp.values()), 1)
             if not e:
                 state = "Missing epic"
@@ -810,7 +948,7 @@ def pod_dependencies(pods=None, months=None, dri_only=True):
                 "epic": e["key"] if e else "", "epicUrl": e["url"] if e else "",
                 "epicStatus": e["status"] if e else "", "epicDue": e["dueDate"] if e else "",
                 "epicOwner": e["assignee"] if e else "", "epicHealth": e["health"] if e else "",
-                "months": months_sp, "sp": sp,
+                "months": months_sp, "monthsSet": months_set, "sp": sp,
                 "myEpic": my_epic.get("key", ""), "myEpicUrl": my_epic.get("url", ""),
                 "myMonths": {labels[y]: round(float((it.get("budgets") or {}).get(m) or 0), 1)
                              for y, m in zip(yms, mnames)},
@@ -988,7 +1126,10 @@ def resolve_epic(initiative_key, mode="preview", epic_key=None):
                        {"fields": {"project": {"key": JIRA_PROJECT},
                                    "issuetype": {"id": EPIC_ISSUETYPE_ID},
                                    "summary": det["summary"][:250],
-                                   "description": _adf(det["descriptionText"])}})
+                                   # Copy the initiative's description verbatim. Round-tripping
+                                   # through _adf_text/_adf flattened it to one plain paragraph and
+                                   # silently dropped every link, including the one-pager smart link.
+                                   "description": det.get("descriptionAdf") or _adf(det["descriptionText"])}})
             epic = {"key": ep["key"], "url": f"https://{JIRA_HOST}/browse/{ep['key']}"}
             _link_initiative_epic(initiative_key, epic["key"])
             return {"status": "created", "epic": epic}
@@ -1317,6 +1458,10 @@ def planner_editable_fields():
         "prodDri":    {"target": "initiative", "field": INITIATIVE_PROD_DRI_FIELD},
         "cycles":     {"target": "initiative", "field": EPIC_CYCLE_FIELD},
         "pods":       {"target": "initiative", "field": INITIATIVE_POD_FIELD},
+        "goLive":     {"target": "initiative", "field": INIT_GOLIVE_FIELD},
+        "handover":   {"target": "initiative", "field": INIT_HANDOVER_FIELD},
+        "actGoLive":  {"target": "initiative", "field": INIT_ACT_GOLIVE_FIELD},
+        "actHandover":{"target": "initiative", "field": INIT_ACT_HANDOVER_FIELD},
         "epicSumm":   {"target": "epic", "field": "summary"},
         "epicDue":    {"target": "epic", "field": "duedate"},
         "epicStatus": {"target": "epic", "field": STATUS_PSEUDO_FIELD},
@@ -1328,6 +1473,14 @@ def planner_editable_fields():
         "epicChal":   {"target": "epic", "field": CHALLENGES_FIELD},
     }
     return {k: v for k, v in m.items() if v["field"]}
+
+
+def _is_jpd_date(fid):
+    """JPD's Target/Actual date fields declare schema type `string` and store a date-range
+    JSON blob. Writing them like ordinary text would replace the blob with a bare date and
+    break the field, so they get their own editor kind."""
+    return bool(fid) and fid in {INIT_GOLIVE_FIELD, INIT_HANDOVER_FIELD,
+                                 INIT_ACT_GOLIVE_FIELD, INIT_ACT_HANDOVER_FIELD}
 
 
 def _editor_kind(schema):
@@ -1400,12 +1553,14 @@ def field_editmeta(key, columns):
             out["fields"][c] = {"editable": False, "kind": "text",
                                 "why": "not on the edit screen, or you lack permission"}
             continue
+        jpd = _is_jpd_date(fid)
         out["fields"][c] = {
             "editable": True,
-            "kind": _editor_kind(f.get("schema")),
-            "options": [{"id": str(o.get("id", "")), "label": o.get("value") or o.get("name") or ""}
+            "kind": "date" if jpd else _editor_kind(f.get("schema")),
+            "options": [] if jpd else
+                       [{"id": str(o.get("id", "")), "label": o.get("value") or o.get("name") or ""}
                         for o in f.get("allowedValues", [])],
-            "value": _raw_value(fid, cur.get(fid)),
+            "value": _jpd_date(cur.get(fid)) if jpd else _raw_value(fid, cur.get(fid)),
         }
     return out
 
@@ -1446,7 +1601,7 @@ def set_issue_field(key, column, value):
         return {"__error__": f"'{column}' is not editable on {key} "
                              "(not on the edit screen, or you lack permission)"}
     schema = em[fid].get("schema") or {}
-    kind = _editor_kind(schema)
+    kind = "jpddate" if _is_jpd_date(fid) else _editor_kind(schema)
 
     try:
         before_raw = _raw_value(fid, _jira("GET", f"/rest/api/3/issue/{key}?fields={fid}")
@@ -1455,7 +1610,18 @@ def set_issue_field(key, column, value):
         return _jira_err(e, f"read {key}")
 
     empty = value in (None, "", [], {})
-    if kind == "date":
+    if kind == "jpddate":
+        before_raw = _jpd_date(before_raw)
+        if empty:
+            payload = None
+        else:
+            try:
+                d = dt.date.fromisoformat(str(value)).isoformat()
+            except ValueError:
+                return {"__error__": f"date must be YYYY-MM-DD, got {value!r}"}
+            payload = json.dumps({"start": d, "end": d})
+            value = d
+    elif kind == "date":
         if not empty:
             try:
                 value = dt.date.fromisoformat(str(value)).isoformat()
@@ -1477,7 +1643,8 @@ def set_issue_field(key, column, value):
     else:  # multi-select
         payload = [] if empty else [{"id": str(v)} for v in value]
 
-    if before_raw == (value if not empty else None) and kind not in ("labels", "users", "multi"):
+    if (before_raw or None) == (value if not empty else None) \
+            and kind not in ("labels", "users", "multi"):
         return {"ok": True, "key": key, "column": column, "from": before_raw,
                 "to": before_raw, "unchanged": True}
     try:
@@ -1485,6 +1652,10 @@ def set_issue_field(key, column, value):
         after = _jira("GET", f"/rest/api/3/issue/{key}?fields={fid}").get("fields", {}).get(fid)
     except Exception as e:
         return _jira_err(e, f"write {key}")
+    if kind == "jpddate":
+        parsed = _jpd_date(after)
+        return {"ok": True, "key": key, "column": column, "from": before_raw,
+                "to": parsed, "display": parsed or "—", "undoable": True}
     display = ", ".join(x.strip() for x in after) if (kind == "labels" and after) else (
         _user_name(after) if kind in ("user", "users") else _opt_str(after))
     return {"ok": True, "key": key, "column": column, "from": before_raw,
@@ -1659,6 +1830,92 @@ def classify_backlog(pool, ref):
     return pool
 
 
+def _jpd_date(v):
+    """JPD 'Target Go-Live Date' etc. are stored as a STRING holding a date-range JSON
+    blob ('{"start":"2026-10-29","end":"2026-10-29"}'), not as a date field. Return the
+    start as a plain YYYY-MM-DD so it sorts and compares like every other date."""
+    if not v:
+        return ""
+    if isinstance(v, dict):
+        return (v.get("start") or v.get("end") or "")[:10]
+    t = str(v).strip()
+    if t.startswith("{"):
+        try:
+            d = json.loads(t)
+            return (d.get("start") or d.get("end") or "")[:10]
+        except Exception:
+            return ""
+    return t[:10]
+
+
+def _card_label(url):
+    """Readable label for a smart link. Jira renders the page title, but that costs a
+    second call per card, so derive it from the URL: Confluence and Jira both end in a
+    slug or an issue key."""
+    u = (url or "").split("?")[0].split("#")[0].rstrip("/")
+    tail = u.rsplit("/", 1)[-1] if "/" in u else u
+    label = urllib.parse.unquote(tail).replace("+", " ").replace("-", " ").strip()
+    # a bare numeric id (…/pages/4000907404) is meaningless — back up one segment
+    if label.isdigit():
+        parts = [x for x in u.split("/") if x]
+        label = urllib.parse.unquote(parts[-2]).replace("+", " ") if len(parts) > 1 else label
+    return label or u
+
+
+def _adf_rich(node):
+    """Atlassian Document Format -> [[{t, h}, ...], ...]: blocks of spans, each span a
+    run of text with an optional href.
+
+    _adf_text() drops every link: a `link` mark is invisible to it, and an inlineCard
+    (Jira's smart link — how a one-pager is usually attached) has NO text at all, so the
+    whole reference vanished from the planner. Returning structure instead of a string
+    lets the page render real anchors while still escaping the text itself.
+    """
+    BLOCK = {"paragraph", "heading", "listItem", "blockquote", "codeBlock", "rule", "panel"}
+    blocks, cur = [], []
+
+    def flush():
+        nonlocal cur
+        if any((sp.get("t") or "").strip() or sp.get("h") for sp in cur):
+            blocks.append(cur)
+        cur = []
+
+    def walk(n):
+        nonlocal cur
+        if isinstance(n, list):
+            for c in n:
+                walk(c)
+            return
+        if not isinstance(n, dict):
+            return
+        t = n.get("type")
+        if t == "text":
+            href = ""
+            for m in (n.get("marks") or []):
+                if m.get("type") == "link":
+                    href = (m.get("attrs") or {}).get("href", "")
+            cur.append({"t": n.get("text", ""), "h": href})
+            return
+        if t in ("inlineCard", "blockCard", "embedCard"):
+            url = (n.get("attrs") or {}).get("url", "")
+            if url:
+                cur.append({"t": _card_label(url), "h": url})
+            return
+        if t == "hardBreak":
+            cur.append({"t": "\n", "h": ""})
+            return
+        if t == "mention":
+            cur.append({"t": "@" + ((n.get("attrs") or {}).get("text", "") or "").lstrip("@"), "h": ""})
+            return
+        walk(n.get("content") or [])
+        if t in BLOCK:
+            flush()
+
+    walk(node or {})
+    flush()
+    return blocks
+
+
 def _adf_text(node):
     """Flatten Atlassian Document Format to plain text."""
     if isinstance(node, list):
@@ -1782,19 +2039,237 @@ def _month_bounds(y, m):
     return first, nxt - dt.timedelta(days=1)
 
 
-def month_capacity(year, month):
-    """Sprint-style capacity for ONE full calendar month (past or future).
+def cycle_window(label):
+    """(start, end) dates for a planning-cycle label like "Oct-26", or None.
 
+    A planning cycle is two sprints, not a calendar month: Oct-26 runs 7 Oct to 3 Nov.
+    Computing its capacity over 1-31 Oct counts the wrong weekends and the wrong public
+    holidays, so the windows are configured explicitly in sprint_planning.yaml. A label
+    with no entry falls back to the calendar month it names, which is what this did before.
+    """
+    try:
+        cfg = (_yaml("sprint_planning.yaml") or {}).get("planning_cycles") or {}
+    except Exception:
+        return None
+    row = cfg.get(label)
+    if not isinstance(row, dict):
+        return None
+    iso = lambda v: v.isoformat() if hasattr(v, "isoformat") else str(v).strip()
+    try:
+        start = dt.date.fromisoformat(iso(row.get("start")))
+        end = dt.date.fromisoformat(iso(row.get("end")))
+    except Exception:
+        return None
+    return (start, end) if end >= start else None
+
+
+HANDOVER_SCHEMA = 1
+
+
+def _handover_cfg():
+    try:
+        c = (_yaml("sprint_planning.yaml") or {}).get("handover_readiness") or {}
+    except Exception:
+        return None
+    ws, sc = c.get("workspace"), c.get("script")
+    if not ws or not sc:
+        return None
+    return {"workspace": os.path.expanduser(str(ws)),
+            "script": os.path.expanduser(str(sc)),
+            "args": [str(a) for a in (c.get("args") or ["readiness", "--json"])]}
+
+
+def handover_readiness():
+    """The published handover score, from the program team's own CLI.
+
+    Deliberately not reimplemented. The CLI counts rows this codebase cannot see from a
+    PODs JQL alone: it also reads the Horizontals field, and it surfaces a row when an epic
+    in your project is linked to an initiative that never declared your POD. Measured
+    against it, a local reimplementation was short by two rows per month and read 6.5
+    where the real figure was 6.77 - close enough to look right and wrong enough to matter.
+    """
+    cfg = _handover_cfg()
+    if not cfg:
+        return {"__error__": "handover_readiness not configured in sprint_planning.yaml"}
+    if not os.path.isdir(cfg["workspace"]):
+        return {"__error__": f"workspace not found: {cfg['workspace']}"}
+    if not os.path.exists(cfg["script"]):
+        return {"__error__": f"readiness script not found: {cfg['script']}"}
+    try:
+        p = subprocess.run(["bash", cfg["script"], *cfg["args"]], cwd=cfg["workspace"],
+                           capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        return {"__error__": "readiness CLI timed out after 600s"}
+    if p.returncode != 0:
+        return {"__error__": f"readiness CLI exited {p.returncode}: {(p.stderr or '').strip()[:300]}"}
+    try:
+        d = json.loads(p.stdout)
+    except Exception as e:
+        return {"__error__": f"readiness CLI did not emit JSON: {e}"}
+    d["v"] = HANDOVER_SCHEMA
+    d["fetched"] = dt.datetime.now().isoformat(timespec="seconds")
+    return d
+
+
+def handover_snapshot(doc, path):
+    """Append one row per cycle month per day, so the trend survives a moving denominator.
+
+    The average alone is not a trend: initiatives join the cycle at score 1 and leave it
+    whenever they are retagged, so it can fall while things improve and rise when a red row
+    departs. Storing rows and the status counts beside it is what makes a later comparison
+    mean anything. One snapshot per day per month; a re-run the same day overwrites.
+    """
+    if not doc or doc.get("__error__"):
+        return None
+    day = dt.date.today().isoformat()
+    rows = []
+    for r in ((doc.get("rollup") or {}).get("per_project") or []):
+        rows.append({"date": day, "project": r.get("project"), "month": r.get("month"),
+                     "rows": r.get("rows"), "avg": r.get("avg"),
+                     "pctGreen": r.get("pct_green"),
+                     "missingEpic": r.get("missing_epic"),
+                     "missingBudget": r.get("missing_budget"),
+                     "bar": r.get("bar")})
+    if not rows:
+        return None
+    hist = []
+    if os.path.exists(path):
+        try:
+            with open(path) as fh:
+                hist = [json.loads(l) for l in fh if l.strip()]
+        except Exception:
+            hist = []
+    keep = [h for h in hist if h.get("date") != day]
+    keep.extend(rows)
+    keep.sort(key=lambda h: (h.get("date") or "", h.get("month") or ""))
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        for h in keep:
+            fh.write(json.dumps(h) + "\n")
+    os.replace(tmp, path)
+    return keep
+
+
+def em_acceptance(doc=None):
+    """EM acceptance, which the program team gates on the INITIATIVE's target dates.
+
+    Different signal from the handover score and from epic-level acceptance: this is about
+    Target Go-Live and Target Handover being populated on the initiative itself. Both are
+    JPD interval fields whose REST value is a JSON *string*, so an emptiness test has to go
+    through _jpd_date() rather than truthiness on the raw field.
+
+    Scoped to initiatives where you are Tech DRI, since that is who the program team asks.
+    """
+    doc = doc if doc is not None else handover_readiness()
+    if not doc or doc.get("__error__"):
+        return {"__error__": (doc or {}).get("__error__", "no readiness data")}
+    me = (doc.get("em_email") or "").lower()
+    mine = [i for i in (doc.get("initiatives") or [])
+            if me and me in (i.get("tech_dri") or "").lower()]
+    keys = [i.get("key") for i in mine if i.get("key")]
+    if not keys:
+        return {"generated": dt.date.today().isoformat(), "em": me, "rows": [],
+                "total": 0, "missingGoLive": 0, "missingHandover": 0, "missingEither": 0}
+
+    want = [f for f in (INIT_GOLIVE_FIELD, INIT_HANDOVER_FIELD) if f]
+    got = {}
+    for i in range(0, len(keys), 80):
+        chunk = keys[i:i + 80]
+        try:
+            d = _jira("POST", "/rest/api/3/search/jql",
+                      {"jql": f"key in ({','.join(chunk)})",
+                       "fields": ["summary", "status"] + want, "maxResults": 100})
+        except Exception as e:
+            return {"__error__": f"read target dates: {e}"}
+        for it in d.get("issues", []):
+            got[it["key"]] = it["fields"]
+
+    rows = []
+    for i in mine:
+        f = got.get(i.get("key")) or {}
+        gl = _jpd_date(f.get(INIT_GOLIVE_FIELD)) if INIT_GOLIVE_FIELD else ""
+        ho = _jpd_date(f.get(INIT_HANDOVER_FIELD)) if INIT_HANDOVER_FIELD else ""
+        rows.append({"key": i.get("key"), "url": f"https://{JIRA_HOST}/browse/{i.get('key')}",
+                     "summary": f.get("summary") or i.get("summary") or "",
+                     "months": i.get("months") or [],
+                     "goLive": gl, "handover": ho,
+                     "missing": [n for n, v in (("Target Go-Live", gl),
+                                                ("Target Handover", ho)) if not v]})
+    rows.sort(key=lambda r: (-len(r["missing"]), r["key"]))
+    return {"generated": dt.date.today().isoformat(), "em": me, "rows": rows,
+            "total": len(rows),
+            "missingGoLive":   sum(1 for r in rows if not r["goLive"]),
+            "missingHandover": sum(1 for r in rows if not r["handover"]),
+            "missingEither":   sum(1 for r in rows if r["missing"]),
+            "accepted":        sum(1 for r in rows if not r["missing"])}
+
+
+def handover_bars(today=None):
+    """The checkpoint bar in force, from sprint_planning.yaml.
+
+    The bar that matters is the next checkpoint you have to clear, so pick the first one
+    still ahead; once they are all past, the last one stands. Bars are guidance, not gates
+    (SOP v2), so this is reported, never enforced.
+    """
+    try:
+        rows = (_yaml("sprint_planning.yaml") or {}).get("handover_bars") or []
+    except Exception:
+        return None
+    iso = lambda v: v.isoformat() if hasattr(v, "isoformat") else str(v).strip()
+    out = []
+    for r in rows:
+        if not isinstance(r, dict) or not r.get("date"):
+            continue
+        out.append({"checkpoint": r.get("checkpoint", ""), "date": iso(r["date"]),
+                    "bars": {str(k): float(v) for k, v in (r.get("bars") or {}).items()},
+                    "allGreen": [str(x) for x in (r.get("all_green") or [])]})
+    if not out:
+        return None
+    out.sort(key=lambda r: r["date"])
+    now = iso(today or dt.date.today())
+    nxt = next((r for r in out if r["date"] >= now), out[-1])
+
+    per = {}
+    for cyc in {c for r in out for c in r["bars"]}:
+        ahead = [r for r in out if r["date"] >= now and cyc in r["bars"]]
+        past = [r for r in out if r["date"] < now and cyc in r["bars"]]
+        src = ahead[0] if ahead else (past[-1] if past else None)
+        if src:
+            per[cyc] = {"bar": src["bars"][cyc], "checkpoint": src["checkpoint"],
+                        "date": src["date"], "passed": src["date"] < now,
+                        "allGreen": cyc in src["allGreen"]}
+    return {"checkpoint": nxt["checkpoint"], "date": nxt["date"],
+            "bars": nxt["bars"], "allGreen": nxt["allGreen"], "perCycle": per}
+
+
+def cycle_label(year, month):
+    """"2026-10" -> "Oct-26", matching the Planning Cycle field's option format."""
+    return f"{_MONTH_ABBR[month - 1]}-{str(year)[2:]}"
+
+
+_MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def month_capacity(year, month, window=None):
+    """Capacity for one planning cycle.
+
+    Named for the calendar month it labels, but the WINDOW is `window` when the caller
+    supplies one (the planner lets you pick the dates), else the configured planning cycle,
+    else the calendar month.
     Same per-person model as build() — net working days (minus leaves / mandatory
-    holidays / on-call) and effective SP (net × role efficiency) — summarised for the
-    month with no daily grid. On-call uses the rota-aligned weekly probe (oncall_by_week)
-    so it's ~4-5 OpsGenie calls per month, not one per working day. OpsGenie resolves
-    both past and future dates, so historical months compute the same way."""
+    holidays / on-call) and effective SP (net × role efficiency). On-call uses the
+    rota-aligned weekly probe (oncall_by_week) so it's ~4-5 OpsGenie calls per window,
+    not one per working day. OpsGenie resolves both past and future dates, so historical
+    windows compute the same way."""
     eff = eff_by_role()
     team = roster()
     email2canon = {p["email"]: p["canonical"] for p in team}
 
-    first, last = _month_bounds(year, month)
+    label = cycle_label(year, month)
+    # precedence: an explicit window the planner passed in, then config, then the month
+    win = window or cycle_window(label)
+    first, last = win if win else _month_bounds(year, month)
     days = [first + dt.timedelta(days=i) for i in range((last - first).days + 1)]
     working = [d for d in days if d.weekday() < 5]
     hol = holidays_for(first.year, days)
@@ -1841,8 +2316,13 @@ def month_capacity(year, month):
     team_sp = round(sum(p["sp"] for p in people), 1)
     nominal_sp = round(sum(wd * eff.get(p["role"], 0) for p in people), 1)
     return {
-        "key": f"{first.year}-{first.month:02d}",
-        "label": first.strftime("%B %Y"),
+        "v": MONTH_SCHEMA,
+        "key": f"{year}-{month:02d}",
+        "cycle": label,
+        "cycleWindow": bool(win),
+        "customWindow": bool(window),
+        "label": (f"{label} \u00b7 {first.strftime('%-d %b')} \u2192 {last.strftime('%-d %b')}"
+                  if win else first.strftime("%B %Y")),
         "start": first.isoformat(), "end": last.isoformat(),
         "workingDays": wd,
         "days": day_meta,
