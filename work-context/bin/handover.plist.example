@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Daily handover-readiness snapshot.
+
+  Template, not a live agent: the real plist carries an absolute home directory and a
+  user-specific label, neither of which belongs in a tracked file. Install it with:
+
+      ROOT=$(cd "$(dirname "$0")/.." && pwd -P)          # your work-context checkout
+      LABEL=com.$(whoami).handover
+      sed -e "s|{{ROOT}}|$ROOT|g" -e "s|{{LABEL}}|$LABEL|g" \
+          bin/handover.plist.example > ~/Library/LaunchAgents/$LABEL.plist
+      launchctl load ~/Library/LaunchAgents/$LABEL.plist
+
+  The schedule exists for the history, not the cache. The published average moves on its
+  own as initiatives join and leave the cycle, each new one entering at score 1, so it can
+  fall while things improve and rise when a red row departs. A trend only means anything if
+  the row and status counts were recorded beside it every day.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{{LABEL}}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>{{ROOT}}/bin/run-handover.sh</string>
+    </array>
+
+    <!-- Daily, before standup. The readiness CLI walks every tagged team's epics across
+         projects, so it is seconds warm and longer cold. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>8</integer>
+        <key>Minute</key><integer>30</integer>
+    </dict>
+
+    <!-- Catch up if the machine was asleep at 08:30, so the trend keeps no gaps. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- launchd's default PATH is minimal; the readiness CLI shells out to bash and git. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>{{ROOT}}/state/handover-launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{ROOT}}/state/handover-launchd.log</string>
+</dict>
+</plist>

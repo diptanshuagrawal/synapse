@@ -32,3 +32,47 @@ jira_fields:
   epic_planning_cycle: customfield_00000           # "Planning Cycle" checkboxes (multi-value)
   epic_org_priority: customfield_00000             # "Org Priority" select
   challenges: customfield_00000                    # "Challenges" multi-select
+  # Initiative-level delivery dates (JPD 'Target/Actual' fields; stored as strings).
+  target_go_live: customfield_00000                # "Target Go-Live Date"
+  target_handover: customfield_00000               # "Target Handover Date"
+  actual_go_live: customfield_00000                # "Actual Go-Live Date"
+  actual_handover: customfield_00000               # "Actual Handover Date"
+  # JPD archive is a FIELD, not a status: archived ideas keep an open status, so a
+  # statusCategory filter does not exclude them.
+  idea_archived: customfield_00000                 # "Idea archived" (option: Yes)
+  idea_archived_on: customfield_00000              # "Idea archived on" (datetime)
+
+# A planning cycle is TWO SPRINTS, not a calendar month: a cycle labelled Oct-26 may run
+# 7 Oct to 3 Nov. Capacity and the planner's schedule lane use these windows, so the right
+# weekends and public holidays are counted. Keys must match the Jira Planning Cycle option
+# text exactly ("Oct-26"). A cycle with no entry falls back to the calendar month it names.
+#
+# Windows are listed rather than derived from a cadence anchor on purpose: thirteen 4-week
+# cycles do not map onto twelve month labels, so a derived calendar drifts silently.
+planning_cycles:
+  Oct-26: {start: 2026-10-07, end: 2026-11-03}   # sprints 1 + 2
+  Nov-26: {start: 2026-11-04, end: 2026-12-01}   # sprints 3 + 4
+
+# Handover Health checkpoint bars (SOP v2, ON-26). Guidance, not gates. The T-1 Oct bar
+# additionally wants EVERY row green, which an average above 8 does not guarantee.
+handover_bars:
+  - checkpoint: End of Planning/Handover Week (T-2)
+    date: 2026-09-25
+    bars: {Oct-26: 7, Nov-26: 5}
+  - checkpoint: End of Gap Closure Week (T-1)
+    date: 2026-10-02
+    bars: {Oct-26: 8, Nov-26: 6}
+    all_green: [Oct-26]
+  - checkpoint: Before month 2 sprints start
+    date: 2026-11-03
+    bars: {Nov-26: 8}
+
+# The program team's own readiness CLI is the source of truth for the handover score.
+# Reimplementing it drifts: it also counts rows from LINKED EPICS when the initiative does
+# not declare your POD ("POD not declared"), and it reads the Horizontals field as well as
+# PODs, so a JQL on PODs alone under-counts. The CLI gates on its workspace dir, so both
+# the directory and the script are configured here rather than assumed.
+handover_readiness:
+  workspace: /path/to/your/em-planning-workspace
+  script: ~/.claude/plugins/cache/<org>/engg-cycle-planner/<ver>/skills/em-handover-readiness/scripts/run.sh
+  args: [readiness, --json]

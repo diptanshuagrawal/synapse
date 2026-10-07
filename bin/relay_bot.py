@@ -359,9 +359,16 @@ def do_post_docsync(run_id):
     client = WebClient(token=secret("relay_slack_bot_token"))
     if not docs:
         print("posted: no docs awaiting review (needs_confirm is empty)"); return
-    r = client.chat_postMessage(channel=ch, text=f"{len(docs)} docs awaiting review — {run_id}",
-                                blocks=build_docsync_blocks(run_id, docs))
-    print(f"posted {len(docs)} discovery cards to {ch} ts={r['ts']}")
+    # Slack caps a message at 50 blocks; each doc is 3 blocks (section+actions+divider)
+    # plus ~4 framing blocks, so chunk at 15 docs/message to stay under the limit.
+    CHUNK = 15
+    chunks = [docs[i:i + CHUNK] for i in range(0, len(docs), CHUNK)]
+    for n, chunk in enumerate(chunks, 1):
+        suffix = f" [{n}/{len(chunks)}]" if len(chunks) > 1 else ""
+        client.chat_postMessage(channel=ch,
+                                text=f"{len(docs)} docs awaiting review — {run_id}{suffix}",
+                                blocks=build_docsync_blocks(run_id, chunk))
+    print(f"posted {len(docs)} discovery cards to {ch} in {len(chunks)} message(s)")
 
 
 # ---------- doc-sync drift-finding cards ----------

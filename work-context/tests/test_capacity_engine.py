@@ -294,3 +294,76 @@ def test_window_months_reversed_range_raises():
     import pytest
     with pytest.raises(ValueError):
         ce._window_months("2026-08-01", "2026-07-01")
+
+
+# --- leave actor / roster reconciliation ----------------------------------
+# Regression: callers read leaves as `leaves.get(p["canonical"], {})`, so a
+# handle that drifts from the roster is indistinguishable from "took no leave".
+# Sai Vignesh's rows were filed `saivignesh` while the roster said
+# `sai-vignesh`; his 19-23 Oct vacation rendered as leave=0 and his capacity
+# was overstated by 4 days. Nothing raised.
+
+import pytest
+
+
+def _roster(monkeypatch, members):
+    monkeypatch.setattr(ce, "roster", lambda: members)
+
+
+def _people(monkeypatch, entries):
+    monkeypatch.setattr(ce, "_yaml", lambda name: {"people": entries})
+
+
+_ROSTER = [{"name": "Dev One", "canonical": "dev-one", "role": "SDE2",
+            "email": "dev1@example.com"}]
+_ENTRIES = [{"canonical": "dev-one", "email": "dev1@example.com",
+             "slack_id": "U111"}]
+
+
+def test_leave_actors_resolve_accepts_roster_handles(monkeypatch):
+    _roster(monkeypatch, _ROSTER)
+    _people(monkeypatch, _ENTRIES)
+    ce._assert_leave_actors_resolve({"dev-one"})  # no raise
+
+
+def test_leave_actors_resolve_allows_ex_team_member(monkeypatch):
+    """Rows for someone who left must stay unread, not blow up the month."""
+    _roster(monkeypatch, _ROSTER)
+    _people(monkeypatch, _ENTRIES + [
+        {"canonical": "gone-dev", "email": "gone@example.com", "slack_id": "U999"}])
+    ce._assert_leave_actors_resolve({"dev-one", "gone-dev"})  # no raise
+
+
+def test_leave_actors_resolve_raises_on_normalised_collision(monkeypatch):
+    """The 2026-10-06 shape: same human, hyphen dropped."""
+    _roster(monkeypatch, _ROSTER)
+    _people(monkeypatch, _ENTRIES)
+    with pytest.raises(ce.LeaveActorSplit) as ei:
+        ce._assert_leave_actors_resolve({"devone"})
+    msg = str(ei.value)
+    assert "devone" in msg and "dev-one" in msg
+    assert "UPDATE team_leaves" in msg          # tells you how to fix it
+
+
+def test_leave_actors_resolve_raises_on_shared_email(monkeypatch):
+    """A split too far apart to normalise, caught via people.yaml identity."""
+    _roster(monkeypatch, _ROSTER)
+    _people(monkeypatch, _ENTRIES + [
+        {"canonical": "d1-legacy", "email": "dev1@example.com"}])
+    with pytest.raises(ce.LeaveActorSplit, match="shares email"):
+        ce._assert_leave_actors_resolve({"d1-legacy"})
+
+
+def test_leave_actors_resolve_raises_on_shared_slack_id(monkeypatch):
+    _roster(monkeypatch, _ROSTER)
+    _people(monkeypatch, _ENTRIES + [
+        {"canonical": "d1-legacy", "email": "other@example.com",
+         "slack_id": "U111"}])
+    with pytest.raises(ce.LeaveActorSplit, match="shares slack_id"):
+        ce._assert_leave_actors_resolve({"d1-legacy"})
+
+
+def test_norm_handle_ignores_separators_and_case():
+    assert ce._norm_handle("sai-vignesh") == ce._norm_handle("SaiVignesh")
+    assert ce._norm_handle("dev_one") == ce._norm_handle("dev-one")
+    assert ce._norm_handle(None) == ""
