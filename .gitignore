@@ -170,5 +170,3 @@ bin/txn_watch.py
 work-context/config/txn_watch.example.yaml
 # review tooling: names real developers and quotes their work; never publishable
 work-context/derive/synapse_reviews.py
-# hardcodes the project key and names it in prose; publishable once it reads config
-work-context/derive/synapse_sprint.py

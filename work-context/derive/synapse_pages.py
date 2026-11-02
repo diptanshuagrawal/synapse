@@ -24,13 +24,33 @@ sys.path.insert(0, ROOT)
 DB = os.path.join(ROOT, "index", "events.db")
 
 import synapse_nav
-import synapse_reviews
 import synapse_prq
 import synapse_sprint
 import yaml
 import importlib
 
+# The review tooling names real developers and quotes their work, so it is one of the
+# few modules in this tree that cannot ship. Imported defensively rather than assumed:
+# without this the whole page server fails to import in any checkout that does not have
+# it, which is every public one.
+try:
+    import synapse_reviews
+except ImportError:
+    synapse_reviews = None
+
 _MTIMES = {}
+
+
+def _no_reviews():
+    """What /reviews says in a checkout that does not have the review tooling.
+
+    Saying it plainly beats a 500: the module is absent on purpose, not broken.
+    """
+    return ("<!doctype html><meta charset=utf-8><title>Reviews</title>"
+            "<p style=\"font:14px system-ui;max-width:46em;margin:3em auto\">"
+            "The performance-review view is not part of this checkout. It names real "
+            "people and quotes their work, so it is kept out of the published tree "
+            "(see <code>.gitignore</code>).</p>")
 
 
 def _fresh():
@@ -38,6 +58,8 @@ def _fresh():
     without relaunching the app. In-flight Claude runs (_runs, _lock) carry over to the new module."""
     global synapse_reviews
     for mod in (synapse_nav, synapse_reviews, synapse_prq, synapse_sprint):
+        if mod is None:
+            continue
         try:
             m = os.path.getmtime(mod.__file__)
         except OSError:
@@ -760,7 +782,8 @@ PAGES = {
     "/velocity": ("velocity", page_velocity),
     "/services": ("services", page_services),
     "/timeline": ("timeline", page_timeline),
-    "/reviews": ("reviews", lambda: synapse_reviews.page(_doc)),
+    "/reviews": ("reviews", lambda: synapse_reviews.page(_doc) if synapse_reviews
+                 else _no_reviews()),
 }
 
 
@@ -817,6 +840,10 @@ class Handler(BaseHTTPRequestHandler):
                            "application/json")
                 return
             if path.startswith("/api/reviews/"):
+                if synapse_reviews is None:
+                    self._send(b'{"__error__":"review tooling is not in this checkout"}',
+                               "application/json", 404)
+                    return
                 self._send(json.dumps(synapse_reviews.handle_get(path, qs)).encode(), "application/json")
                 return
             if path.startswith("/reviews/"):
