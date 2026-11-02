@@ -17,7 +17,7 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Modules deliberately kept out of the published tree. Keep in step with .gitignore.
-HELD_BACK = {"synapse_reviews", "oncall_closure"}
+HELD_BACK = {"synapse_reviews"}
 
 
 def _sources():
@@ -99,6 +99,11 @@ def test_the_block_mapping_is_configured():
     assert tw.block_keys(cfg) == {"X some_schema.table": "X_KEY"}
 
 
+# The same rule as txn_watch's: nothing the config names may also sit in the source.
+# oncall_closure shares that config, so it is checked the same way.
+CONFIG_DRIVEN = ("bin/txn_watch.py", "bin/oncall_closure.py")
+
+
 def test_no_configured_name_is_also_hardcoded_in_the_source():
     """The names that kept this file unpublishable must live only in config.
 
@@ -107,21 +112,28 @@ def test_no_configured_name_is_also_hardcoded_in_the_source():
     source too. So the names are read from the local config, which is gitignored and is
     where they are supposed to be, and the test skips where there is none.
     """
-    path = os.path.join(os.path.dirname(ROOT), "bin", "txn_watch.py")
     cfg_path = os.path.join(ROOT, "config", "txn_watch.yaml")
-    if not os.path.exists(path) or not os.path.exists(cfg_path):
-        pytest.skip("txn_watch or its local config is not in this checkout")
+    paths = [os.path.join(os.path.dirname(ROOT), p) for p in CONFIG_DRIVEN]
+    paths = [p for p in paths if os.path.exists(p)]
+    if not paths or not os.path.exists(cfg_path):
+        pytest.skip("those tools or their local config are not in this checkout")
     import yaml
     with open(cfg_path, encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh) or {}
-    with open(path, encoding="utf-8") as fh:
-        src = fh.read()
 
     systems = cfg.get("systems") or {}
-    names = [str(v) for v in (systems.get("labels") or {}).values() if str(v).strip()]
-    names += [str(k) for k in (systems.get("blocks") or {}) if str(k).strip()]
-    names += [str((cfg.get("oncall_api") or {}).get("base") or "")]
-    names = [n for n in names if len(n) > 3]
+    slack = cfg.get("slack") or {}
+    names = [str(v) for v in (systems.get("labels") or {}).values()]
+    names += [str(k) for k in (systems.get("blocks") or {})]
+    names += [str((cfg.get("oncall_api") or {}).get("base") or ""),
+              str(slack.get("reporter_uid") or ""),
+              str(slack.get("workspace_host") or "")]
+    names = [n for n in names if len(n.strip()) > 3]
     assert names, "the local config names nothing, so this test checked nothing"
-    back = sorted(n for n in names if n in src)
-    assert not back, f"{len(back)} configured name(s) are hardcoded in the source again"
+
+    for path in paths:
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        back = sorted(n for n in names if n in src)
+        assert not back, (f"{os.path.basename(path)} hardcodes {len(back)} name(s) the "
+                          "config already carries")

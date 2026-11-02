@@ -12,6 +12,8 @@ slack:
   approver_subteams: []       # members of these subteams may click Approve/Reject
   source_channels: []         # linked-thread channels the bot may join + read; ["*"] = any public
   alert_user: ""              # DM'd when the Astra token expires / setup breaks
+  reporter_uid: ""            # Oncall Reporter bot's user id; its posts are not replies to read
+  workspace_host: ""          # e.g. yourworkspace.slack.com — used to build message permalinks
 skill:
   python: "~/.claude/skills/txn-status-summary/.venv/bin/python"
   script: "~/.claude/skills/txn-status-summary/scripts/txn_status.py"
