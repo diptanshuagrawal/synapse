@@ -1,6 +1,6 @@
 ---
 name: ingest-autofix
-description: Daily at 16:00 IST, best-effort (single run, no retries) — resolves the ingest validators' "unmapped actor" attribution warnings by looking each actor up in Atlassian and adding a people.yaml mapping. Tiered-auto: the safe class (one org-domain human → org, clear bot/service → external) is applied automatically; the risky class (merge-into-existing-person, possible teammate, ambiguous) is parked for owner review. Posts a run-summary to #rollup.
+description: Daily at 16:00 IST, best-effort (single run, no retries) — resolves the ingest validators' "unmapped actor" attribution warnings by looking each actor up in Atlassian and adding a people.yaml mapping. Tiered-auto: the safe class (one org-domain human → org, clear bot/service → external) is applied automatically; the risky class (merge-into-existing-person, possible teammate, ambiguous) is parked for owner review. Posts a run-summary to __ROLLUP_CHANNEL__.
 ---
 
 Resolve ingest attribution warnings and post a run-summary to Slack.
@@ -14,7 +14,7 @@ replies and the topic_brief pipeline-coverage WARNs are NOT auto-fixable here �
 REPORTS them so they stay visible (never silently "fixed").
 
 config/people.yaml is gitignored (real names/emails never reach the public repo), so editing
-it is leak-safe. #rollup is the owner's internal channel — real names are fine there (standup
+it is leak-safe. __ROLLUP_CHANNEL__ is the owner's internal channel — real names are fine there (standup
 posts them too).
 
 This is a BEST-EFFORT routine: it fires once per day at 16:00 IST and does a single pass.
@@ -120,7 +120,7 @@ Read the cached state files and extract any WARN/FAIL (do not act on them):
 Summarize as counts + the top 2-3 channels/clusters, with a one-line "needs re-backfill /
 finalize_refresh — not auto-fixable" note.
 
-## STEP 6 — Post the run-summary to #rollup (channel ID __ROLLUP_CHANNEL__)
+## STEP 6 — Post the run-summary to __ROLLUP_CHANNEL__
 Use the slack send-message tool with that channel ID. It renders STANDARD markdown — write
 `[text](url)` and `**bold**` directly (not Slack mrkdwn). Keep it tight:
 - Header: "Ingest auto-fix — <today YYYY-MM-DD>".
@@ -134,8 +134,8 @@ Use the slack send-message tool with that channel ID. It renders STANDARD markdo
   (N clusters) + embedding staleness — one line each.
 - If `n_unmapped_total` was 0 and nothing parked: a single line
   "All ingest actors already scoped — nothing to fix.".
-If the post can't be delivered (bot not in #rollup, channel archived): DO NOT silently fail —
-report the error in this run's output. The bot must be invited to #rollup (__ROLLUP_CHANNEL__).
+If the post can't be delivered (bot not in __ROLLUP_CHANNEL__, channel archived): DO NOT silently fail —
+report the error in this run's output. The bot must be invited to __ROLLUP_CHANNEL__.
 
 CRITICAL: this run IS a fresh chat session — the identity judgment (STEP 2) happens HERE, in
 chat. NEVER call the Anthropic API from a script and NEVER let a script classify. Scripts

@@ -8,6 +8,7 @@ One isolated server so the big dashboard/planner files are never touched. Serves
   /docs          doc-drift status
   /meetings      upcoming meetings + notes
   /ask           cross-source narrative console (chat round-trip)
+  /reviews       performance-cycle view for calibration (editable; see synapse_reviews.py)
 
 Read-only over index/events.db + config. Runs internal-only behind synapse_server.
 
@@ -23,7 +24,33 @@ sys.path.insert(0, ROOT)
 DB = os.path.join(ROOT, "index", "events.db")
 
 import synapse_nav
+import synapse_reviews
+import synapse_prq
+import synapse_sprint
 import yaml
+import importlib
+
+_MTIMES = {}
+
+
+def _fresh():
+    """Hot-reload the reviews and nav modules when their source changed, so Cmd+R shows new code
+    without relaunching the app. In-flight Claude runs (_runs, _lock) carry over to the new module."""
+    global synapse_reviews
+    for mod in (synapse_nav, synapse_reviews, synapse_prq, synapse_sprint):
+        try:
+            m = os.path.getmtime(mod.__file__)
+        except OSError:
+            continue
+        if _MTIMES.setdefault(mod.__name__, m) == m:
+            continue
+        _MTIMES[mod.__name__] = m
+        if mod is synapse_reviews:
+            runs, lock = mod._runs, mod._lock
+            synapse_reviews = importlib.reload(mod)
+            synapse_reviews._runs, synapse_reviews._lock = runs, lock
+        else:
+            importlib.reload(mod)
 
 try:
     import jira_metrics
@@ -724,7 +751,7 @@ def page_soon(title, icon, note):
 
 PAGES = {
     "/people": ("people", page_people),
-    "/pr-friction": ("pr", page_pr_friction),
+    "/pr-friction": ("reviews", lambda: '<meta http-equiv="refresh" content="0;url=/reviews?tab=pr">'),
     "/releases": ("releases", page_releases),
     "/docs": ("docs", page_docs),
     "/meetings": ("meetings", page_meetings),
@@ -733,6 +760,7 @@ PAGES = {
     "/velocity": ("velocity", page_velocity),
     "/services": ("services", page_services),
     "/timeline": ("timeline", page_timeline),
+    "/reviews": ("reviews", lambda: synapse_reviews.page(_doc)),
 }
 
 
@@ -749,6 +777,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        _fresh()
         u = urlparse(self.path)
         path, qs = u.path, parse_qs(u.query)
         try:
@@ -757,7 +786,9 @@ class Handler(BaseHTTPRequestHandler):
                            "application/json")
                 return
             if path == "/api/pr-friction":
-                self._send(json.dumps(pr_friction_report()).encode(), "application/json")
+                with _conn() as c:
+                    d = synapse_prq.report(c, _people(), _lookup(), qs.get("w", ["h1"])[0])
+                self._send(json.dumps(d).encode(), "application/json")
                 return
             if path == "/api/releases":
                 self._send(json.dumps(releases_report()).encode(), "application/json")
@@ -785,6 +816,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(json.dumps(timeline_report(qs.get("q", [""])[0])).encode(),
                            "application/json")
                 return
+            if path.startswith("/api/reviews/"):
+                self._send(json.dumps(synapse_reviews.handle_get(path, qs)).encode(), "application/json")
+                return
+            if path.startswith("/reviews/"):
+                sub = synapse_reviews.subpage(path)
+                if sub:
+                    self._send(sub.encode())
+                    return
             if path in PAGES:
                 active, builder = PAGES[path]
                 html = synapse_nav.inject_html(builder(), active)
@@ -795,7 +834,22 @@ class Handler(BaseHTTPRequestHandler):
             self._send(json.dumps({"error": str(e)}).encode(), "application/json", 500)
 
     def do_POST(self):
-        if urlparse(self.path).path == "/api/ask-dump":
+        _fresh()
+        u = urlparse(self.path)
+        if u.path.startswith("/api/reviews/"):
+            try:
+                n = int(self.headers.get("Content-Length", 0))
+                if n > 20 * 1024 * 1024:
+                    raise ValueError("upload too large")
+                body = self.rfile.read(n) if n else b""
+                out = synapse_reviews.handle_post(u.path, parse_qs(u.query), body, self.headers)
+                self._send(json.dumps(out).encode(), "application/json")
+            except KeyError:
+                self._send(b"not found", code=404)
+            except Exception as e:
+                self._send(json.dumps({"error": str(e)}).encode(), "application/json", 400)
+            return
+        if u.path == "/api/ask-dump":
             try:
                 n = int(self.headers.get("Content-Length", 0))
                 q = json.loads(self.rfile.read(n) or b"{}").get("question", "").strip()

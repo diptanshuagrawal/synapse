@@ -232,8 +232,8 @@ def _check_identity_sane() -> list[str]:
     "no leaves" rather than raising.
 
     That cost us the 2026-10-06 run: a stale `scope: org` duplicate of
-    Sai Vignesh (canonical `saivignesh`, same email/slack_id/jira_id as his
-    `scope: team` entry with canonical `sai-vignesh`) won the slack_id map,
+    One teammate (canonical `devname`, same email/slack_id/jira_id as his
+    `scope: team` entry with canonical `dev-name`) won the slack_id map,
     so every leave he announced was filed under a handle the Synapse
     monthly tab never reads. His 19-23 Oct vacation showed as leave=0.
 

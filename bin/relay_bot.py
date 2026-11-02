@@ -23,6 +23,9 @@ Consumers: /ticketize and /doc-sync-sweep. Roles:
                            recorded so it's never re-proposed. Owner-gated, RELAY_APPLY_MODE-gated.
   (no args)              : run the Socket Mode listener — handle tkz:, dsc:, dsf:, ugd: and hk:
                            button clicks (owner-only), apply the decision, and update the message.
+                           Also txn: clicks on bin/txn_watch.py auto-check cards (any member of
+                           txn_watch.yaml approver_subteams): Approve → post the reply on the
+                           issue's original (source) thread, Reject → dismiss.
 
 Config: work-context/config/ticketize.yaml (channel_id, owner_slack_id, fallback_epic, …).
 Tokens: ~/.secrets/relay_slack_bot_token (xoxb), ~/.secrets/relay_slack_app_token (xapp).
@@ -32,7 +35,7 @@ APPLY SAFETY: env RELAY_APPLY_MODE = dry (default) | live.
   live → clicks invoke the deterministic apply (bin/ticketize_apply.py).
 This lets us test the Slack loop with zero Jira risk, then flip to live.
 """
-import os, re, sys, json, subprocess
+import os, re, sys, json, subprocess, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(ROOT, "work-context/config/ticketize.yaml")
@@ -890,6 +893,126 @@ def run_listener():
         if ok and mode == "live":
             update_card(client, body["channel"]["id"], body["message"]["ts"], f"hkact_{key}",
                         f"🗑️ skipped — {note}", blocks=body["message"]["blocks"])
+
+    # ---- txn auto-check cards (bin/txn_watch.py): Approve → post reply in thread, Reject → dismiss ----
+    # Unlike the owner-only cards above, any member of txn_watch.yaml approver_subteams may act.
+    import txn_watch as tw
+
+    def is_txn_approver(body, client):
+        uid = body["user"]["id"]
+        allowed = {owner}
+        for sid in (tw.load_cfg()["slack"].get("approver_subteams") or []):
+            try:
+                allowed |= set(client.usergroups_users_list(usergroup=sid)["users"])
+            except Exception as e:
+                print(f"usergroup {sid} lookup failed: {e}", file=sys.stderr)
+        if uid not in allowed:
+            client.chat_postEphemeral(channel=body["channel"]["id"], user=uid,
+                                      text="Only the txn oncall devs can action this card.")
+            return False
+        return True
+
+    def _on_txn(decision):
+        def handler(ack, body, client, action):
+            ack()
+            if not is_txn_approver(body, client):
+                return
+            key = action["action_id"].split(":")[1]
+            it = tw.load_state()["issues"].get(key) or {}
+            ch, card_ts, uid = body["channel"]["id"], body["message"]["ts"], body["user"]["id"]
+            thread = body["message"].get("thread_ts") or it.get("ts")
+            if decision == "approve":
+                if mode != "live":
+                    client.chat_postEphemeral(channel=ch, user=uid, text="🧪 dry — would post the reply; set RELAY_APPLY_MODE=live")
+                    return
+                if not it.get("reply"):
+                    client.chat_postEphemeral(channel=ch, user=uid, text="⚠️ reply text not found in txn_watch state")
+                    return
+                # Post where the requester is: the issue's source thread (Issue Link). Fall back to
+                # the oncall thread when there's no link or the bot can't post there.
+                src = it.get("src")
+                if not src:
+                    parent = client.conversations_history(channel=ch, latest=thread, inclusive=True, limit=1)["messages"][0]
+                    s = tw.source_of(parent)
+                    src = f"{s[0]}/{s[1]}" if s else None
+                where = None
+                if src:
+                    src_ch, src_ts = src.split("/")
+                    try:
+                        tw.ensure_member(client, src_ch, ["*"])
+                        r = client.chat_postMessage(channel=src_ch, thread_ts=src_ts, text=it["reply"])
+                        where = client.chat_getPermalink(channel=src_ch, message_ts=r["ts"])["permalink"]
+                    except Exception as e:
+                        print(f"txn post to source {src} failed: {e}", file=sys.stderr)
+                if where:
+                    status = f"✅ posted on the <{where}|original thread> by <@{uid}>"
+                else:
+                    client.chat_postMessage(channel=ch, thread_ts=thread, text=it["reply"])
+                    status = f"✅ posted here by <@{uid}> (original thread not reachable)"
+                # Mirror the decision into the Oncall Reporter, credited to the clicker.
+                try:
+                    actor = client.users_info(user=uid)["user"]["profile"].get("email") or uid
+                except Exception:
+                    actor = uid
+                # label = the button clicked (txn:<key>:approve:<LABEL>); older cards carry none
+                parts = action["action_id"].split(":")
+                target = parts[3] if len(parts) > 3 else (it.get("label") or tw.closing_status(it["reply"]))
+                if target == "ACKNOWLEDGED" and not tw.was_oncall(actor, time.time(), tw.load_cfg(), float(thread)):
+                    # only the oncall acknowledges: otherwise they'd never see this needs work
+                    status += " · Reporter: left open for the oncall"
+                else:
+                    ok, note = tw.set_issue_status(thread, target, actor, ch)
+                    status += f" · Reporter: {note.lower().replace('_', ' ')}"
+            else:
+                status = f"🗑️ dismissed by <@{uid}>"
+            tw.update_issue(key, status=f"{decision}d", decided_by=uid)
+            update_card(client, ch, card_ts, f"txnact_{key}", status, blocks=body["message"]["blocks"])
+        return handler
+
+    app.action(re.compile(r"^txn:[^:]+:approve(:[A-Z_]+)?$"))(_on_txn("approve"))
+    app.action(re.compile(r"^txn:.*:reject$"))(_on_txn("reject"))
+
+    # ---- closure loop (bin/oncall_closure.py): close-out card buttons + Undo on auto-closes ----
+    def _closure_mem(key, **upd):
+        st = tw.load_state()
+        m = st.setdefault("closure", {}).setdefault(key, {})
+        m.update(upd)
+        tw.save_state(st)
+        return m
+
+    def on_closure(ack, body, client, action):
+        ack()
+        if not is_txn_approver(body, client):
+            return
+        parts = action["action_id"].split(":")          # txc:<key>:set:<STATUS> | keep | undo
+        key, verb = parts[1], parts[2]
+        ch, card_ts, uid = body["channel"]["id"], body["message"]["ts"], body["user"]["id"]
+        issue_ts = key.replace("_", ".")
+        try:
+            actor = client.users_info(user=uid)["user"]["profile"].get("email") or uid
+        except Exception:
+            actor = uid
+        if mode != "live":
+            client.chat_postEphemeral(channel=ch, user=uid, text=f"🧪 dry — would {verb}; set RELAY_APPLY_MODE=live")
+            return
+        if verb == "set":
+            ok, note = tw.set_issue_status(issue_ts, parts[3], actor, ch)
+            if ok:
+                _closure_mem(key, done=True, decided_by=uid, decided=parts[3])
+            status = f"{'✅' if ok else '⚠️'} {parts[3].replace('_', ' ').lower()} by <@{uid}> · {note.lower().replace('_', ' ')}"
+        elif verb == "keep":
+            _closure_mem(key, kept_at=time.time(), decided_by=uid)
+            status = f"⏸️ kept open by <@{uid}>; I'll look again only if the thread gets new messages"
+        else:                                             # undo an auto-close (deliberately unguarded)
+            prev = (tw.load_state().get("closure", {}).get(key) or {}).get("prev") or "ACKNOWLEDGED"
+            ok, note = tw.patch_status(issue_ts, prev, f"{actor} (undo of relay-bot auto-close)", ch)
+            if ok:
+                _closure_mem(key, done=False, undone=True, undone_by=uid)
+            status = (f"↩️ undone by <@{uid}>: back to {prev.lower()}, I won't auto-close it again" if ok
+                      else f"⚠️ undo failed: {note}")
+        update_card(client, ch, card_ts, f"txcact_{key}", status, blocks=body["message"]["blocks"])
+
+    app.action(re.compile(r"^txc:[^:]+:(set:[A-Z_]+|keep|undo)$"))(on_closure)
 
     print(f"relay_bot listening (apply mode = {mode}) …")
     SocketModeHandler(app, secret("relay_slack_app_token")).start()

@@ -299,8 +299,8 @@ def test_window_months_reversed_range_raises():
 # --- leave actor / roster reconciliation ----------------------------------
 # Regression: callers read leaves as `leaves.get(p["canonical"], {})`, so a
 # handle that drifts from the roster is indistinguishable from "took no leave".
-# Sai Vignesh's rows were filed `saivignesh` while the roster said
-# `sai-vignesh`; his 19-23 Oct vacation rendered as leave=0 and his capacity
+# One teammate's rows were filed `devname` while the roster said
+# `dev-name`; his 19-23 Oct vacation rendered as leave=0 and his capacity
 # was overstated by 4 days. Nothing raised.
 
 import pytest
@@ -364,6 +364,110 @@ def test_leave_actors_resolve_raises_on_shared_slack_id(monkeypatch):
 
 
 def test_norm_handle_ignores_separators_and_case():
-    assert ce._norm_handle("sai-vignesh") == ce._norm_handle("SaiVignesh")
+    assert ce._norm_handle("dev-name") == ce._norm_handle("DevName")
     assert ce._norm_handle("dev_one") == ce._norm_handle("dev-one")
     assert ce._norm_handle(None) == ""
+
+
+# ---------------------------------------------------------------- EM leave override
+
+def _mf(tmp_path):
+    return str(tmp_path / "manual_leaves.json")
+
+
+class _Cur(list):
+    """sqlite3 cursors are iterable AND have fetchall(); the real code uses both."""
+    def fetchall(self):
+        return list(self)
+
+
+def _conn(rows):
+    class _Conn:
+        def execute(self, q, args=None):
+            return _Cur([] if "DISTINCT actor" in q else rows)
+    return _Conn()
+
+
+def test_marking_leave_records_who_and_when(tmp_path):
+    """Lowering someone's capacity changes how their delivery reads, so the entry carries
+    provenance rather than appearing as an anonymous fact."""
+    f = _mf(tmp_path)
+    r = ce.set_manual_leave("dev-one", ["2026-10-13"], "L", by="em", note="standup", path=f)
+    assert r["ok"]
+    rec = ce.manual_leaves(f)["dev-one"]["2026-10-13"]
+    assert rec["code"] == "L" and rec["by"] == "em" and rec["note"] == "standup" and rec["at"]
+
+
+def test_present_is_not_the_same_as_clear(tmp_path):
+    """'P' asserts the person WAS working, which must beat an ingested leave. Clearing only
+    removes the override and lets the ingest win again — the two cannot be collapsed."""
+    f = _mf(tmp_path)
+    ce.set_manual_leave("dev-one", ["2026-10-13"], "P", path=f)
+    assert ce.manual_leaves(f)["dev-one"]["2026-10-13"]["code"] == "P"
+    ce.set_manual_leave("dev-one", ["2026-10-13"], "", path=f)
+    assert "dev-one" not in ce.manual_leaves(f)
+
+
+def test_a_bad_code_is_refused(tmp_path):
+    assert "__error__" in ce.set_manual_leave("dev-one", ["2026-10-13"], "Z", path=_mf(tmp_path))
+
+
+def test_a_bad_date_is_refused_before_anything_is_written(tmp_path):
+    f = _mf(tmp_path)
+    assert "__error__" in ce.set_manual_leave("dev-one", ["not-a-date"], "L", path=f)
+    assert ce.manual_leaves(f) == {}
+
+
+def test_a_missing_person_is_refused(tmp_path):
+    assert "__error__" in ce.set_manual_leave("", ["2026-10-13"], "L", path=_mf(tmp_path))
+
+
+def test_no_dates_is_refused(tmp_path):
+    assert "__error__" in ce.set_manual_leave("dev-one", [], "L", path=_mf(tmp_path))
+
+
+def test_a_missing_store_reads_as_empty_not_an_error(tmp_path):
+    assert ce.manual_leaves(str(tmp_path / "nope.json")) == {}
+
+
+def test_overrides_win_over_the_ingest(tmp_path, monkeypatch):
+    """team_leaves is owned by the Slack ingest; the override is the EM contradicting it."""
+    import datetime as _dt
+    monkeypatch.setattr(ce, "MANUAL_LEAVE_FILE", _mf(tmp_path))
+    ce.set_manual_leave("dev-one", ["2026-10-13"], "L", path=_mf(tmp_path))
+
+    monkeypatch.setattr(ce, "get_db", lambda: _conn([]))
+    monkeypatch.setattr(ce, "_assert_leave_actors_resolve", lambda a: None)
+    out = ce.leaves_for(_dt.date(2026, 10, 1), _dt.date(2026, 10, 31))
+    assert out["dev-one"]["2026-10-13"] == "L"
+
+
+def test_present_removes_an_ingested_leave(tmp_path, monkeypatch):
+    import datetime as _dt
+    monkeypatch.setattr(ce, "MANUAL_LEAVE_FILE", _mf(tmp_path))
+    ce.set_manual_leave("dev-one", ["2026-10-13"], "P", path=_mf(tmp_path))
+
+    monkeypatch.setattr(ce, "get_db", lambda: _conn([
+        {"actor": "dev-one", "date_start": "2026-10-13",
+         "date_end": "2026-10-13", "reason": "leave"}]))
+    monkeypatch.setattr(ce, "_assert_leave_actors_resolve", lambda a: None)
+    out = ce.leaves_for(_dt.date(2026, 10, 1), _dt.date(2026, 10, 31))
+    assert "2026-10-13" not in (out.get("dev-one") or {}), \
+        "an EM saying the person was present must clear the reported leave"
+
+
+def test_an_override_outside_the_window_is_ignored(tmp_path, monkeypatch):
+    import datetime as _dt
+    monkeypatch.setattr(ce, "MANUAL_LEAVE_FILE", _mf(tmp_path))
+    ce.set_manual_leave("dev-one", ["2026-12-25"], "L", path=_mf(tmp_path))
+
+    monkeypatch.setattr(ce, "get_db", lambda: _conn([]))
+    monkeypatch.setattr(ce, "_assert_leave_actors_resolve", lambda a: None)
+    out = ce.leaves_for(_dt.date(2026, 10, 1), _dt.date(2026, 10, 31))
+    assert out == {}
+
+
+def test_the_month_payload_version_was_bumped_for_the_manual_marks():
+    """The capacity payload gained `manual`; serving it from a pre-v5 cache would show the
+    new markers against the old day counts."""
+    assert ce.MONTH_SCHEMA >= 5

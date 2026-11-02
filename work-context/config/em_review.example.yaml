@@ -2,9 +2,9 @@
 # and fill your workspace's real Slack channel IDs. The /em-review skill reads the
 # LOCAL file; IDs are workspace-specific and must NOT be committed to this repo.
 cx_channels:
-  # #dsa-live-metrics — daily "CX DSA Ticket Status Report — Touched Unresolved" image
+  # #example-ticket-status — daily "CX DSA Ticket Status Report — Touched Unresolved" image
   daily_tickets:     "REPLACE_ME"
-  # #cx_metrics — daily "CX Product-Level breakdown" image (+ "CX Ticket Ops | Daily Metrics")
+  # #example-cx-metrics — daily "CX Product-Level breakdown" image (+ "CX Ticket Ops | Daily Metrics")
   product_breakdown: "REPLACE_ME"
-  # #freeze_cx_metrics — freeze-specific CX (check when a freeze initiative is under review)
+  # #example-cx-freeze — freeze-specific CX (check when a freeze initiative is under review)
   freeze_cx:         "REPLACE_ME"

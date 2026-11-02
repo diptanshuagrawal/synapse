@@ -100,3 +100,43 @@ def test_happy_path_cleaned():
     cleaned, errs = al._validate(_v(), PENDING, TEAM)
     assert errs == [] and cleaned["is_leave"] is True
     assert cleaned["leaves"][0]["actor"] == "alice"
+
+
+# ── _supersede_older_plans ───────────────────────────────────────────────────
+
+def _leaves_db():
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE team_leaves (id INTEGER PRIMARY KEY, event_id TEXT, "
+                 "actor TEXT, mentioned_at TEXT, date_start TEXT, date_end TEXT)")
+    return conn
+
+
+def _row(conn, ev, actor, at, ds, de=None):
+    conn.execute("INSERT INTO team_leaves (event_id, actor, mentioned_at, date_start, "
+                 "date_end) VALUES (?,?,?,?,?)", (ev, actor, at, ds, de))
+
+
+def test_supersede_drops_overlapping_older_plan_in_same_thread():
+    conn = _leaves_db()
+    _row(conn, "slack:C1:100.1:200.1", "alice", "2026-09-08T00:00:00Z", "2026-09-14", "2026-09-18")
+    _row(conn, "slack:C1:100.1:200.1", "alice", "2026-09-08T00:00:00Z", "2026-10-19", "2026-10-23")
+    _row(conn, "slack:C1:300.1", "alice", "2026-09-09T00:00:00Z", "2026-10-22")       # ad-hoc, not thread
+    _row(conn, "slack:C1:100.1:200.2", "bob", "2026-09-08T00:00:00Z", "2026-10-20")   # other actor
+    new = [{"actor": "alice", "date_start": "2026-10-19", "date_end": "2026-10-21"},
+           {"actor": "alice", "date_start": "2026-11-02", "date_end": None}]
+    _row(conn, "slack:C1:100.1:400.1", "alice", "2026-10-16T00:00:00Z", "2026-10-19", "2026-10-21")
+    dropped = al._supersede_older_plans(conn, "slack:C1:100.1:400.1",
+                                        "2026-10-16T00:00:00Z", new)
+    assert dropped == [("2026-10-19", "2026-10-23")]
+    left = {(r[0], r[1]) for r in conn.execute("SELECT actor, date_start FROM team_leaves")}
+    assert left == {("alice", "2026-09-14"), ("alice", "2026-10-22"),
+                    ("bob", "2026-10-20"), ("alice", "2026-10-19")}
+
+
+def test_supersede_ignores_top_level_events():
+    conn = _leaves_db()
+    _row(conn, "slack:C1:100.1", "alice", "2026-09-08T00:00:00Z", "2026-10-19")
+    assert al._supersede_older_plans(
+        conn, "slack:C1:500.1", "2026-10-16T00:00:00Z",
+        [{"actor": "alice", "date_start": "2026-10-19", "date_end": None}]) == []

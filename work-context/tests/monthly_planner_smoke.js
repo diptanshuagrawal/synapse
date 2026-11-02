@@ -237,9 +237,17 @@ async function fetchStub(p, opts) {
   return { json: async () => out };
 }
 
+// jsdom does not fetch <script src>, so the shared leave editor is run here the way a
+// browser would run it: before the page's own scripts, on the same window.
+function loadLeaveEditor(w) {
+  const js = fs.readFileSync(path.join(__dirname, '..', 'derived', 'leave-editor.js'), 'utf8');
+  w.eval(js);
+}
+
 const dom = new JSDOM(fs.readFileSync(HTML, 'utf8'), {
   runScripts: 'dangerously', url: 'http://localhost/',
   beforeParse(window) {
+    loadLeaveEditor(window);
     window.localStorage.setItem('monthlyPlanner_v1', JSON.stringify(ST0));
     window.fetch = fetchStub;
     const RealDate = window.Date;
@@ -849,6 +857,52 @@ const renderNow = () => w.eval('renderBoard()');
         menu && menu.innerHTML.slice(0, 140));
   check('pod name kept as literal text', menu && menu.textContent.includes('<img src=x'),
         menu && menu.textContent.slice(0, 100));
+
+  console.log('\n--- 9b. the loaded pod is named on screen ---');
+  // The control read "Pods (1)" and the byline said "open pod initiatives", so the pod you
+  // were looking at appeared NOWHERE. When the pod was renamed in Jira the board reloaded
+  // correctly and there was still no way to tell from the screen which pod it was.
+  w.eval('PODS = ["MY POD","OTHER POD"]; ST.pods = null; save(); renderPodMenu(); renderBoard();');
+  await new Promise(r => setTimeout(r, 50));
+  const podBtn = () => w.document.querySelector('#ddPods button');
+  check('the button names the pod, not a count', podBtn().textContent.trim() === 'MY POD',
+        podBtn().textContent);
+  check('not the old "Pods (n)" label', !/Pods \(/.test(podBtn().textContent), podBtn().textContent);
+  check('the full list is on hover', /MY POD/.test(podBtn().getAttribute('title') || ''),
+        podBtn().getAttribute('title'));
+  const bl = () => w.document.querySelector('#board .note').textContent;
+  check('the byline names it too', /open initiatives for MY POD/.test(bl()), bl().trim());
+
+  // it reads the pod the SERVER loaded, so a configured default (ST.pods === null) still shows
+  check('a configured default pod is still named', w.eval('ST.pods') === null, 'ST.pods was set');
+
+  // several selected is a count again — names would not fit
+  w.eval('INITS.pods = ["MY POD","OTHER POD"]; renderPodMenu(); renderBoard();');
+  await new Promise(r => setTimeout(r, 50));
+  check('two pods fall back to a count', podBtn().textContent.trim() === 'Pods (2)',
+        podBtn().textContent);
+  check('and the byline lists both', /for MY POD, OTHER POD/.test(bl()), bl().trim());
+
+  // a renamed pod: the stored name no longer exists, so the filter must drop it rather than
+  // querying a dead option and showing an empty board
+  w.eval('INITS.pods = ["MY POD"]; ST.pods = ["GONE POD"]; PODS = ["MY POD","OTHER POD"]; save(); prunePods();');
+  await new Promise(r => setTimeout(r, 60));
+  check('a pod Jira no longer offers is dropped', w.eval('ST.pods') === null,
+        JSON.stringify(w.eval('JSON.stringify(ST.pods)')));
+  check('and the user is told why',
+        [...w.document.querySelectorAll('.toast')].some(t => /renamed in Jira/.test(t.textContent)),
+        [...w.document.querySelectorAll('.toast')].map(t => t.textContent).join(' | '));
+  check('the plan is explicitly left alone',
+        [...w.document.querySelectorAll('.toast')].some(t => /plan is untouched/.test(t.textContent)),
+        'no reassurance in the toast');
+  // the real guarantee: a rename must not cost a single planned number
+  check('a planned budget survives the prune', w.eval('ST.plan["IDEA-1"].Oct.sp') > 0,
+        JSON.stringify(w.eval('JSON.stringify(ST.plan["IDEA-1"])')));
+  // a still-valid selection must NOT be touched
+  w.eval('ST.pods = ["OTHER POD"]; save(); prunePods();');
+  check('a pod that still exists is kept', JSON.stringify(w.eval('ST.pods')) === '["OTHER POD"]',
+        JSON.stringify(w.eval('JSON.stringify(ST.pods)')));
+  w.eval('ST.pods = null; INITS.pods = ["MY POD"]; save(); renderBoard();');
 
   console.log('\n--- 10. archived ideas: visible, but never counted ---');
   // JPD archiving sets a field and leaves the status alone, so these used to slip past the

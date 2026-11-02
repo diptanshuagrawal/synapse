@@ -331,7 +331,7 @@ def cmd_apply(args):
     # Auto-stub `Recurring …` clusters so chat doesn't have to enrich them.
     # See derive/auto_recurring.py — fixes status/decisions/blockers/first_ts
     # in place. Idempotent; safe to invoke on every apply.
-    from derive.auto_recurring import stub as _auto_stub
+    from derive.auto_recurring import stub_label_prefix as _auto_stub
     auto = _auto_stub(conn, dry_run=False)
     print(json.dumps({
         "applied": applied,

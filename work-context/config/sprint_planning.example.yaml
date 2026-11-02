@@ -18,7 +18,8 @@ oint_pod: "TEAM - Your Pod"   # exact "PODs" field value for your pod; the month
 # Org-specific Jira field / issuetype / link IDs — find them via /rest/api/3/field
 # (search by field name). Instance-specific, so they live here (gitignored), not in code.
 jira_fields:
-  epic_issuetype_id: "10000"                       # Jira's Epic issuetype id (usually 10000)
+  epic_issuetype_id: "10000"
+  task_issuetype_id: "10002"     # the type created tickets get; NOT guessed                       # Jira's Epic issuetype id (usually 10000)
   initiative_link_type: "Polaris work item link"   # link type joining initiative ↔ board epic
   pods: customfield_00000                          # multi-select "PODs" tag on initiatives
   org_priority: customfield_00000                  # org priority select
@@ -76,3 +77,15 @@ handover_readiness:
   workspace: /path/to/your/em-planning-workspace
   script: ~/.claude/plugins/cache/<org>/engg-cycle-planner/<ver>/skills/em-handover-readiness/scripts/run.sh
   args: [readiness, --json]
+
+# Work that exists whether or not anyone plans it: the oncall rota, a standing review
+# slot. A tile matching one of these is sized by the rule rather than by the calendar
+# days it happens to occupy. `match` is a case-insensitive substring of the tile title,
+# and the FIRST matching rule wins, so list the specific ones above the general ones.
+# A points value typed on the row still beats the rule.
+push:
+  standing_work:
+    - match: oncall report
+      points: 2
+    - match: oncall
+      points: 5

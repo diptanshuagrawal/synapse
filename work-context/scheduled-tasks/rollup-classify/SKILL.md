@@ -1,6 +1,6 @@
 ---
 name: rollup-classify
-description: Weekdays from 15:00 IST (retries every 30 min until it succeeds once) — runs the full /rollup (240-day window): keyword pass → chat-classify pending subjects → apply verdicts → derived rebuild, then posts a run-summary to the #rollup channel.
+description: Weekdays from 15:00 IST (retries every 30 min until it succeeds once) — runs the full /rollup (240-day window): keyword pass → chat-classify pending subjects → apply verdicts → derived rebuild, then posts a run-summary to the __ROLLUP_CHANNEL__ channel.
 ---
 
 Run the full activity rollup and post a run-summary to Slack.
@@ -44,7 +44,7 @@ STEP 3 — Phase 2 (classify) + Phase 3 (apply):
 
 CRITICAL — this run IS a fresh chat session, so the LLM classification happens HERE in this session. NEVER call the Anthropic API from a script and NEVER let a script do the classification. Scripts strip auth; chat does all LLM work. If you ever see an auth/credit error from a script, surface it and STOP — do not fall back to OpenAI chat.
 
-STEP 4 — Post a run-summary to Slack channel #rollup (channel ID __ROLLUP_CHANNEL__):
+STEP 4 — Post a run-summary to Slack channel __ROLLUP_CHANNEL__:
 - Use the slack send-message tool with that channel ID.
 - The send tool renders STANDARD markdown — write `[text](url)` and `**bold**` directly (not Slack mrkdwn).
 - Lead with a one-line header: "Rollup run — <today's date YYYY-MM-DD>".
@@ -53,12 +53,12 @@ STEP 4 — Post a run-summary to Slack channel #rollup (channel ID __ROLLUP_CHAN
   • any epics that needed slug creation (from STEP 2), or "none".
   • the final apply output highlights (verdicts applied, ownership corrections, derived rebuild status).
   • if nothing was pending: a single line "No pending classifications — nothing to roll up today."
-- If the post cannot be delivered (bot not a member of #rollup, channel archived): DO NOT silently fail — report the error clearly in this run's output so it can be fixed. The bot must be invited to #rollup (__ROLLUP_CHANNEL__) for the post to land.
+- If the post cannot be delivered (bot not a member of __ROLLUP_CHANNEL__, channel archived): DO NOT silently fail — report the error clearly in this run's output so it can be fixed. The bot must be invited to __ROLLUP_CHANNEL__ for the post to land.
 
 Read-only on all data SOURCES (events.db reads, Jira, Confluence, gh). The ONLY writes are: the rollup apply (subject_summary + ownership cols + derived rebuild, which is the skill's job) and the Slack post.
 
 ## RECORD SUCCESS (final step — gates the 30-min retry)
-ONLY after this run is CONFIRMED complete — the apply finished (or there was nothing pending) AND the run-summary landed in #rollup — stamp the marker AND release the in-progress lock so the rest of today's fires idle:
+ONLY after this run is CONFIRMED complete — the apply finished (or there was nothing pending) AND the run-summary landed in __ROLLUP_CHANNEL__ — stamp the marker AND release the in-progress lock so the rest of today's fires idle:
 
     TZ=Asia/Kolkata date +%F > __REPO__/work-context/state/last_routine_rollup_success.date
     rm -f __REPO__/work-context/state/rollup_inprogress.lock

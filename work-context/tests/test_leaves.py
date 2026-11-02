@@ -143,9 +143,9 @@ def test_team_emails_empty_when_people_missing(tmp_path, monkeypatch):
 
 
 # --- identity split guard -------------------------------------------------
-# Regression: a stale `scope: org` duplicate of Sai Vignesh (canonical
-# `saivignesh`) shared the email/slack_id of his `scope: team` entry
-# (`sai-vignesh`). It won _load_team_slack_map's dict race, so his leaves were
+# Regression: a stale `scope: org` duplicate of One teammate (canonical
+# `devname`) shared the email/slack_id of his `scope: team` entry
+# (`dev-name`). It won _load_team_slack_map's dict race, so his leaves were
 # filed under a handle capacity_engine never reads and his 19-23 Oct vacation
 # rendered as leave=0 on the Synapse monthly tab. Silent: the engine does
 # `leaves.get(canonical, {})`, which returns empty rather than raising.

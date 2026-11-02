@@ -74,11 +74,31 @@ sl = src.get("slack", {}) or {}; add(sl.get("workspace")); add(sl.get("standup_c
 for c in sl.get("mom_channels", []) or []: add(c)
 
 ppl = load("people.yaml").get("people", []) or []
+
+# Handles that are a PRODUCT, not a person. people.yaml carries bot and integration
+# entries alongside the roster, and their handles are public names that collide with
+# ordinary prose. One of them is literally `claude`, which was emitted as \\bclaude\\b
+# and then blocked every .claude/ path and every mention of the tool, so the whole
+# publish failed on files that leak nothing.
+#
+# Deliberately a small explicit list rather than a rule about email domains: the org
+# has several domains (people sit on all of them) and a domain test drops real
+# colleagues, which is the far worse mistake. A handle only gets here by being a
+# product name.
+BOT_HANDLES = {"claude", "pre-commit", "dependabot", "renovate", "copilot",
+               "slack", "github", "jira", "atlassian", "automation", "bot"}
+
+def add_handle(v):
+    if v and str(v).strip().lower() in BOT_HANDLES:
+        return
+    add(v)
+
 for p in ppl if isinstance(ppl, list) else []:
     if not isinstance(p, dict):
         continue
     add(p.get("email"), literal=True)
-    add(p.get("slack_handle")); add(p.get("github")); add(p.get("git_name"))
+    add_handle(p.get("slack_handle")); add_handle(p.get("github"))
+    add_handle(p.get("git_name"))
     add(p.get("slack_id")); add(p.get("jira_id"))
     nm = p.get("name")
     # Full display name only, and only for real humans (have an email). Skips

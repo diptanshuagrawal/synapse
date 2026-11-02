@@ -152,8 +152,11 @@ def roster():
         if role not in ("SDE1", "SDE2", "SDE3"):
             continue
         seen.add(canon)
+        # The Jira accountId. Carried on the roster rather than looked up per caller,
+        # because a push that cannot find it creates every ticket unassigned and says so
+        # only in a warning nobody reads.
         team.append({"name": p["name"], "canonical": canon, "role": role,
-                     "email": email})
+                     "email": email, "jira_id": p.get("jira_id") or ""})
     return team
 
 
@@ -280,15 +283,15 @@ def _assert_leave_actors_resolve(actors):
     Callers read leaves as `leaves.get(p["canonical"], {})`. A dict miss is
     indistinguishable from "took no leave", so a handle that drifts from the
     roster silently inflates capacity instead of failing. That is exactly how
-    Sai Vignesh's 19-23 Oct vacation showed as leave=0 on the monthly tab: his
-    rows were filed `saivignesh` while the roster said `sai-vignesh`.
+    One teammate's 19-23 Oct vacation showed as leave=0 on the monthly tab: his
+    rows were filed `devname` while the roster said `dev-name`.
 
     Not every unknown actor is a bug — rows for people who left the team, or
     who are excluded from the roster by role, are expected to go unread and
     must keep doing so. The bug has a specific shape: the unknown handle is the
     SAME HUMAN as someone on the roster. Two independent tells, either fatal:
 
-      1. it normalises to a roster handle (`saivignesh` == `sai-vignesh`), or
+      1. it normalises to a roster handle (`devname` == `dev-name`), or
       2. people.yaml gives it the email or slack_id of a roster member.
 
     Tell 2 catches a split whose spellings differ too much to normalise; tell 1
@@ -334,8 +337,73 @@ def _assert_leave_actors_resolve(actors):
             "WHERE actor='<orphan>'.")
 
 
+MANUAL_LEAVE_FILE = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "state", "manual_leaves.json")
+
+
+def manual_leaves(path=None):
+    """EM-entered leave overrides: {canonical: {date_iso: {code, by, at, note}}}.
+
+    Deliberately a SEPARATE store from team_leaves. That table is owned by the Slack ingest,
+    and a leave somebody never posted is a different kind of fact from one they did — mixing
+    them would let the next ingest quietly overwrite the correction, and would leave no way
+    to tell a reported absence from a manager's reconstruction of one. Kept out of git: it
+    names people and dates.
+    """
+    try:
+        with open(path or MANUAL_LEAVE_FILE) as fh:
+            return json.load(fh) or {}
+    except Exception:
+        return {}
+
+
+def set_manual_leave(canonical, dates, code, by="", note="", path=None):
+    """Mark or clear leave for one person on specific dates.
+
+    `code` is 'L' (leave), 'W' (wfh) or '' / None to clear. Clearing writes an explicit
+    PRESENT marker rather than deleting the row, because the override has to be able to
+    contradict the ingest in both directions: a leave recorded in error must stay cleared on
+    the next rebuild, not quietly come back.
+    """
+    canonical = (canonical or "").strip()
+    if not canonical:
+        return {"__error__": "no person"}
+    code = (code or "").strip().upper()
+    if code not in ("L", "W", "P", ""):
+        return {"__error__": f"bad code {code!r}; expected L, W, P or empty"}
+    dates = [d.strip() for d in (dates or []) if str(d).strip()]
+    if not dates:
+        return {"__error__": "no dates"}
+    for d in dates:
+        try:
+            dt.date.fromisoformat(d)
+        except ValueError:
+            return {"__error__": f"bad date {d!r}"}
+    f = path or MANUAL_LEAVE_FILE
+    doc = manual_leaves(f)
+    rec = doc.setdefault(canonical, {})
+    stamp = dt.datetime.now().isoformat(timespec="seconds")
+    for d in dates:
+        if code == "":
+            rec.pop(d, None)                      # drop the override entirely
+        else:
+            rec[d] = {"code": code, "by": by, "at": stamp, "note": note}
+    if not rec:
+        doc.pop(canonical, None)
+    os.makedirs(os.path.dirname(f), exist_ok=True)
+    tmp = f + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(doc, fh, indent=1, sort_keys=True)
+    os.replace(tmp, f)                            # atomic: never a half-written override
+    return {"ok": True, "canonical": canonical, "dates": dates, "code": code,
+            "entries": len(rec)}
+
+
 def leaves_for(window_start, window_end):
-    """canonical -> {date_iso: 'W'|'L'} over [window_start, window_end]."""
+    """canonical -> {date_iso: 'W'|'L'} over [window_start, window_end].
+
+    Manual overrides are applied last and win. 'P' means the EM asserts the person was
+    present, which removes an ingested leave for that day."""
     conn = get_db()
     # Reconcile against every actor in the table, not just the windowed rows —
     # a split that happens to fall outside this window is still a split, and
@@ -360,6 +428,19 @@ def leaves_for(window_start, window_end):
                 if cur.get(d.isoformat()) != "L":
                     cur[d.isoformat()] = code
             d += dt.timedelta(days=1)
+    for canon, days in (manual_leaves() or {}).items():
+        for diso, rec in (days or {}).items():
+            try:
+                d = dt.date.fromisoformat(diso)
+            except ValueError:
+                continue
+            if not (window_start <= d <= window_end):
+                continue
+            c = (rec or {}).get("code") if isinstance(rec, dict) else rec
+            if c == "P":
+                (out.get(canon) or {}).pop(diso, None)
+            elif c in ("L", "W"):
+                out.setdefault(canon, {})[diso] = c
     return out
 
 
@@ -575,7 +656,7 @@ def pod_options():
 # sprint_server discards on-disk initiatives-*.json caches written by an older build.
 INITIATIVES_SCHEMA = 9
 # Bump when month_capacity() changes shape OR its arithmetic, so cached months are dropped.
-MONTH_SCHEMA = 4
+MONTH_SCHEMA = 5   # v5: per-person `manual` marks from the EM leave override
 
 
 def pod_initiatives(pods=None, include_archived=False):
@@ -1970,6 +2051,10 @@ def build(start_override=None):
     oncall = oncall_for(working)
     email2canon = {p["email"]: p["canonical"] for p in team}
     leaves = leaves_for(days[0], days[-1])
+    # Which days were marked by hand rather than reported. leaves_for() has already folded
+    # these into the statuses; this is only the provenance, so a calendar can show an
+    # override AS an override and know what it is cycling from.
+    man = manual_leaves()
     spill = spillover(sprint_id, email2canon)
 
     # invert on-call email -> canonical per date
@@ -1986,10 +2071,13 @@ def build(start_override=None):
 
     people = []
     for p in team:
-        statuses, leave_n, onc_n, wfh_n = [], 0, 0, 0
+        statuses, marks, leave_n, onc_n, wfh_n = [], [], 0, 0, 0
         plv = leaves.get(p["canonical"], {})
+        mine = man.get(p["canonical"]) or {}
         for d in days:
             diso = d.isoformat()
+            rec = mine.get(diso)
+            marks.append(((rec or {}).get("code") if isinstance(rec, dict) else rec) or "")
             if d.weekday() >= 5:
                 statuses.append("WE"); continue
             if diso in mand_hol:
@@ -2006,7 +2094,11 @@ def build(start_override=None):
         sp = round(net * eff.get(p["role"], 0), 2)
         people.append({"name": p["name"], "canonical": p["canonical"],
                        "role": p["role"], "eff": eff.get(p["role"], 0),
-                       "statuses": statuses, "leave": leave_n, "oncall": onc_n,
+                       # Carried through from the roster: anything that assigns work
+                       # needs it, and losing it is silent.
+                       "jira_id": p.get("jira_id") or "",
+                       "statuses": statuses, "manual": marks,
+                       "leave": leave_n, "oncall": onc_n,
                        "wfh": wfh_n, "net": net, "sp": sp,
                        "spillover": spill.get(p["canonical"], [])})
 
@@ -2288,12 +2380,20 @@ def month_capacity(year, month, window=None):
     day_meta = [{"date": d.isoformat(), "dow": d.strftime("%a"),
                  "weekend": d.weekday() >= 5, "holiday": hol.get(d.isoformat())} for d in days]
 
+    # Which days carry an EM override, so the grid can show a manager-entered absence as
+    # distinct from a reported one. The capacity maths treats them identically — the point
+    # of the override is that the day really was lost — but the provenance stays visible.
+    man = manual_leaves()
     people = []
     for p in team:
         plv = leaves.get(p["canonical"], {})
+        mine = man.get(p["canonical"]) or {}
         statuses, leave_n, onc_n, wfh_n = [], 0, 0, 0
+        marks = []
         for d in days:
             diso = d.isoformat()
+            rec = mine.get(diso)
+            marks.append(((rec or {}).get("code") if isinstance(rec, dict) else rec) or "")
             if d.weekday() >= 5:
                 statuses.append("WE"); continue
             if diso in mand_hol:
@@ -2310,8 +2410,10 @@ def month_capacity(year, month, window=None):
         sp = round(net * eff.get(p["role"], 0), 2)
         people.append({"name": p["name"], "canonical": p["canonical"],
                        "role": p["role"], "eff": eff.get(p["role"], 0),
+                       "jira_id": p.get("jira_id") or "",
                        "net": net, "sp": sp, "leave": leave_n, "oncall": onc_n,
-                       "wfh": wfh_n, "statuses": statuses})
+                       "wfh": wfh_n, "statuses": statuses, "manual": marks,
+                       "manualCount": sum(1 for m in marks if m)})
 
     team_sp = round(sum(p["sp"] for p in people), 1)
     nominal_sp = round(sum(wd * eff.get(p["role"], 0) for p in people), 1)

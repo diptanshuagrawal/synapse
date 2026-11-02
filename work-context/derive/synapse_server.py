@@ -32,10 +32,10 @@ DASH_ROUTES = {
 }
 # Path prefixes the ECOSYSTEM PAGES server owns. Checked before falling to planner.
 PAGES_PREFIXES = ("/people", "/pr-friction", "/releases", "/docs", "/meetings", "/ask",
-                  "/topics", "/velocity", "/services", "/timeline",
+                  "/topics", "/velocity", "/services", "/timeline", "/reviews",
                   "/api/people", "/api/pr-friction", "/api/releases", "/api/docs",
                   "/api/meetings", "/api/ask", "/api/topics", "/api/velocity",
-                  "/api/services", "/api/timeline")
+                  "/api/services", "/api/timeline", "/api/reviews")
 _HOP = {"connection", "keep-alive", "transfer-encoding", "te", "trailer",
         "upgrade", "proxy-authorization", "proxy-authenticate", "content-length"}
 

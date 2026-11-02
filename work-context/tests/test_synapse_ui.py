@@ -54,3 +54,32 @@ def test_people_bucket_contract():
     # every bucket target is a declared field
     for target in synapse_pages._BUCKET.values():
         assert target in synapse_pages._FIELDS
+
+
+def test_reviews_page_registered_and_routed():
+    assert "/reviews" in synapse_pages.PAGES
+    assert synapse_nav.active_from_path("/reviews") == "reviews"
+    assert "/reviews".startswith(synapse_server.PAGES_PREFIXES)
+    assert "/api/reviews/data".startswith(synapse_server.PAGES_PREFIXES)
+
+
+def test_reviews_markdown_parsing():
+    import synapse_reviews as r
+    md = "# A | SDE2 | x\n\n## Headline\n\nGood half.\n\n## Rating rationale (SDE2 bar)\n\n- **Execution ME:** slow\n- **Technical EE:** fine\n"
+    s = r._sections(md)
+    assert r._find(s, "Headline") == "Good half."
+    assert r._bullets(r._find(s, "Rating rationale")) == ["Execution ME: slow", "Technical EE: fine"]
+    assert r._rating("**EE**") == "EE" and r._rating("") == ""
+
+
+def test_reviews_safe_ids_reject_traversal():
+    import pytest
+    import synapse_reviews as r
+    for bad in ("../x", "a/b", "", "A"):
+        with pytest.raises(ValueError):
+            r._safe(bad)
+
+
+def test_reviews_extract_json_from_fenced_output():
+    import synapse_reviews as r
+    assert r._extract_json('here:\n```json\n{"a": 1}\n```') == {"a": 1}

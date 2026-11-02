@@ -10,7 +10,7 @@ solely by the always-on launchd watcher `com.example.transcripts-watch`
 (WatchPaths on the inbox + 5-min backstop) and the on-demand Steno "Transcribe"
 button. A routine session is short-lived; a long meeting's whisper run outlives
 it, so a sweep launched here gets SIGTERM'd on session end and can NEVER finish
-(CBS-audit 92-min / a colleague 1-1 72-min, 2026-07-20). So this routine only reads
+(a 92-min audit call and a 72-min 1-1). So this routine only reads
 already-transcribed+ingested meetings (`meeting_recorded` events the watcher
 created) and renders their notes.
 

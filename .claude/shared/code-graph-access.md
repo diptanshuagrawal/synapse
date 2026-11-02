@@ -36,7 +36,7 @@ state-as-of-last-refresh, not live.
 
 ## Unregistered repos — flag, don't guess
 
-If a feature spans a repo NOT in the registry (e.g. `deposits-orch`, `casa-orch`), it isn't
+If a feature spans a repo NOT in the registry (e.g. `some-service`, `another-service`), it isn't
 checkable here. Say so plainly — "not checkable here" / flag the section — and do NOT guess
 its code. On `NOT_FOUND` for the asked alias, list the available aliases from the registry
 and stop.

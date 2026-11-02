@@ -90,6 +90,50 @@ def _invalidate_capacity_caches(months: set[tuple[int, int]]) -> None:
         print("[cache] nothing to invalidate (no built caches on disk)")
 
 
+def _thread_root(event_id: str) -> str | None:
+    """Thread root of a reply event (slack:<chan>:<root>:<ts>), else None."""
+    parts = event_id.split(":")
+    if len(parts) == 4 and parts[0] == "slack":
+        return f"slack:{parts[1]}:{parts[2]}"
+    return None
+
+
+def _supersede_older_plans(conn, ev_id: str, mentioned_at: str,
+                           leaves: list[dict]) -> list[tuple]:
+    """Drop an actor's OLDER rows from the same leave-plan thread that overlap
+    the span of their newer reply. Returns the deleted (date_start, date_end) pairs.
+
+    A leave-plan thread collects "updated plan:" replies that restate the whole
+    plan. Each reply is its own event, so the old reply's rows survived the new
+    one (observed 2026-10-22: one teammate's 19-23 Oct leave stayed after a later
+    reply cut it to 19-21 Oct, marking 22-23 Oct as leave). Scoped to the same
+    thread and actor, and to rows overlapping the new reply's date span, so
+    unrelated ad-hoc leave messages and older non-overlapping plan entries stay.
+    """
+    root = _thread_root(ev_id)
+    if root is None:
+        return []
+    dropped: list[tuple] = []
+    by_actor: dict[str, list[str]] = {}
+    for lv in leaves:
+        if lv["date_start"]:
+            by_actor.setdefault(lv["actor"], []).extend(
+                [lv["date_start"], lv["date_end"] or lv["date_start"]])
+    for actor, dates in by_actor.items():
+        lo, hi = min(dates), max(dates)
+        rows = conn.execute(
+            "SELECT id, date_start, date_end FROM team_leaves "
+            "WHERE actor = ? AND event_id LIKE ? AND event_id != ? "
+            "AND mentioned_at < ? AND date_start IS NOT NULL "
+            "AND date_start <= ? AND COALESCE(date_end, date_start) >= ?",
+            (actor, root + ":%", ev_id, mentioned_at, hi, lo)).fetchall()
+        for rid, ds, de in rows:
+            conn.execute("DELETE FROM team_leaves WHERE id = ?", (rid,))
+            dropped.append((ds, de))
+            print(f"[supersede] {actor} {ds}..{de or ds} replaced by {ev_id}")
+    return dropped
+
+
 def _valid_date(s: str | None) -> bool:
     if s is None:
         return True
@@ -267,6 +311,9 @@ def main() -> int:
             )
             touched_months |= _months_spanned(lv["date_start"], lv["date_end"])
             n_rows += 1
+        for old_ds, old_de in _supersede_older_plans(
+                conn, ev_id, p["mentioned_at"], v["leaves"]):
+            touched_months |= _months_spanned(old_ds, old_de)
     conn.commit()
     print(f"[apply] +{n_rows} leaves rows · +{n_proc} processed gates")
 

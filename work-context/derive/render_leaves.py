@@ -104,17 +104,17 @@ def main() -> int:
         )
     """
 
-    # Active: today between start and end. Treat NULL date_end as same-day.
+    # Active: today between start and end. NULL date_end means a single day
+    # (date_end = date_start), not open-ended.
     active = conn.execute(DEDUP_CTE + """
         SELECT actor, date_start, date_end, reason, mentioned_at,
                channel_id, channel_name, body_excerpt, url
         FROM dedup WHERE rn = 1
           AND date_start IS NOT NULL
           AND date_start <= ?
-          AND (date_end IS NULL OR date_end >= ?)
-          AND (date_start = date_end OR date_end IS NULL OR date_end >= ?)
+          AND COALESCE(date_end, date_start) >= ?
         ORDER BY date_start, actor
-    """, (today, today, today)).fetchall()
+    """, (today, today)).fetchall()
 
     # Upcoming: starts in future and within horizon.
     upcoming = conn.execute(DEDUP_CTE + """
@@ -127,15 +127,16 @@ def main() -> int:
         ORDER BY date_start, actor
     """, (today, horizon)).fetchall()
 
-    # Recent past: ended within last 14d.
+    # Recent past: ended within last 14d. Single-day rows (NULL date_end)
+    # end on date_start.
     recent = conn.execute(DEDUP_CTE + """
         SELECT actor, date_start, date_end, reason, mentioned_at,
                channel_id, channel_name, body_excerpt, url
         FROM dedup WHERE rn = 1
-          AND date_end IS NOT NULL
-          AND date_end < ?
-          AND date_end >= ?
-        ORDER BY date_end DESC, actor
+          AND date_start IS NOT NULL
+          AND COALESCE(date_end, date_start) < ?
+          AND COALESCE(date_end, date_start) >= ?
+        ORDER BY COALESCE(date_end, date_start) DESC, actor
     """, (today, recent_cut)).fetchall()
 
     # Ambiguous: no date_start (chat flagged future leave, date TBD).

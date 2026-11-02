@@ -54,9 +54,27 @@ def _port_busy(port):
         return False
 
 
+def _kill_stale_stack(port):
+    """Kill an orphaned Synapse server left on the port (macOS quit can skip our finally)."""
+    try:
+        pids = subprocess.run(["lsof", "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"],
+                              capture_output=True, text=True).stdout.split()
+    except Exception:
+        return
+    for pid in pids:
+        cmd = subprocess.run(["ps", "-o", "command=", "-p", pid], capture_output=True, text=True).stdout
+        if "synapse_server.py" in cmd:
+            subprocess.run(["pkill", "-TERM", "-P", pid])   # dashboard / planner / pages children
+            subprocess.run(["kill", "-TERM", pid])
+    deadline = time.time() + 5
+    while _port_busy(port) and time.time() < deadline:
+        time.sleep(0.2)
+
+
 def main():
-    # Fail loud if the port is already serving: _wait_up would otherwise accept a
-    # STALE orphaned stack and the window would silently show old server code.
+    _kill_stale_stack(PORT)
+    # Fail loud if the port is still serving something that is not our stack: _wait_up would
+    # otherwise accept it and the window would silently show the wrong server.
     if _port_busy(PORT):
         sys.stderr.write(
             f"[synapse-app] port {PORT} is already serving — another Synapse window or a "

@@ -1,9 +1,9 @@
 ---
 name: housekeeping-review
-description: Weekly (Mondays, retries every 30 min until it succeeds once that week) — runs the deterministic project prune (old backups/verdicts/handoffs/logs/.DS_Store + stale-MPIM + Steno audio-retention: archived .m4a >14d + orphan raw .wav, starred meetings exempt) AND a classification layer that scans for FURTHER cleanup candidates, judges each, and posts Approve/Reject cards to #rollup. Suggest-only: nothing extra is deleted without an explicit Approve click.
+description: Weekly (Mondays, retries every 30 min until it succeeds once that week) — runs the deterministic project prune (old backups/verdicts/handoffs/logs/.DS_Store + stale-MPIM + Steno audio-retention: archived .m4a >14d + orphan raw .wav, starred meetings exempt) AND a classification layer that scans for FURTHER cleanup candidates, judges each, and posts Approve/Reject cards to __ROLLUP_CHANNEL__. Suggest-only: nothing extra is deleted without an explicit Approve click.
 ---
 
-Run the housekeeping job — prune the known-safe stuff, then surface + classify further cleanup candidates and post them to #rollup for Approve/Reject. This OWNS the prune now (the old weekly `com.example.housekeeping` launchd job is disabled). The only deletes that happen unattended are the deterministic prune (steps 1–8 of housekeeping.sh, incl. Steno audio-retention); every FURTHER suggestion is gated on an owner click.
+Run the housekeeping job — prune the known-safe stuff, then surface + classify further cleanup candidates and post them to __ROLLUP_CHANNEL__ for Approve/Reject. This OWNS the prune now (the old weekly `com.example.housekeeping` launchd job is disabled). The only deletes that happen unattended are the deterministic prune (steps 1–8 of housekeeping.sh, incl. Steno audio-retention); every FURTHER suggestion is gated on an owner click.
 
 Working dir: __REPO__/work-context. (STEP 0 resolves the python for the render + relay-post; housekeeping.sh uses the project venv internally for the prune + scan.)
 
@@ -55,10 +55,10 @@ Follow `.claude/shared/housekeeping-classify.md` EXACTLY (STEP A–D):
 - Write `state/housekeeping_verdicts.json`, then:
       cd __REPO__/work-context && $PY -m derive.housekeeping_render --verdicts state/housekeeping_verdicts.json
   Note the `run_id` it prints.
-- Post the cards to #rollup:
+- Post the cards to __ROLLUP_CHANNEL__:
       cd __REPO__ && $PY bin/relay_bot.py --post-housekeeping <run-id>
   The Relay LaunchAgent (already live) handles Approve → git-safe delete, Reject → skip.
-  If the bot errors (not in #rollup / token), report the stderr — do NOT stamp success.
+  If the bot errors (not in __ROLLUP_CHANNEL__ / token), report the stderr — do NOT stamp success.
 
 HARD RULES: the ONLY unattended deletes are the STEP-1 prune. Every STEP-3 suggestion is
 suggest-only — applied only on the owner's Approve click in Slack. Read-only on Jira/Slack-read.

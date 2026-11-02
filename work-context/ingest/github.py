@@ -458,9 +458,12 @@ def ingest_repo(
             subject = f"{repo}#{pr_number}"
             immutable = bool(pr.get("merged_at")) or pr.get("state") == "closed"
             meta_row = conn.execute(
-                "SELECT checks_status FROM pr_meta WHERE subject = ?", (subject,)
+                "SELECT checks_status, state FROM pr_meta WHERE subject = ?", (subject,)
             ).fetchone()
-            meta_complete = bool(meta_row and meta_row["checks_status"] is not None)
+            # A row captured while the PR was open is not complete: re-fetch once it
+            # merges/closes, or pr_meta keeps state='open' forever.
+            meta_complete = bool(meta_row and meta_row["checks_status"] is not None
+                                 and meta_row["state"] in ("merged", "closed"))
             if not (immutable and meta_complete):
                 try:
                     pr_detail = client.get(f"/repos/{repo}/pulls/{pr_number}") or {}

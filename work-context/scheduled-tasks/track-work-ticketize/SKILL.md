@@ -1,6 +1,6 @@
 ---
 name: track-work-ticketize
-description: Weekdays from 06:15 IST (retries every 30 min until it succeeds once) — runs /ticketize DETECT for the previous working day and posts the ticket-candidate list to the #track-work channel. DETECT only; never applies (apply stays gated on owner reply).
+description: Weekdays from 06:15 IST (retries every 30 min until it succeeds once) — runs /ticketize DETECT for the previous working day and posts the ticket-candidate list to the __TRACK_WORK_CHANNEL__ channel. DETECT only; never applies (apply stays gated on owner reply).
 ---
 
 Run the daily /ticketize DETECT and post the candidate list to Slack. This is READ-ONLY on Jira — it ONLY proposes; it must NEVER create/transition Jira issues. Apply happens separately, gated on the owner's reply.
@@ -55,7 +55,7 @@ STEP 2 — Run the /ticketize DETECT phase for <date>, team scope. This is the S
 - Fingerprint + dedupe across runs: `echo '<seeds-json>' | $PY bin/ticketize_state.py annotate --date <date>`. DROP any with prior_status created/rejected.
 - Write the proposal file management/standup/<date>/ticket-candidates.md (full per-candidate blocks, decision: pending; epic fallback __JIRA_PROJECT__-2882; placement active-sprint; Environment PROD default). Do NOT commit state in DETECT.
 
-STEP 3 — Post to #track-work via the Relay bot (v1.5c — buttons):
+STEP 3 — Post to __TRACK_WORK_CHANNEL__ via the Relay bot (v1.5c — buttons):
 - The Relay bot posts the candidates with **Approve / Reject buttons** and handles the click
   (owner-only) → live apply. So this routine does NOT slack-send the candidate list itself.
 - The bot renders each candidate's `summary` + `why` into the Slack message, so the `why:` field
