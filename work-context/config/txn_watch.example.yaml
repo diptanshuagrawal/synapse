@@ -1,0 +1,59 @@
+# txn_watch: auto-run the txn-status-summary skill on oncall escalations.
+# Copy to txn_watch.yaml (gitignored) and fill in real ids.
+#
+# Flow: bin/txn_watch.py (LaunchAgent, every 2 min) scans `channel_id` for top-level
+# messages that tag one of `trigger_subteams`, follows the "Issue Link" to the source
+# thread, extracts an RRN / src_txn_id, runs the skill's lookup chain and posts a
+# summary card IN the oncall thread. bin/relay_bot.py handles the card's buttons:
+# Approve → posts the final reply in that thread, Reject → dismisses the card.
+slack:
+  channel_id: ""              # oncall channel to watch (bot must be a member)
+  trigger_subteams: []        # subteam ids whose tag means "oncall, please check"
+  approver_subteams: []       # members of these subteams may click Approve/Reject
+  source_channels: []         # linked-thread channels the bot may join + read; ["*"] = any public
+  alert_user: ""              # DM'd when the Astra token expires / setup breaks
+skill:
+  python: "~/.claude/skills/txn-status-summary/.venv/bin/python"
+  script: "~/.claude/skills/txn-status-summary/scripts/txn_status.py"
+opsgenie:                     # who was on call when (auto-acknowledge only credits the oncall)
+  schedule: ""                # Opsgenie schedule name
+  identifier_type: name
+  api_key_secret: opsgenie_api_key   # file under ~/.secrets holding the GenieKey
+  handover_lead_minutes: 4320       # incoming oncall counts from 3 days before their shift starts
+  handover_tail_hours: 72           # outgoing oncall counts until 3 days after their shift ends
+  issue_owner_unlimited: false      # true = raise-time oncall counts on their issue until it closes
+limits:
+  max_issues_per_run: 3       # each lookup takes ~1 min on Astra
+  retry_minutes: 30           # re-check a "not in gold yet" txn this often
+  give_up_hours: 24           # then stop retrying
+  no_ids_recheck_minutes: 60       # re-read a 'no txn id' issue once, this long after the first try
+  ack_sweep_minutes: 10       # how often to check OPEN issues for an oncall reply
+  ack_lookback_days: 30             # OPEN issues to scan (Reporter filters on source-message date)
+  ack_reply_window_minutes: 30      # only ack on oncall replies this fresh (ack time = API call time)
+  status_stale_minutes: 30         # watchdog: the 2-min job restarts the status job if it hasn't run this long
+  status_job_label: ""        # launchd label of the status job to kick; blank = never kick
+closure:                      # LLM closure loop (bin/oncall_closure.py)
+  enabled: false
+  sweep_minutes: 30           # how often to look at ACKNOWLEDGED / BLOCKED issues
+  quiet_hours: 2              # only read a thread after this much silence
+  still_open_card_hours: 24   # a 'still open' read becomes a card after a quiet day
+  max_reads_per_run: 3        # LLM reads per watcher run
+  our_systems: []             # services your team owns; "whose system" decides RESOLVED vs NOT_OUR_ISSUE
+  not_our_systems: []         # adjacent systems other teams own (helps the LLM attribute fixes)
+  auto_close_confidence: 0.85 # at/above this, RESOLVED / NOT_OUR_ISSUE apply without a card
+
+# The upstreams this walks, named for your deployment. They appear verbatim in the
+# summary card, and `blocks` maps the skill's own section titles (which name real gold
+# tables) onto stable keys the card logic uses. Both live here rather than in the code,
+# because a system name says which bank this is.
+systems:
+  labels:
+    origin: ""                # where the transaction starts (the service that owns it)
+    ledger: ""                # the ledger / orders system in the middle
+    core:   ""                # the core banking system that finally posts
+  blocks: {}                  # {"<skill block title>": "<STABLE_KEY>"} — see relabel()
+
+# The Oncall Reporter status API this acknowledges issues against. Internal, so it is
+# named here rather than in source. Blank = the status API is not wired up.
+oncall_api:
+  base: ""                    # e.g. https://<your-oncall-host>/api/v1/issues
