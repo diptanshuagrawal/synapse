@@ -124,7 +124,6 @@ handoff-*.md
 
 # Private publish tooling + planning — keep local, never ship.
 PUBLISH_PLAN.md
-bin/publish-synapse.sh
 bin/leak-patterns.public.txt
 PUBLISH_PLAN.md
 
