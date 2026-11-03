@@ -986,6 +986,13 @@ def _migrate_keyed(doc, key, dates):
     return True
 
 
+def _num_or(v, default=0):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
 def save_board_plan(tasks, cats=None, path=None, effort=None):
     """Replace the whole plan.
 
@@ -997,6 +1004,14 @@ def save_board_plan(tasks, cats=None, path=None, effort=None):
         return {"__error__": "tasks must be a list"}
     if cats is not None and not isinstance(cats, list):
         return {"__error__": "cats must be a list"}
+    f = path or BOARD_FILE
+    doc = _read_board(f)
+    if "__error__" in doc:
+        return doc
+    # What each tile already carried, so a save that does not know about the push
+    # decisions cannot drop them.
+    prior = {str(t.get("id")): t for t in ((doc.get("board") or {}).get("tasks") or [])
+             if isinstance(t, dict)}
     clean = []
     for t in tasks:
         if not isinstance(t, dict):
@@ -1029,14 +1044,40 @@ def save_board_plan(tasks, cats=None, path=None, effort=None):
             tint = int(t.get("tint") or 0)
         except (TypeError, ValueError):
             tint = 0
-        clean.append({"id": tid, "key": str(t.get("key") or ""),
+        # Two owners, one tile. The board owns where a tile sits and what it is called;
+        # the push page owns the ticket it is linked to, its epic, whether it is skipped
+        # and its estimate. A save from either must not rebuild the other's half.
+        #
+        # For the push-owned fields the STORE wins, not the incoming tile. The board
+        # round-trips the whole tile, so a tab opened before a decision was made carries
+        # stale values, and letting it win blanked the ticket key and the epic and
+        # resurrected skips that had just been cleared. A tile the store has never seen
+        # has no decisions to protect, so its own values stand.
+        known = prior.get(tid)
+        if known is None:
+            keep = {f: t[f] for f in PUSH_OWNED if t.get(f) not in (None, "", 0, False)}
+        else:
+            keep = {f: known[f] for f in PUSH_OWNED
+                    if known.get(f) not in (None, "", 0, False)}
+
+        # The title is the one field BOTH pages edit, so neither can simply own it. It
+        # carries a stamp instead: a save whose title is older than the stored one is a
+        # tab that has not seen the newer rename, and its title is ignored rather than
+        # allowed to revert it. Equal stamps mean the sender is current and may rename.
+        title = str(t.get("title") or "")[:300]
+        seq = _num_or(t.get("titleSeq"), 0)
+        if known is not None and _num_or(known.get("titleSeq"), 0) > seq:
+            title = str(known.get("title") or "")[:300]
+            seq = _num_or(known.get("titleSeq"), 0)
+        clean.append({"id": tid,
                       "tint": tint if 1 <= tint <= 12 else 0,
-                      "title": str(t.get("title") or "")[:300],
+                      "title": title,
+                      **({"titleSeq": seq} if seq else {}),
                       "who": who, "date": date, "off": off, "days": days,
                       "sp": float(t.get("sp") or 0), "adhoc": bool(t.get("adhoc")),
                       "cat": str(t.get("cat") or "")[:60],
-                      # Which epic this one task goes to, when it is not the heading's.
-                      "epic": str(t.get("epic") or "").strip().upper()[:30]})
+                      "key": "", "epic": "",       # defaults; `keep` restores any decision
+                      **keep})
     seen, heads = set(), []
     for c in (cats or []):
         name = str(c or "").strip()[:60]
@@ -1044,11 +1085,6 @@ def save_board_plan(tasks, cats=None, path=None, effort=None):
             seen.add(name.lower())
             heads.append(name)
     f = path or BOARD_FILE
-    try:
-        with open(f) as fh:
-            doc = json.load(fh) or {}
-    except Exception:
-        doc = {}
     # Planning in EFFORT rather than in calendar days: two story points for someone at
     # 0.5 is four days on the board and still two against their capacity. It is stored
     # with the plan because it changes what every tile's length MEANS, so two browsers
@@ -1057,6 +1093,10 @@ def save_board_plan(tasks, cats=None, path=None, effort=None):
                     "effort": bool(effort),
                     # Heading to epic. Kept across a save of the tasks themselves.
                     "epics": (doc.get("board") or {}).get("epics") or {},
+                    # Decisions about tiles that have no board row of their own, oncall
+                    # being the one. Kept for the same reason, and forgetting it meant a
+                    # created ticket's key was lost and the ticket made again next run.
+                    "derived": (doc.get("board") or {}).get("derived") or {},
                     "saved": dt.datetime.now().isoformat(timespec="seconds")}
     os.makedirs(os.path.dirname(f), exist_ok=True)
     tmp = f + ".tmp"
@@ -1076,11 +1116,22 @@ def _write_board(doc, path=None):
 
 
 def _read_board(path=None):
-    try:
-        with open(path or BOARD_FILE) as fh:
-            return json.load(fh) or {}
-    except Exception:
+    """The whole board document.
+
+    A file that is not there yet is an empty document, which is how a first save works.
+    A file that IS there and will not parse is an error, not an empty document: every
+    caller writes what it returns, so swallowing a parse failure meant one bad byte in
+    the file replaced the entire plan — the tiles, the heading mapping and the oncall
+    keys — with whatever that caller happened to be saving.
+    """
+    f = path or BOARD_FILE
+    if not os.path.exists(f):
         return {}
+    try:
+        with open(f) as fh:
+            return json.load(fh) or {}
+    except Exception as e:
+        return {"__error__": f"{f} could not be read ({e}); refusing to write over it"}
 
 
 def save_board_epics(epics, task_epics=None, path=None):
@@ -1095,14 +1146,23 @@ def save_board_epics(epics, task_epics=None, path=None):
     if task_epics is not None and not isinstance(task_epics, dict):
         return {"__error__": "taskEpics must be an object"}
     doc = _read_board(path)
+    if "__error__" in doc:
+        return doc
+   
     store = doc.setdefault("board", {"tasks": [], "cats": []})
-    clean = {}
+    # MERGED, not replaced. The page can only send the headings in the window it is
+    # showing, so replacing the map meant a save from one fortnight erased the mappings
+    # made in another — and with a fallback epic set, those tiles then routed to the
+    # fallback without anyone being told.
+    current = dict(store.get("epics") or {})
     for cat, key in epics.items():
         # An empty heading is a real one: it is every tile typed straight onto the board.
         c, k = str(cat or "").strip(), str(key or "").strip().upper()
         if k:
-            clean[c] = k
-    store["epics"] = clean
+            current[c] = k
+        else:
+            current.pop(c, None)     # named with no epic means cleared, deliberately
+    store["epics"] = current
     for tid, key in (task_epics or {}).items():
         for t in store.get("tasks") or []:
             if t.get("id") == tid:
@@ -1112,12 +1172,16 @@ def save_board_epics(epics, task_epics=None, path=None):
                 else:
                     t.pop("epic", None)
     _write_board(doc, path)
-    return {"ok": True, "headings": len(clean)}
+    return {"ok": True, "headings": len(current)}
 
 
 # What you decided about a tile on the push page. Stored on the tile itself, next to the
 # plan it belongs to, because a decision made here has to survive leaving the page: the
 # alternative is retyping every link and every skip on the way back.
+# The push-owned half of a tile. `title` is NOT here: the board edits it too, so it is
+# board-owned and clamped on the way in.
+PUSH_OWNED = ("key", "epic", "nopush", "pts")
+
 PUSH_FIELDS = {
     "key": str,      # the ticket this tile already is
     "epic": str,     # an epic for this one tile, overriding its heading
@@ -1141,6 +1205,9 @@ def save_push_decisions(decisions, path=None):
     if not isinstance(decisions, dict):
         return {"__error__": "decisions must be an object"}
     doc = _read_board(path)
+    if "__error__" in doc:
+        return doc
+   
     store = doc.setdefault("board", {"tasks": [], "cats": []})
     by_id = {t.get("id"): t for t in store.get("tasks") or []}
     # Some tiles are derived rather than drawn: the oncall stints read out of the
@@ -1179,8 +1246,16 @@ def save_push_decisions(decisions, path=None):
                 sv = str(v or "").strip()
                 if field == "key":
                     sv = sv.upper()
+                elif field == "epic":
+                    sv = sv.upper()[:30]      # normalised here, as the board path does
                 if sv:
                     t[field] = sv
+                    if field == "title":
+                        # Stamped so a board tab that predates this rename cannot undo
+                        # it. Monotonic rather than a clock reading, so two renames in
+                        # the same millisecond still order.
+                        t["titleSeq"] = max(_num_or(t.get("titleSeq"), 0) + 1,
+                                            int(dt.datetime.now().timestamp() * 1000))
                 elif field == "title":
                     pass          # a tile with no name at all is not an improvement
                 else:
@@ -1204,7 +1279,12 @@ def set_task_key(task_id, key, path=None):
     if not task_id:
         return {"__error__": "need a task"}
     doc = _read_board(path)
-    store = doc.get("board") or {}
+    if "__error__" in doc:
+        return doc
+   
+    # setdefault, not get-or-{}: a detached dict silently swallowed the write when the
+    # document had no board yet, and the created ticket's key was lost.
+    store = doc.setdefault("board", {"tasks": [], "cats": []})
     for t in store.get("tasks") or []:
         if t.get("id") == task_id:
             if k:

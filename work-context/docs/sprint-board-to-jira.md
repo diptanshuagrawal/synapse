@@ -1,6 +1,30 @@
 # Pushing the sprint board into Jira
 
-A plan, not an implementation. The board is a planning surface; this is about making it
+**Built, and run against the real board.** This was the plan; what follows is kept
+because the reasoning still holds, with the decisions now settled and the places the
+implementation went further marked inline. `derive/jira_push.py`, `/jira-push`.
+
+What the plan did not anticipate, all found by using it:
+
+- **The window has to be enforced here.** The board plan is one list across every sprint,
+  so a preview of one fortnight listed every scheduled tile on the board and would have
+  put the lot into whichever sprint the window matched.
+- **Sprints are matched on date overlap, in every state.** The sprint being planned has
+  usually not started, and the name a team gives it has nothing to do with one derived
+  from dates. Matching on name, or on exact dates, reported "none" for a sprint sitting
+  right there and offered to create a second one over the top of it.
+- **Most tiles are not new work.** They are shorthand for a ticket that already exists
+  ("AA FIP" for "AA FIP: PAN + DOB discovery"), so matching is by containment rather than
+  shared words, and a linked ticket supplies its own epic. That turned out to matter more
+  than guessing an epic, which was the original plan's focus.
+- **Oncall is not a tile.** It is `O` in the capacity calendar, already subtracted from
+  capacity, so the push derives one ticket per unbroken stint instead.
+- **Nothing may be guessed.** The issue type defaulted to one and created fifteen tickets
+  as Story where the team wanted Task. A missing setting is now a refusal.
+
+---
+
+The original plan follows. The board is a planning surface; this is about making it
 produce a real sprint with real tickets, once, safely, and repeatably.
 
 ## What already exists

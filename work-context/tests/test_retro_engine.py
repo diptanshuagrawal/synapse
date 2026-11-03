@@ -867,3 +867,168 @@ def test_everyone_on_the_board_carries_the_account_that_assigns_their_work():
     between the roster and the board."""
     for p in ce.roster():
         assert "jira_id" in p
+
+
+def test_a_board_save_does_not_erase_the_push_decisions(tmp_path):
+    """The bug: save_board_plan rebuilt each tile from a fixed set of fields, so every
+    autosave — which the board runs every few seconds while open — wiped every skip,
+    every hand-set estimate and every derived ticket's key. The real board lost all of
+    them before anyone noticed."""
+    p = _board_with(tmp_path, [{"id": "a", "title": "t", "who": "ann",
+                                "date": "2026-01-05", "days": 1}])
+    re_.save_push_decisions({"a": {"nopush": True, "pts": 5},
+                             "oncall:ann:2026-01-05": {"key": "TEAM-9"}}, path=p)
+    kept = re_.board_plan(path=p)["tasks"]
+    re_.save_board_plan(kept, cats=[], path=p)
+    t = re_.board_plan(path=p)["tasks"][0]
+    assert t["nopush"] is True and t["pts"] == 5
+    assert re_.push_decisions(path=p)["oncall:ann:2026-01-05"]["key"] == "TEAM-9"
+
+
+def test_a_save_from_a_page_that_never_saw_those_fields_keeps_them_too(tmp_path):
+    """The board page does not know these fields exist, so it cannot be relied on to
+    send them back."""
+    p = _board_with(tmp_path, [{"id": "a", "title": "t", "who": "ann",
+                                "date": "2026-01-05", "days": 1}])
+    re_.save_push_decisions({"a": {"nopush": True, "pts": 5}}, path=p)
+    re_.save_board_plan([{"id": "a", "title": "t", "who": "ann",
+                          "date": "2026-01-05", "days": 1}], cats=[], path=p)
+    t = re_.board_plan(path=p)["tasks"][0]
+    assert t["nopush"] is True and t["pts"] == 5
+
+
+def test_a_heading_mapping_from_one_window_is_not_erased_by_another(tmp_path):
+    """The page can only send the headings it is showing, so replacing the map meant a
+    save in one fortnight erased the mappings made in another — and with a fallback epic
+    set, those tiles then routed to the fallback silently."""
+    p = _board_with(tmp_path, [{"id": "a", "title": "t", "who": "ann",
+                                "date": "2026-01-05", "days": 1}])
+    re_.save_board_epics({"BAU": "E-1", "CASA": "E-2"}, path=p)
+    re_.save_board_epics({"BAU": "E-1"}, path=p)
+    assert re_.board_plan(path=p)["epics"] == {"BAU": "E-1", "CASA": "E-2"}
+
+
+def test_a_heading_sent_with_no_epic_is_cleared_deliberately(tmp_path):
+    """Merging must still leave a way to undo a mapping."""
+    p = _board_with(tmp_path, [{"id": "a", "title": "t", "who": "ann",
+                                "date": "2026-01-05", "days": 1}])
+    re_.save_board_epics({"BAU": "E-1", "CASA": "E-2"}, path=p)
+    re_.save_board_epics({"CASA": ""}, path=p)
+    assert re_.board_plan(path=p)["epics"] == {"BAU": "E-1"}
+
+
+def test_a_key_lands_even_when_the_document_has_no_board_yet(tmp_path):
+    """`doc.get("board") or {}` was a detached dict, so the write went nowhere and the
+    created ticket's key was lost."""
+    p = tmp_path / "empty.json"
+    p.write_text("{}")
+    assert re_.set_task_key("oncall:ann:2026-01-05", "TEAM-9", path=str(p))["ok"]
+    assert re_.push_decisions(path=str(p))["oncall:ann:2026-01-05"]["key"] == "TEAM-9"
+
+
+def test_a_stale_board_tab_cannot_undo_a_push_decision(tmp_path):
+    """The board round-trips the whole tile, so a tab opened before a decision was made
+    sends stale values on its next autosave. Letting the incoming tile win blanked the
+    ticket key and the epic, and resurrected skips that had just been cleared."""
+    p = _board_with(tmp_path, [{"id": "a", "title": "t", "who": "ann",
+                                "date": "2026-01-05", "days": 1}])
+    stale = re_.board_plan(path=p)["tasks"]            # loaded before any decision
+    re_.save_push_decisions({"a": {"nopush": True, "pts": 5,
+                                   "key": "TEAM-1", "epic": "E-9"}}, path=p)
+    re_.save_board_plan(stale, cats=[], path=p)
+    t = re_.board_plan(path=p)["tasks"][0]
+    assert t["key"] == "TEAM-1" and t["epic"] == "E-9"
+    assert t["nopush"] is True and t["pts"] == 5
+
+
+def test_a_cleared_decision_stays_cleared_against_a_stale_tab(tmp_path):
+    """The other direction, and the one a naive "keep whatever is set" fix breaks."""
+    p = _board_with(tmp_path, [{"id": "a", "title": "t", "who": "ann",
+                                "date": "2026-01-05", "days": 1}])
+    re_.save_push_decisions({"a": {"nopush": True, "pts": 5}}, path=p)
+    stale = re_.board_plan(path=p)["tasks"]            # carries the decision
+    re_.save_push_decisions({"a": {"nopush": False, "pts": 0}}, path=p)
+    re_.save_board_plan(stale, cats=[], path=p)
+    t = re_.board_plan(path=p)["tasks"][0]
+    assert "nopush" not in t and "pts" not in t
+
+
+def test_the_board_still_owns_the_things_the_board_edits(tmp_path):
+    """Protecting the push fields must not freeze the tile itself."""
+    p = _board_with(tmp_path, [{"id": "a", "title": "old", "who": "ann",
+                                "date": "2026-01-05", "days": 1}])
+    re_.save_push_decisions({"a": {"key": "TEAM-1"}}, path=p)
+    re_.save_board_plan([{"id": "a", "title": "new name", "who": "bob",
+                          "date": "2026-01-07", "days": 3}], cats=[], path=p)
+    t = re_.board_plan(path=p)["tasks"][0]
+    assert t["title"] == "new name" and t["who"] == "bob" and t["days"] == 3
+    assert t["key"] == "TEAM-1"
+
+
+def test_an_unreadable_board_is_never_written_over(tmp_path):
+    """_read_board swallowed every failure and returned {}, which each caller then wrote
+    back — so one bad byte replaced the whole plan with whatever was being saved."""
+    p = _board_with(tmp_path, [{"id": "a", "title": "keep me", "who": "ann",
+                                "date": "2026-01-05", "days": 1}])
+    re_.save_push_decisions({"a": {"key": "TEAM-1"}}, path=p)
+    with open(p, "a") as fh:
+        fh.write("{{{ corrupted")
+    for call in (lambda: re_.save_board_plan([], cats=[], path=p),
+                 lambda: re_.save_push_decisions({"a": {"pts": 9}}, path=p),
+                 lambda: re_.set_task_key("a", "X-1", path=p),
+                 lambda: re_.save_board_epics({"H": "E-1"}, path=p)):
+        assert "__error__" in call()
+    with open(p) as fh:
+        on_disk = fh.read()
+    assert "keep me" in on_disk and "TEAM-1" in on_disk
+
+
+def test_a_board_file_that_does_not_exist_yet_is_not_an_error(tmp_path):
+    """A first save has to work."""
+    p = str(tmp_path / "new.json")
+    assert re_.save_board_plan([{"id": "a", "title": "t", "who": "ann",
+                                 "date": "2026-01-05", "days": 1}],
+                               cats=[], path=p).get("ok")
+
+
+def test_a_push_page_rename_is_not_reverted_by_a_stale_board_tab(tmp_path):
+    """The title is the one field BOTH pages edit, so neither can simply own it. Making
+    it board-owned meant a rename on the push page was silently undone by the next
+    autosave from any board tab opened before it."""
+    p = _board_with(tmp_path, [{"id": "a", "title": "Oncall Rpt", "who": "ann",
+                                "date": "2026-01-05", "days": 1}])
+    stale = re_.board_plan(path=p)["tasks"]            # loaded before the rename
+    re_.save_push_decisions({"a": {"title": "Oncall report for October"}}, path=p)
+    re_.save_board_plan(stale, cats=[], path=p)
+    assert re_.board_plan(path=p)["tasks"][0]["title"] == "Oncall report for October"
+
+
+def test_the_board_can_still_rename_a_tile_it_has_seen(tmp_path):
+    """Protecting the newer title must not freeze it: a tab holding the current title
+    is current, and may rename."""
+    p = _board_with(tmp_path, [{"id": "a", "title": "old", "who": "ann",
+                                "date": "2026-01-05", "days": 1}])
+    re_.save_push_decisions({"a": {"title": "from the push page"}}, path=p)
+    current = re_.board_plan(path=p)["tasks"]          # carries the newer stamp
+    re_.save_board_plan([{**current[0], "title": "renamed on the board"}],
+                        cats=[], path=p)
+    assert re_.board_plan(path=p)["tasks"][0]["title"] == "renamed on the board"
+
+
+def test_a_second_push_page_rename_still_wins(tmp_path):
+    """The stamp has to advance, or the first rename would pin the title forever."""
+    p = _board_with(tmp_path, [{"id": "a", "title": "one", "who": "ann",
+                                "date": "2026-01-05", "days": 1}])
+    re_.save_push_decisions({"a": {"title": "two"}}, path=p)
+    re_.save_push_decisions({"a": {"title": "three"}}, path=p)
+    assert re_.board_plan(path=p)["tasks"][0]["title"] == "three"
+
+
+def test_an_epic_set_from_the_push_page_is_normalised(tmp_path):
+    """The board path uppercases and clamps it; the decision path did not, so a
+    lowercase epic was stored as typed and then refused as "not an epic in this
+    project" with nothing explaining why."""
+    p = _board_with(tmp_path, [{"id": "a", "title": "t", "who": "ann",
+                                "date": "2026-01-05", "days": 1}])
+    re_.save_push_decisions({"a": {"epic": "  team-1  "}}, path=p)
+    assert re_.board_plan(path=p)["tasks"][0]["epic"] == "TEAM-1"

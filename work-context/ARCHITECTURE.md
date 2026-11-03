@@ -696,6 +696,39 @@ Local chat-driven planning server (stdlib http.server, **no API key** — Claude
 
 GET: `/api/capacity` + `/api/monthly` (cached `capacity_engine.build()` / `build_monthly()`, `?fresh=1` rebuilds), plus `/api/epic_sp`, `/api/ticket`, `/api/month`, `/api/budgets`, `/api/initiative`, `/api/initiatives`, `/api/pods`, `/api/dependencies` (cached per pods×months×dri, `?fresh=1` rebuilds — the cache has no TTL and is **not** invalidated by inline field edits, so `/deps` prints the payload age in its byline and flags it past 30 min; a Planning Cycle changed in Jira after the build will otherwise show the initiative under its old cycle), `/api/me`, `/api/planner-fields`, `/api/user-search`, `/api/handover` (cached `derived/handover.json`, refreshed once a day, `?fresh=1` reruns the readiness CLI). POST: `/api/save_initiatives` + `/api/dump` back the `/resolve-initiatives` and `/sprint-plan` dump→file→reload loops, `/api/link-epic` + `/api/submit-budgets` back the monthly commit, `/api/unlink-epic` drops an initiative↔epic link (the epic and its budgets survive), `/api/link-audit` reports/repairs links stored the wrong way round, `/api/field-meta` + `/api/set-field` drive inline column editing, and `/api/accept` snapshots the accepted plan to `derived/sprint-plan-accepted.json` so `/sprint-apply` can execute it even after plan files regenerate.
 
+**`/sprint-board` and `/jira-push`.** The board is a manual day-by-day plan: tiles with
+quarter-day precision, a backlog under free-text headings, and capacity that accounts for
+efficiency (7 net days at 0.55 is 3.85 days of delivery, not 7). The plan is ONE store
+scheduled by date (`state/sprint_board.json`), not one per sprint, so changing the window
+re-reads the same plan rather than loading a different one.
+
+`/jira-push` turns a window of that board into a real sprint. `derive/jira_push.py` is
+pure — board plan plus a snapshot of Jira in, a list of exactly what WOULD happen out —
+and `apply_push` is a thin adapter that takes the caller as an argument so the payloads
+and their order are testable without a Jira. Only tiles the window covers are pushed; the
+rest are counted and reported, because the board plan spans every sprint. Sprints are
+matched on date OVERLAP and in every state including `future`: matching on the name this
+page derives, or on exact dates, missed the real sprint and offered to create a second one
+over the top of it. A tile is matched against existing tickets by containment rather than
+shared words, since a tile is shorthand for the ticket's real name, and a linked ticket
+supplies its own epic. Oncall is not a tile: it is read out of the capacity calendar's `O`
+days, one ticket per unbroken stint, because those days are already subtracted from
+capacity and a tile for them as well would charge the fortnight twice. Per-tile decisions
+(link, skip, epic, estimate, summary) are written to the board store as they are made.
+
+GET `/api/jira-push` (preview), `/api/jira-push/row` (one tile re-evaluated),
+POST `/api/jira-push/suggest` (epic and ticket candidates, cached on disk),
+`/api/jira-push/mapping` (decisions), `/api/jira-push/apply` (the only write, behind two
+confirmations).
+
+**Marking leave.** `derived/leave-editor.js` is shared by every capacity calendar in the
+tree (`/monthly`, `/sprint`, `/sprint-board`). Leave that was never posted is invisible to
+the Slack ingest, so the person reads as fully available and every number measured against
+their capacity is wrong. Clicking a weekday cycles leave → WFH → present → clear, where
+"present" overrides a reported leave rather than just removing the override. POST
+`/api/leave`; `capacity_engine.manual_leaves()` keeps these in a store separate from the
+ingest so a correction is not overwritten by the next sync.
+
 **Inline editing.** Every planner column backed by a Jira field edits in place. `/api/field-meta` wraps Jira `/editmeta`, so what is writable is decided per issue (screen- and permission-aware) and the control kind + option list come from the field's own schema — no field is special-cased in the page. Writes go through `capacity_engine.set_issue_field()`; status uses a workflow transition rather than a field set, and is therefore not undoable.
 
 **Write-back.** Any Jira write folds its result into the on-disk `initiatives-<pod>.json` caches. Without it a reload diffs the plan against a pre-write number and shows an already-submitted row as pending forever. The cache helpers match `initiatives-default.json` / `initiatives-<8 hex>.json` only — `initiatives-in.json` and `initiatives-out.json` share the prefix but belong to the `/plan` sandbox and `/resolve-initiatives` and must not be touched.

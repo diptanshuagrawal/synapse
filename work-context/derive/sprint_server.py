@@ -332,11 +332,22 @@ def _jira_snapshot(plan):
         if want:
             jql = "parent in (" + ", ".join(want) + ")"
             d = ce._jira("POST", "/rest/api/3/search/jql",
-                         {"jql": jql, "fields": ["summary", "parent"], "maxResults": 200})
+                         {"jql": jql, "fields": ["summary", "parent", "status"],
+                          "maxResults": 200})
             for i in d.get("issues") or []:
-                par = ((i.get("fields") or {}).get("parent") or {}).get("key")
+                f = i.get("fields") or {}
+                par = (f.get("parent") or {}).get("key")
                 by_epic.setdefault(par, []).append(
-                    {"key": i["key"], "summary": (i.get("fields") or {}).get("summary") or ""})
+                    {"key": i["key"], "summary": f.get("summary") or "",
+                     # Carried so adoption can refuse finished work: without it a tile
+                     # named like a shipped ticket adopted it, moved it into the new
+                     # sprint and wrote its key back.
+                     "status": ((f.get("status")) or {}).get("name") or "",
+                     # The CATEGORY, because the name is a local convention: Closed,
+                     # Resolved, Won't Do, Released and Canceled are all "done" to Jira
+                     # and none of them matched a list of two spellings.
+                     "statusCategory": ((((f.get("status")) or {}).get("statusCategory")
+                                        ) or {}).get("key") or ""})
 
         keys = [str(t.get("key") or "").strip() for t in plan.get("tasks") or []]
         keys = [k for k in keys if k]
@@ -1191,7 +1202,9 @@ class Handler(SimpleHTTPRequestHandler):
             import capacity_engine as ce, retro_engine, jira_push
             try:
                 p = self._json_body()
-                if not p.get("confirm"):
+                # `is True`, not truthy: the string "false" is truthy, and this is the
+                # gate in front of the only call in Synapse that writes to Jira.
+                if p.get("confirm") is not True:
                     self._reply(400, {"__error__": "not confirmed"})
                     return
                 import yaml
@@ -1213,10 +1226,19 @@ class Handler(SimpleHTTPRequestHandler):
                 if want and not (pv.get("sprint") or {}).get("exists"):
                     pv = dict(pv)
                     pv["sprint"] = {**(pv.get("sprint") or {}), "name": want}
+                # A ticket whose key is not recorded is a duplicate on the next run,
+                # so a failed write-back has to be heard rather than returned into
+                # nothing. apply_push stops creating once this raises.
+                def remember(tid, key):
+                    res = retro_engine.set_task_key(tid, key)
+                    if isinstance(res, dict) and "__error__" in res:
+                        raise RuntimeError(f"created {key} but could not record it "
+                                           f"against {tid}: {res['__error__']}")
+                    return res
+
                 r = jira_push.apply_push(
                     pv, ce._jira, ce._board_id(), ce.JIRA_PROJECT,
-                    fields, confirm=True,
-                    on_key=lambda tid, key: retro_engine.set_task_key(tid, key))
+                    fields, confirm=p.get("confirm") is True, on_key=remember)
                 self._reply(400 if "__error__" in r else 200, r)
             except Exception as e:
                 self._reply(500, {"__error__": str(e)})

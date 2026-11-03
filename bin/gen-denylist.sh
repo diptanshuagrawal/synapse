@@ -24,19 +24,46 @@ from pathlib import Path
 try:
     import yaml
 except Exception:
-    sys.exit(0)  # no yaml → skip silently; the curated denylist still applies
+    # Loudly. This generator IS most of the leak gate: without it the scan runs against
+    # the curated list alone and every name, email and id derived from config stops
+    # being blocked, with nothing on screen saying so.
+    sys.stderr.write("gen-denylist: pyyaml is not available, so no config-derived "
+                     "patterns can be generated\n")
+    sys.exit(1)
 
 cfg = Path(os.environ["CONFIG"])
 out = Path(os.environ["OUT"])
 
+REQUIRED = ("people.yaml", "sources.yaml")
+
+
 def load(name):
     p = cfg / name
     if not p.exists():
+        if name in REQUIRED:
+            sys.stderr.write(f"gen-denylist: {name} is missing, so the identifiers it "
+                             "carries would not be blocked\n")
+            sys.exit(1)
         return {}
     try:
-        return yaml.safe_load(p.read_text()) or {}
-    except Exception:
-        return {}
+        doc = yaml.safe_load(p.read_text()) or {}
+    except Exception as e:
+        # A parse error used to read as "this file contributes nothing", which is the
+        # one answer that must never be silent here.
+        sys.stderr.write(f"gen-denylist: {name} could not be parsed ({e}), so its "
+                         "identifiers would not be blocked\n")
+        sys.exit(1)
+    # Present but empty reads as "this file contributes nothing", which is the same
+    # silent failure as a parse error and has to be as loud.
+    if name == "people.yaml" and not (doc.get("people") or []):
+        sys.stderr.write("gen-denylist: people.yaml carries no people, so no name, "
+                         "handle or id would be blocked\n")
+        sys.exit(1)
+    if name == "sources.yaml" and not doc:
+        sys.stderr.write("gen-denylist: sources.yaml is empty, so the org's own "
+                         "identifiers would not be blocked\n")
+        sys.exit(1)
+    return doc
 
 # Collect raw literal identifiers, tagged word|literal (literal = has @ . / : → no \b).
 WORD, LIT = set(), set()

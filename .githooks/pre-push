@@ -6,6 +6,23 @@
 # (Python re — BSD grep mishandles \b). Bypass only in emergency: git push --no-verify
 set -uo pipefail
 
+# git passes the remote's name and URL. The leak scan exists to stop org identifiers
+# reaching the PUBLIC mirror; a private backup of this repo is supposed to contain them,
+# since it is the source the mirror is generated FROM. So a remote may be marked private,
+# explicitly and one at a time:
+#
+#     git config --add leakguard.private <remote-name>
+#
+# Everything else is scanned as before. The default is to enforce, an unmarked remote is
+# never guessed to be private, and a skip says so loudly rather than passing in silence.
+REMOTE_NAME="${1:-}"
+PRIVATE=0
+if [ -n "$REMOTE_NAME" ]; then
+  while read -r marked; do
+    [ "$marked" = "$REMOTE_NAME" ] && PRIVATE=1
+  done < <(git config --get-all leakguard.private 2>/dev/null || true)
+fi
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 SCANNER="$REPO_ROOT/.githooks/leak_scan.py"
 GATE="$REPO_ROOT/work-context/bin/check_test_coverage.py"
@@ -15,13 +32,20 @@ gate_fail=0
 
 [ -f "$SCANNER" ] || { echo "leak-guard: $SCANNER missing — refusing push." >&2; exit 1; }
 
+if [ "$PRIVATE" = "1" ]; then
+  echo "leak-guard: '$REMOTE_NAME' is marked private (leakguard.private), so the content" >&2
+  echo "   scan is SKIPPED for this push. A private backup is meant to carry the real" >&2
+  echo "   identifiers; the public mirror is produced from it by bin/publish-synapse.sh," >&2
+  echo "   which gates separately. Unmark with: git config --unset-all leakguard.private" >&2
+fi
+
 # git feeds one line per ref being pushed:  <localref> <localsha> <remoteref> <remotesha>
 while read -r localref localsha remoteref remotesha; do
   [ "$localsha" = "$Z" ] && continue           # branch deletion — nothing to scan
   if [ "$remotesha" = "$Z" ]; then
-    python3 "$SCANNER" range "$localsha" || fail=1            # new branch: scan all of it
+    [ "$PRIVATE" = "1" ] || python3 "$SCANNER" range "$localsha" || fail=1   # new branch
   else
-    python3 "$SCANNER" range "$localsha" "$remotesha" || fail=1   # only the new commits
+    [ "$PRIVATE" = "1" ] || python3 "$SCANNER" range "$localsha" "$remotesha" || fail=1
   fi
   # Test-coverage gate: in-scope source changed → its test must change too.
   # GATE contract is `range <base> <head>` (diff base..head) — base=remotesha (OLD),

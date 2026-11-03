@@ -668,9 +668,18 @@ def test_a_live_sprint_beats_a_closed_one_covering_the_same_window():
     assert sp["id"] == 10
 
 
-def test_the_name_is_still_a_fallback_when_no_dates_line_up():
-    sp, how = jp.find_sprint(["2026-11-04", "2026-11-17"], SPRINTS, "TEAM JAS 26 S7")
-    assert sp["id"] == 2 and how == "name"
+def test_a_name_match_that_does_not_touch_the_window_is_not_this_sprint():
+    """This asserted the opposite, and the opposite is a bug: it returned a sprint that
+    ended five weeks before the window, and every ticket would have been moved into it.
+    A name is weaker evidence than dates, not a way around them."""
+    assert jp.find_sprint(["2026-11-04", "2026-11-17"], SPRINTS, "TEAM JAS 26 S7") == (None, "")
+
+
+def test_a_name_match_stands_when_the_sprint_carries_no_dates_to_check():
+    """Nothing to contradict it, so the name is all there is."""
+    sprints = [{"id": 4, "name": "2026-11-04 to 2026-11-17"}]
+    sp, how = jp.find_sprint(["2026-11-04", "2026-11-17"], sprints, "2026-11-04 to 2026-11-17")
+    assert sp["id"] == 4 and how == "name"
 
 
 def test_no_sprint_for_this_window_is_reported_as_such():
@@ -917,3 +926,73 @@ def test_a_linked_ticket_missing_from_the_snapshot_is_refused_not_quietly_create
     jira = {"epics": [{"key": "E-1"}], "sprints": [], "byEpic": {}, "issues": {}}
     row = jp.plan_push(plan, people, ["2026-01-05", "2026-01-09"], jira)["rows"][0]
     assert row["action"] == jp.SKIP and "not found" in row["why"]
+
+
+def test_a_finished_ticket_of_the_same_name_is_not_adopted():
+    """Adoption exists to avoid duplicating a ticket a failed write-back left behind.
+    A Done ticket is not that: adopting it drags shipped work into the new sprint and
+    claims the tile is already done."""
+    plan_ = {"epics": {"H": "E-1"},
+             "tasks": [{"id": "a", "title": "Rollback TRD", "who": "ann", "cat": "H",
+                        "date": "2026-01-05", "days": 1}]}
+    people = [{"canonical": "ann", "name": "Ann", "jira_id": "x", "eff": 1}]
+    jira = {"epics": [{"key": "E-1"}], "sprints": [], "issues": {},
+            "byEpic": {"E-1": [{"key": "P-9", "summary": "Rollback TRD",
+                                "status": "Done"}]}}
+    row = jp.plan_push(plan_, people, ["2026-01-05", "2026-01-09"], jira)["rows"][0]
+    assert row["action"] == jp.CREATE and row["key"] == ""
+
+
+def test_a_live_ticket_of_the_same_name_is_still_adopted():
+    plan_ = {"epics": {"H": "E-1"},
+             "tasks": [{"id": "a", "title": "Rollback TRD", "who": "ann", "cat": "H",
+                        "date": "2026-01-05", "days": 1}]}
+    people = [{"canonical": "ann", "name": "Ann", "jira_id": "x", "eff": 1}]
+    jira = {"epics": [{"key": "E-1"}], "sprints": [], "issues": {},
+            "byEpic": {"E-1": [{"key": "P-9", "summary": "Rollback TRD",
+                                "status": "In Progress"}]}}
+    row = jp.plan_push(plan_, people, ["2026-01-05", "2026-01-09"], jira)["rows"][0]
+    assert row["action"] == jp.ADOPT and row["key"] == "P-9"
+
+
+def test_a_lost_key_stops_the_run_instead_of_creating_more():
+    """A created ticket whose key is not recorded is a duplicate next run. Carrying on
+    made one duplicate per remaining row; the run reported failure but had already
+    written all of them."""
+    sent = []
+
+    def call(m, path, body):
+        sent.append(path)
+        return {"id": 7, "key": "NEW-%d" % len(sent)}
+
+    def on_key(task_id, key):
+        raise RuntimeError("disk full")
+
+    pv = {"v": jp.SCHEMA, "unmapped": [], "sprint": {"id": 7, "name": "s"},
+          "rows": [{"id": c, "action": jp.CREATE, "title": c, "epic": "E-1", "sp": 1}
+                   for c in "abc"]}
+    r = jp.apply_push(pv, call, 1, "P", {"story_points": "sp", "issuetype_id": "10002"},
+                      confirm=True, on_key=on_key)
+    assert sum(1 for p in sent if p == "/rest/api/3/issue") == 1
+    assert r["ok"] is False
+    loose = [c for c in r["created"] if c.get("unrecorded")]
+    assert [c["key"] for c in loose] == ["NEW-1"]
+    assert any("make it twice" in f.get("error", "") for f in r["failed"])
+
+
+def test_done_is_judged_by_jira_s_category_not_by_a_list_of_spellings():
+    """Closed, Resolved, Won't Do and Released are all finished, and a two-name list
+    caught none of them."""
+    assert jp.is_done({"statusCategory": "done", "status": "Released"})
+    assert jp.is_done({"statusCategory": "done", "status": "Won't Do"})
+    assert not jp.is_done({"statusCategory": "indeterminate", "status": "Closed"})
+    # No category fetched: fall back to the name rather than claim it is open.
+    assert jp.is_done({"status": "Done"}) and not jp.is_done({"status": "In Progress"})
+
+
+def test_a_neighbouring_sprint_cannot_win_on_one_shared_day_by_name():
+    """A sprint ends on the day the next begins, so a single day of touch is not cover."""
+    sprints = [{"id": 5, "name": "TEAM OND 26 S1", "state": "closed",
+                "start": "2026-10-07", "end": "2026-10-21"}]
+    assert jp.find_sprint(["2026-10-21", "2026-11-03"], sprints,
+                          "TEAM OND 26 S1") == (None, "")

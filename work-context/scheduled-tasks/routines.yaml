@@ -139,7 +139,7 @@ routines:
     # solely by the always-on launchd watcher `com.example.transcripts-watch` (WatchPaths on the
     # inbox + 10-min backstop) plus the on-demand Steno "Transcribe" button. A routine session is
     # short-lived; a long meeting's whisper run outlives it, so a sweep launched from the routine
-    # gets SIGTERM'd on session end and can NEVER finish (CBS-audit 92-min / a colleague 1-1 72-min all
+    # gets SIGTERM'd on session end and can NEVER finish (a 92-min audit call / a 72-min 1-1 all
     # died with `Terminated: 15`). The routine only reads already-transcribed+ingested
     # `meeting_recorded` events and renders their notes + any `.mom.request` MoMs. NO Anthropic API
     # (synthesis happens in-session); NO Slack posts. Battery gates stay in transcripts_process.sh

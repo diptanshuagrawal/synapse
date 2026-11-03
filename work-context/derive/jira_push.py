@@ -281,6 +281,19 @@ def oncall_tiles(people, window, label="Oncall: {name}"):
     return out
 
 
+def is_done(issue):
+    """Whether Jira considers this issue finished.
+
+    The status CATEGORY is Jira's own answer and covers every workflow's spelling; the
+    status NAME is a per-project convention. Falls back to the name when no category was
+    fetched, so a caller that does not supply one is no worse off than before.
+    """
+    cat = str((issue or {}).get("statusCategory") or "").strip().lower()
+    if cat:
+        return cat == "done"
+    return str((issue or {}).get("status") or "").strip().lower() in DEAD
+
+
 def _day(v):
     """The date part of whatever Jira returned: dates come back as full timestamps."""
     return str(v or "")[:10]
@@ -326,7 +339,16 @@ def find_sprint(window, sprints, name=""):
         if span and ov >= span * COVERAGE:
             by_overlap.append((ov, sp))
         elif name and _norm(sp.get("name")) == _norm(name):
-            by_name.append(sp)
+            # A name match still has to touch the window WHEN the sprint has dates to
+            # check: without this a sprint from two months ago was returned for a window
+            # it does not cover at all, and every ticket would have been moved into it.
+            # A sprint carrying no dates offers nothing to check, so the name stands.
+            # Held to the same coverage bar as a date match. One shared day is not
+            # coverage: a sprint ends on the day the next one starts, so a same-named
+            # neighbour would otherwise qualify on that single day alone.
+            dated = _day(sp.get("start")) and _day(sp.get("end"))
+            if not dated or (span and ov >= span * COVERAGE):
+                by_name.append(sp)
     if by_overlap:
         best = max(ov for ov, _ in by_overlap)
         pool = [sp for ov, sp in by_overlap if ov == best]
@@ -554,6 +576,13 @@ def plan_push(plan, people, window, jira, opts=None):
         # again would quietly double it.
         twin = None
         for cand in by_epic.get(epic) or []:
+            # Finished work is not what a tile on a future sprint means. Adopting it
+            # would drag a shipped ticket into the new sprint and claim the tile is done.
+            # Judged on Jira's own status CATEGORY where there is one: a list of status
+            # names only ever covers the spellings someone thought of, and Closed,
+            # Resolved, Won't Do and Released all slipped past it.
+            if is_done(cand):
+                continue
             if _norm(cand.get("summary")) == _norm(title):
                 twin = cand
                 break
@@ -585,6 +614,19 @@ def plan_push(plan, people, window, jira, opts=None):
             "rows": rows, "counts": counts, "unmapped": unmapped,
             "elsewhere": elsewhere,
             "ready": bool(name) and not unmapped and (counts[CREATE] + counts[ADOPT] + counts[UPDATE]) > 0}
+
+
+class _KeyNotRecorded(Exception):
+    """A ticket was created and its key could not be written back.
+
+    Raised rather than recorded, because the only safe response is to stop: every
+    further create would be another ticket nothing remembers, and the next run would
+    make all of them again.
+    """
+
+    def __init__(self, key, task_id, why):
+        super().__init__(f"{key} created but not recorded: {why}")
+        self.key, self.task_id, self.why = key, task_id, why
 
 
 def apply_push(preview, call, board_id, project, fields, confirm=False, on_key=None):
@@ -627,7 +669,13 @@ def apply_push(preview, call, board_id, project, fields, confirm=False, on_key=N
         return {"__error__": f"could not create the sprint: {e}", "done": done}
 
     into_sprint = []
+    stopped = None
     for row in preview.get("rows") or []:
+        if stopped:
+            done["failed"].append({"id": row.get("id"), "title": row.get("title"),
+                                   "error": "not attempted: the run stopped after "
+                                            f"{stopped} could not be recorded"})
+            continue
         act = row.get("action")
         if act == SKIP:
             continue
@@ -647,7 +695,13 @@ def apply_push(preview, call, board_id, project, fields, confirm=False, on_key=N
                 # Written back FIRST. A key that only exists in this response is a
                 # duplicate waiting for the next run.
                 if on_key and key:
-                    on_key(row.get("id"), key)
+                    try:
+                        on_key(row.get("id"), key)
+                    except Exception as e:
+                        # The ticket EXISTS now and nothing remembers it. Carrying on
+                        # would create more of the same, so the run stops here and says
+                        # exactly which key is loose.
+                        raise _KeyNotRecorded(key, row.get("id"), str(e)) from e
                 done["created"].append({"id": row.get("id"), "key": key,
                                         "title": row.get("title")})
                 into_sprint.append(key)
@@ -673,6 +727,17 @@ def apply_push(preview, call, board_id, project, fields, confirm=False, on_key=N
                 done["updated"].append({"key": row.get("key"),
                                         "changed": [c[0] for c in row.get("changes") or []]})
                 into_sprint.append(row.get("key"))
+        except _KeyNotRecorded as e:
+            stopped = e.key
+            done["created"].append({"id": e.task_id, "key": e.key,
+                                    "title": row.get("title"), "unrecorded": True})
+            done["failed"].append({"id": e.task_id, "key": e.key,
+                                   "title": row.get("title"),
+                                   "error": f"{e.key} was created but could not be "
+                                            f"recorded against the tile ({e.why}). "
+                                            "Nothing further was created. Put this key "
+                                            "on the tile by hand before running again, "
+                                            "or the next run will make it twice."})
         except Exception as e:
             done["failed"].append({"id": row.get("id"), "key": row.get("key"),
                                    "title": row.get("title"), "error": str(e)})
