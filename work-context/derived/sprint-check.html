@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sprint Check — is the board honest, is the sprint landing</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+  :root{
+    --bg:#f3f6fa; --surface:#ffffff; --surface2:#eef2f8; --border:#e4e9f2;
+    --text:#15202e; --muted:#5b6675; --hint:#9aa6b4;
+    --accent:#3a55d9; --accent-2:#2c41b8; --accent-soft:rgba(58,85,217,.07);
+    --ok:#3b6b3f; --ok-bg:#e9f1e8; --warn:#866113; --warn-bg:#f6efdd;
+    --danger:#b23a4a; --danger-bg:#f8edef;
+    --shadow:0 1px 2px rgba(20,32,46,.04),0 2px 6px rgba(20,32,46,.05); --radius:14px;
+  }
+  @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+    --bg:#11161d; --surface:#171e27; --surface2:#1d2630; --border:#283341;
+    --text:#e6ecf3; --muted:#9aa8b8; --hint:#6b7a8c; --accent-soft:rgba(58,85,217,.16);
+    --ok-bg:#1b2a1d; --warn-bg:#2b2416; --danger-bg:#2c1b1f; } }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:'Hanken Grotesk',-apple-system,system-ui,sans-serif;font-size:14px;line-height:1.45;}
+  .wrap{max-width:1280px;margin:0 auto;padding:26px 24px 70px;}
+  .top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px;flex-wrap:wrap;}
+  h1{font-size:20px;font-weight:700;margin:0;letter-spacing:-.01em;}
+  .sub{color:var(--muted);font-size:12.5px;margin:2px 0 0;max-width:620px;}
+  .filters{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;}
+  .dd{position:relative;}
+  .dd>button,.btn{font-family:inherit;font-size:12.5px;color:var(--text);background:var(--surface);
+    border:1px solid var(--border);border-radius:10px;padding:8px 12px;cursor:pointer;}
+  .dd>button{min-width:170px;text-align:left;}
+  .dd>button:hover,.btn:hover{border-color:var(--accent);}
+  .dd .menu{display:none;position:absolute;z-index:20;right:0;margin-top:4px;background:var(--surface);
+    border:1px solid var(--border);border-radius:11px;box-shadow:var(--shadow);padding:8px;
+    min-width:280px;max-height:340px;overflow:auto;}
+  .dd.open .menu{display:block;}
+  .dd .menu label{display:flex;gap:8px;align-items:center;padding:5px 7px;border-radius:7px;
+    font-size:12.5px;cursor:pointer;white-space:nowrap;}
+  .dd .menu label:hover{background:var(--surface2);}
+  .dd .menu .sm{color:var(--hint);font-size:11px;margin-left:auto;}
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+    box-shadow:var(--shadow);margin-bottom:16px;overflow:hidden;}
+  .ph{display:flex;align-items:baseline;gap:10px;padding:13px 16px 10px;flex-wrap:wrap;}
+  .ph h2{font-size:13px;font-weight:650;margin:0;}
+  .ph .n{font-size:11.5px;color:var(--hint);}
+  .state{padding:22px 16px;color:var(--muted);font-size:13px;}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:1px;background:var(--border);}
+  .card{background:var(--surface);padding:13px 16px;}
+  .card .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--hint);}
+  .card .v{font-size:22px;font-weight:700;font-family:'IBM Plex Mono',monospace;margin-top:3px;}
+  .card .d{font-size:11.5px;color:var(--muted);margin-top:2px;}
+  .v.bad{color:var(--danger);} .v.good{color:var(--ok);} .v.warn{color:var(--warn);}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  th{text-align:left;font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
+    color:var(--hint);padding:7px 10px;border-bottom:1px solid var(--border);white-space:nowrap;}
+  td{padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top;}
+  td.n,th.n{text-align:right;font-family:'IBM Plex Mono',monospace;white-space:nowrap;}
+  tr.lowconf>td{background:var(--danger-bg);}
+  .tag{font-size:10px;font-weight:600;border-radius:6px;padding:1px 6px;margin-left:5px;
+       white-space:nowrap;vertical-align:middle;}
+  .tag.warn{color:var(--warn);background:var(--warn-bg);}
+  .tag.bad{color:var(--danger);background:var(--danger-bg);}
+  .tag.ok{color:var(--ok);background:var(--ok-bg);}
+  .track{height:9px;border-radius:5px;background:var(--surface2);overflow:hidden;position:relative;min-width:120px;}
+  .track i{display:block;height:100%;background:var(--accent);}
+  .track u{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--text);opacity:.55;}
+  .sig{font-size:11.5px;color:var(--muted);}
+  .sig b{font-family:'IBM Plex Mono',monospace;color:var(--text);font-weight:500;}
+  .note{padding:11px 16px;font-size:11.5px;color:var(--hint);border-top:1px solid var(--border);}
+  .note b{color:var(--muted);font-weight:600;}
+  .ask{padding:10px 16px;font-size:12.5px;border-top:1px solid var(--border);}
+  .ask b{font-weight:650;}
+  a{color:var(--accent-2);}
+  details summary{cursor:pointer;font-size:11.5px;color:var(--accent-2);}
+  @media (max-width:760px){ .wrap{padding:18px 16px 60px;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div>
+      <h1>Sprint Check</h1>
+      <div class="sub" id="sub">Run this at sprint end, or any day during it. Hygiene first —
+        a stale board makes productivity unmeasurable, and a low number caused by bookkeeping
+        reads as underperformance.</div>
+    </div>
+    <div class="filters">
+      <div class="dd" id="ddSprints"><button type="button">Sprint</button><div class="menu"></div></div>
+      <div class="dd" id="ddProjects"><button type="button">Projects</button><div class="menu"></div></div>
+      <button class="btn" id="onc" title="On-call days are removed from capacity. Including the on-call TICKETS without putting those days back credits the rota twice, so this moves both sides together.">On-call: excluded</button>
+      <button class="btn" id="reload">↻ Reload</button>
+    </div>
+  </div>
+
+  <div class="panel" id="pace"><div class="state">Pick a sprint.</div></div>
+  <div class="panel" id="hyg"><div class="state">—</div></div>
+  <div class="panel" id="ppl"><div class="state">—</div></div>
+  <div class="panel" id="asks"><div class="state">—</div></div>
+</div>
+
+<script>
+'use strict';
+const LSKEY = 'sprintCheck_v1';
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const n1 = v => (v==null||isNaN(v)) ? '—' : (Math.round(v*10)/10).toString();
+let ST = (()=>{ try{ return JSON.parse(localStorage.getItem(LSKEY))||{}; }catch(e){ return {}; } })();
+ST.sprints = ST.sprints || []; ST.projects = ST.projects || [];
+ST.incOncall = !!ST.incOncall;
+const save = ()=> localStorage.setItem(LSKEY, JSON.stringify(ST));
+let SPRINTS = [], PROJECTS = [], D = null, BUSY = false;
+const JIRA = () => (location.hostname && window.__JIRA__) || '';
+
+function wireDD(id, onOpen){
+  const dd = document.getElementById(id);
+  dd.querySelector('button').addEventListener('click', e=>{
+    e.stopPropagation();
+    document.querySelectorAll('.dd').forEach(d=>{ if(d!==dd) d.classList.remove('open'); });
+    const open = !dd.classList.contains('open');
+    if(open) onOpen();
+    dd.classList.toggle('open', open);
+  });
+}
+document.addEventListener('click', e=>{ if(!e.target.closest('.dd'))
+  document.querySelectorAll('.dd').forEach(d=>d.classList.remove('open')); });
+
+function renderSprintMenu(){
+  const dd = document.getElementById('ddSprints');
+  dd.querySelector('.menu').innerHTML = SPRINTS.map(s=>
+    `<label><input type="checkbox" value="${s.id}" ${ST.sprints.includes(s.id)?'checked':''}>
+      ${esc(s.name)}<span class="sm">${esc(s.start)} → ${esc(s.end)}${s.state==='active'?' · active':''}</span></label>`
+  ).join('') || '<div class="state">no sprints</div>';
+  dd.querySelectorAll('input').forEach(cb=>cb.addEventListener('change', ()=>{
+    ST.sprints = [...dd.querySelectorAll('input:checked')].map(x=>+x.value);
+    save(); syncBtns(); load();
+  }));
+}
+function renderProjectMenu(){
+  const dd = document.getElementById('ddProjects');
+  dd.querySelector('.menu').innerHTML = PROJECTS.map(p=>
+    `<label><input type="checkbox" value="${esc(p.key)}" ${ST.projects.includes(p.key)?'checked':''}>
+      ${esc(p.key)}<span class="sm">${esc(p.name)}</span></label>`).join('')
+    || '<div class="state">no projects</div>';
+  dd.querySelectorAll('input').forEach(cb=>cb.addEventListener('change', ()=>{
+    ST.projects = [...dd.querySelectorAll('input:checked')].map(x=>x.value);
+    save(); syncBtns(); load();
+  }));
+}
+function syncBtns(){
+  const sb = document.getElementById('ddSprints').querySelector('button');
+  const picked = SPRINTS.filter(s=>ST.sprints.includes(s.id));
+  sb.textContent = picked.length===1 ? picked[0].name
+    : picked.length ? `${picked.length} sprints` : 'Sprint';
+  sb.title = picked.map(s=>`${s.name}  ${s.start} → ${s.end}`).join('\n') || 'none selected';
+  const pb = document.getElementById('ddProjects').querySelector('button');
+  pb.textContent = ST.projects.length===1 ? ST.projects[0]
+    : ST.projects.length ? `${ST.projects.length} projects` : 'Projects';
+}
+
+// ---- panels ---------------------------------------------------------------
+function renderPace(){
+  const t = D.totals, p = D.pace, w = D.window;
+  const pct = t.committedSP ? Math.round(t.doneSP / t.committedSP * 100) : 0;
+  const elapsedPct = Math.round(p.fraction * 100);
+  // The headline comparison: how much of the sprint is gone vs how much is done.
+  const behind = elapsedPct - pct;
+  document.getElementById('pace').innerHTML = `
+  <div class="ph"><h2>${esc(D.sprints.map(s=>s.name).join(' + '))}</h2>
+    <span class="n">${esc(w.start)} → ${esc(w.end)} · as of ${esc(w.asOf)} ·
+      day ${p.elapsed} of ${p.workingDays} · ${esc(D.mode)}</span></div>
+  <div style="padding:4px 16px 14px">
+    <div class="track" title="done vs committed; the marker is how much of the sprint has elapsed">
+      <i style="width:${Math.min(100,pct)}%"></i><u style="left:${Math.min(100,elapsedPct)}%"></u></div>
+    <div class="sig" style="margin-top:6px"><b>${pct}%</b> of committed SP done ·
+      <b>${elapsedPct}%</b> of the sprint elapsed
+      ${behind > 15 ? `<span class="tag bad">${behind} points behind pace</span>`
+        : behind < -10 ? `<span class="tag ok">ahead of pace</span>`
+        : `<span class="tag ok">on pace</span>`}</div>
+  </div>
+  <div class="cards">
+    <div class="card"><div class="k">Committed</div><div class="v">${n1(t.committedSP)}</div>
+      <div class="d">SP on the board</div></div>
+    <div class="card"><div class="k">Done</div><div class="v good">${n1(t.doneSP)}</div>
+      <div class="d">on-call excluded</div></div>
+    <div class="card"><div class="k">In flight</div><div class="v warn">${n1(t.inFlightSP)}</div>
+      <div class="d">started, not closed</div></div>
+    <div class="card"><div class="k">Not started</div>
+      <div class="v ${t.notStartedSP>0?'bad':''}">${n1(t.notStartedSP)}</div>
+      <div class="d">${p.remaining} working day(s) left</div></div>
+    <div class="card"><div class="k">Capacity to date</div><div class="v">${n1(t.capacityToDate)}</div>
+      <div class="d">of ${n1(t.capacityFull)} full sprint</div></div>
+    <div class="card"><div class="k">Projected</div><div class="v">${n1(t.projectedSP)}</div>
+      <div class="d">at the current rate</div></div>
+  </div>
+  ${t.committedSP > t.capacityFull * 1.3 ? `<div class="ask"><b>Over-committed.</b>
+    ${n1(t.committedSP)} SP on the board against ${n1(t.capacityFull)} SP of capacity for the
+    whole sprint — ${Math.round(t.committedSP/Math.max(t.capacityFull,.01)*10)/10}x. Whatever
+    else is true, this sprint could not have landed as planned.</div>` : ''}`;
+}
+
+function renderHygiene(){
+  const t = D.totals, tk = D.tickets||[];
+  const stale = tk.filter(x=>x.stale).sort((a,b)=>(a.lastMoved||'').localeCompare(b.lastMoved||''));
+  const noEst = tk.filter(x=>!x.estimated && !x.cancelled);
+  const mid = tk.filter(x=>x.addedMidSprint);
+  const pctStale = tk.length ? Math.round(stale.length/tk.length*100) : 0;
+  document.getElementById('hyg').innerHTML = `
+  <div class="ph"><h2>Board hygiene</h2>
+    <span class="n">checked first — it decides whether any productivity number can be trusted</span></div>
+  <div class="cards">
+    <div class="card"><div class="k">Stale</div>
+      <div class="v ${pctStale>30?'bad':pctStale>10?'warn':'good'}">${stale.length}</div>
+      <div class="d">${pctStale}% not moved since ${esc(D.staleCutoff)}</div></div>
+    <div class="card"><div class="k">No estimate</div>
+      <div class="v ${noEst.length?'warn':'good'}">${noEst.length}</div>
+      <div class="d">open tickets carrying no SP</div></div>
+    <div class="card"><div class="k">Added mid-sprint</div>
+      <div class="v ${mid.length>5?'warn':''}">${mid.length}</div>
+      <div class="d">created after the sprint began</div></div>
+    <div class="card"><div class="k">Unmeasurable devs</div>
+      <div class="v ${t.lowConfidence?'bad':'good'}">${t.lowConfidence}</div>
+      <div class="d">hygiene too poor to score</div></div>
+  </div>
+  <details style="padding:10px 16px"><summary>${stale.length} stale ticket(s)</summary>
+    <div class="sig" style="margin-top:8px">${stale.slice(0,40).map(x=>
+      `<div><b>${esc(x.key)}</b> · ${esc(x.status)} · last moved ${esc(x.lastMoved||'never')}
+       · ${esc(x.assignee||'unassigned')} · ${esc(x.summary.slice(0,54))}</div>`).join('')}
+      ${stale.length>40?`<div class="tag warn">+${stale.length-40} more</div>`:''}</div></details>`;
+}
+
+function renderPeople(){
+  const rows = (D.people||[]).map(p=>{
+    const low = p.confidence === 'low';
+    const s = p.signals||{};
+    const T  = (ST.incOncall ? p.incOncall : p.exOncall) || {};
+    const TL = (ST.incOncall ? p.ifLandsInc : p.ifLandsEx) || {};
+    const eff = T.pace;
+    const b = T.band;
+    const measured = low ? `<span class="tag bad">can't measure</span>`
+      : `${eff==null?'—':eff+'%'} ${T.vsLevel?`<span class="tag ${
+          T.vsLevel==='below'?'bad':T.vsLevel==='above'?'ok':'warn'}">${T.vsLevel} level</span>`:''}`;
+    const why = [];
+    if(low) p.confidenceWhy.forEach(w=>why.push(`<b>gap</b> ${esc(w)}`));
+    if(p.inFlight)   why.push(`<b>${n1(p.inFlight)}</b> SP started but not closed`);
+    if(p.notStarted) why.push(`<b>${n1(p.notStarted)}</b> SP not started`);
+    if(p.oncallSP)   why.push(`<b>${n1(p.oncallSP)}</b> SP on-call tickets`);
+    if(p.cancelled)  why.push(`<b>${n1(p.cancelled)}</b> SP cancelled`);
+    if(p.leave)      why.push(`<b>${p.leave}</b> leave day(s) <span style="color:var(--hint)">(already out of capacity)</span>`);
+    if(p.oncallDays) why.push(`<b>${p.oncallDays}</b> on-call day(s) <span style="color:var(--hint)">(already out of capacity)</span>`);
+    if(p.addedMid)   why.push(`<b>${p.addedMid}</b> ticket(s) added mid-sprint`);
+    if(s.reviewsGiven||s.reviewCommentsGiven)
+      why.push(`<b>${s.reviewsGiven||0}</b> reviews, <b>${s.reviewCommentsGiven||0}</b> review comments on others' PRs`);
+    if(s.prsMerged!=null) why.push(`<b>${s.prsOpened}</b> PRs opened, <b>${s.prsMerged}</b> merged vs <b>${p.closedTickets}</b> tickets closed`);
+    if(s.slackMessages!=null) why.push(`<b>${s.slackMessages}</b> Slack messages`);
+    if(TL.delivered != null && TL.delivered > T.delivered)
+      why.push(`if everything in flight lands: <b>${n1(TL.delivered)}</b> SP, ${TL.pace}% of ${
+        n1(TL.capacity)} — <b>${TL.vsLevel}</b> level`);
+    return `<tr class="${low?'lowconf':''}">
+      <td>${esc(p.name)}${p.offRoster?'<span class="tag warn">off roster</span>':''}
+        <div class="sig">${esc(p.role||'')}${b?` · band ${n1(b.low)}–${n1(b.high)} SP over ${T.days}d`:''}</div></td>
+      <td class="n">${T.capacity?n1(T.capacity):'—'}</td>
+      <td class="n">${n1(T.delivered)}</td>
+      <td class="n">${n1(p.inFlight)}</td>
+      <td class="n">${n1(p.notStarted)}</td>
+      <td class="n ${p.stale?'':''}">${p.stale||0}</td>
+      <td style="min-width:120px">${measured}</td>
+      <td style="max-width:420px"><details><summary>why</summary>
+        <div class="sig" style="margin-top:6px">${why.join('<br>')||'nothing outstanding'}</div>
+      </details></td></tr>`;
+  });
+  document.getElementById('ppl').innerHTML = `
+  <div class="ph"><h2>Per developer</h2>
+    <span class="n">delivery against the days actually available so far · lowest confidence first</span></div>
+  <div style="overflow-x:auto"><table>
+    <thead><tr><th>Developer</th><th class="n">Cap to date</th><th class="n">Done</th>
+      <th class="n">In flight</th><th class="n">Not started</th><th class="n">Stale</th>
+      <th>Pace</th><th>Why</th></tr></thead>
+    <tbody>${rows.join('')||`<tr><td colspan="8" class="state">no people</td></tr>`}</tbody>
+  </table></div>
+  <div class="note"><b>·</b> Capacity is net days × the SP-per-day band for that level, and the
+    band is deliberately lower for senior tiers — an SDE3 is expected to spend about half their
+    time on design, review and unblocking.<br>
+    <b>·</b> Where hygiene is too poor the pace figure is withheld rather than shown low. A
+    number produced by bad bookkeeping is an accusation you cannot back.<br>
+    <b>·</b> <b>On-call ${ST.incOncall?'included':'excluded'}.</b> Capacity already removes
+    on-call days, so counting on-call tickets without putting those days back credits the
+    rota twice. The toggle moves both sides together; mixing them is what turns 80% into
+    213%.<br>
+    ${(((D.insights||{}).notes)||[]).map(x=>`<b>·</b> ${esc(x)}`).join('<br>')}</div>`;
+}
+
+function renderAsks(){
+  // What to actually do, derived from the rows rather than left to the reader.
+  const t = D.totals, out = [];
+  if(t.lowConfidence)
+    out.push(`<b>Fix the board before judging anyone.</b> ${t.lowConfidence} developer(s)
+      cannot be measured this sprint. Ask them to move or close what is stale, and to estimate
+      what is not estimated, before the retro.`);
+  if(t.notStartedSP > 0 && D.pace.remaining <= 2)
+    out.push(`<b>${n1(t.notStartedSP)} SP has not been started</b> with ${D.pace.remaining}
+      working day(s) left. Decide now what carries, rather than discovering it at close.`);
+  if(t.inFlightSP > t.doneSP * 1.5)
+    out.push(`<b>More work is open than closed</b> (${n1(t.inFlightSP)} SP in flight vs
+      ${n1(t.doneSP)} done). Either tickets are not being closed as work finishes, or too many
+      things were started in parallel.`);
+  if(t.addedMidSprint > 5)
+    out.push(`<b>${t.addedMidSprint} tickets were added after the sprint began.</b> Worth
+      knowing whether that is on-call, discovery, or planning that happened late.`);
+  if(t.committedSP > t.capacityFull * 1.3)
+    out.push(`<b>The sprint was over-committed at planning.</b> ${n1(t.committedSP)} SP against
+      ${n1(t.capacityFull)} SP of capacity. This is a planning conversation, not a delivery one.`);
+  const notes = (D.notes||{}).perPerson || null;
+  const narrative = notes ? Object.entries(notes).map(([k,v])=>
+      `<div style="margin-top:8px"><b>${esc(k)}</b> — ${esc(v)}</div>`).join('') : '';
+  document.getElementById('asks').innerHTML = `
+  <div class="ph"><h2>What to do</h2><span class="n">derived from the rows above</span></div>
+  ${out.length?out.map(x=>`<div class="ask">${x}</div>`).join(''):'<div class="state">nothing flagged</div>'}
+  ${narrative?`<div class="ask"><b>From the event store</b>${narrative}</div>`:
+    `<div class="note"><b>·</b> No narrative layer loaded. Run the <code>/sprint-check</code>
+      skill in Claude Code to add per-person context from Slack, GitHub and meetings
+      (it writes <code>derived/sprint-check-notes.json</code>, which this page picks up).</div>`}`;
+}
+
+async function load(){
+  if(!ST.sprints.length){
+    document.getElementById('pace').innerHTML = '<div class="state">Pick a sprint.</div>';
+    ['hyg','ppl','asks'].forEach(i=>document.getElementById(i).innerHTML='<div class="state">—</div>');
+    return;
+  }
+  if(BUSY) return;
+  BUSY = true;
+  document.getElementById('pace').innerHTML = '<div class="state">Loading…</div>';
+  const qs = [`sprints=${ST.sprints.join(',')}`];
+  if(ST.projects.length) qs.push(`projects=${encodeURIComponent(ST.projects.join(','))}`);
+  try{ D = await (await fetch('/api/sprint-check?'+qs.join('&'))).json(); }
+  catch(e){ D = {__error__:e.message}; }
+  BUSY = false;
+  const err = D && (D.__error__ || D.error);
+  if(err){ document.getElementById('pace').innerHTML =
+    `<div class="state">Failed: ${esc(err)}</div>`; return; }
+  try{ renderPace(); renderHygiene(); renderPeople(); renderAsks(); }
+  catch(e){ document.getElementById('pace').innerHTML =
+    `<div class="state">render error: ${esc(e.message)}</div>`; console.error(e); }
+}
+
+async function boot(){
+  wireDD('ddSprints', renderSprintMenu);
+  wireDD('ddProjects', renderProjectMenu);
+  const ob = document.getElementById('onc');
+  const syncOnc = ()=>{ ob.textContent = 'On-call: ' + (ST.incOncall?'included':'excluded');
+                        ob.style.borderColor = ST.incOncall ? 'var(--accent)' : ''; };
+  syncOnc();
+  // Pure re-render: the treatments are both already in the payload, so no refetch.
+  ob.addEventListener('click', ()=>{ ST.incOncall = !ST.incOncall; save(); syncOnc();
+                                     if(D && D.people) renderPeople(); });
+  document.getElementById('reload').addEventListener('click', load);
+  const [s,p] = await Promise.all([
+    fetch('/api/sprints').then(r=>r.json()).catch(()=>({sprints:[]})),
+    fetch('/api/projects').then(r=>r.json()).catch(()=>({projects:[]}))]);
+  SPRINTS = s.sprints||[]; PROJECTS = p.projects||[];
+  // Default to the sprint in progress — this view exists for the one still moving.
+  if(!ST.sprints.length){
+    const act = SPRINTS.find(x=>x.state==='active') || SPRINTS[0];
+    if(act){ ST.sprints=[act.id]; save(); }
+  }
+  syncBtns();
+  load();
+}
+boot();
+</script>
+</body>
+</html>

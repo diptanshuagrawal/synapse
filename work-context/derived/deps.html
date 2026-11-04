@@ -1,0 +1,637 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pod Dependencies — coordination view</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+  :root{
+    --bg:#f3f6fa; --surface:#ffffff; --surface2:#eef2f8; --border:#e4e9f2;
+    --text:#15202e; --muted:#5b6675; --hint:#9aa6b4;
+    --accent:#3a55d9; --accent-2:#2c41b8; --accent-soft:rgba(58,85,217,.07);
+    --ok:#3b6b3f; --ok-bg:#e9f1e8; --warn:#866113; --warn-bg:#f6efdd;
+    --danger:#b23a4a; --danger-bg:#f8edef;
+    --shadow:0 1px 2px rgba(20,32,46,.04),0 2px 6px rgba(20,32,46,.05);
+    --radius:14px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:'Hanken Grotesk',-apple-system,system-ui,sans-serif;font-size:14px;line-height:1.45;}
+  .wrap{max-width:1240px;margin:0 auto;padding:26px 24px 70px;}
+  h1{font-size:21px;font-weight:700;margin:0;letter-spacing:-.01em;}
+  .byline{color:var(--muted);font-size:12.5px;margin:3px 0 0;}
+  .byline b{color:var(--text);font-weight:600;}
+  .rule{height:2px;background:var(--accent);opacity:.75;border-radius:2px;margin:14px 0 22px;}
+  h2{font-size:15px;font-weight:700;color:var(--accent-2);margin:26px 0 4px;}
+  .sec{border-bottom:1px solid var(--border);margin-bottom:12px;padding-bottom:8px;}
+  .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px;}
+  select,input[type=search]{font-family:inherit;font-size:12.5px;color:var(--text);
+    background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:7px 10px;}
+  input[type=search]{min-width:230px;}
+  select:hover,input[type=search]:focus{border-color:var(--accent);outline:none;}
+  button.bt{font-family:inherit;font-size:12.5px;padding:7px 12px;border-radius:9px;cursor:pointer;
+    border:1px solid var(--border);background:var(--surface);color:var(--text);}
+  button.bt:hover{background:var(--surface2);}
+  button.bt.on{border-color:var(--accent);color:var(--accent-2);background:var(--accent-soft);font-weight:600;}
+  /* headline cards */
+  .cards{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(178px,1fr));}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:13px 15px;}
+  .card .l{font-size:11.5px;color:var(--muted);}
+  .card .v{font-size:27px;font-weight:700;font-family:'IBM Plex Mono',monospace;margin:2px 0 1px;}
+  .card .v.warn{color:var(--warn);} .card .v.bad{color:var(--danger);} .card .v.good{color:var(--ok);}
+  .card .v.small{font-size:16px;line-height:1.7;}
+  .card .s{font-size:11px;color:var(--hint);}
+  /* tables */
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:4px 16px 12px;}
+  table{width:100%;border-collapse:collapse;}
+  th{text-align:left;font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);
+    font-weight:600;padding:12px 8px 9px;border-bottom:1px solid var(--border);white-space:nowrap;}
+  th.n,td.n{text-align:right;}
+  td{padding:9px 8px;border-bottom:1px solid var(--border);vertical-align:top;font-size:13px;}
+  tr:last-child td{border-bottom:none;}
+  tbody tr:hover{background:var(--accent-soft);}
+  .mono{font-family:'IBM Plex Mono',monospace;font-size:11.5px;}
+  a.key{color:var(--accent-2);text-decoration:none;font-family:'IBM Plex Mono',monospace;
+    font-size:11.5px;font-weight:600;}
+  a.key:hover{text-decoration:underline;}
+  .sum{font-weight:600;display:block;max-width:330px;}
+  .sub{color:var(--hint);font-size:11px;}
+  .pod{font-weight:600;}
+  .pill{display:inline-block;font-size:10px;font-weight:600;border-radius:6px;padding:2px 7px;
+    white-space:nowrap;}
+  .pill.ready{color:var(--ok);background:var(--ok-bg);}
+  .pill.budget{color:var(--warn);background:var(--warn-bg);}
+  .pill.epic{color:var(--danger);background:var(--danger-bg);}
+  .pill.due{color:var(--accent-2);background:var(--accent-soft);}
+  .act{color:var(--muted);font-size:12px;max-width:290px;}
+  .bar{height:6px;border-radius:4px;background:var(--surface2);overflow:hidden;min-width:70px;margin-top:5px;}
+  .bar>i{display:block;height:100%;background:var(--accent);border-radius:4px;}
+  .state{padding:30px;text-align:center;color:var(--muted);}
+  .grp{cursor:pointer;}
+  .grp:hover .pod{color:var(--accent-2);}
+  .foot{color:var(--hint);font-size:11.5px;margin:10px 4px;}
+  .dd{position:relative;}
+  .dd>button{font-family:inherit;font-size:12.5px;color:var(--text);background:var(--surface);
+    border:1px solid var(--border);border-radius:9px;padding:7px 12px;cursor:pointer;min-width:172px;text-align:left;}
+  .dd>button:hover{border-color:var(--accent);}
+  .dd>button.on{border-color:var(--accent);color:var(--accent-2);background:var(--accent-soft);font-weight:600;}
+  .dd .menu{display:none;position:absolute;z-index:20;left:0;margin-top:4px;background:var(--surface);
+    border:1px solid var(--border);border-radius:11px;box-shadow:var(--shadow);padding:8px;
+    min-width:200px;max-height:330px;overflow:auto;}
+  .dd.open .menu{display:block;}
+  .dd .menu label{display:flex;gap:8px;align-items:center;padding:6px 8px;border-radius:8px;
+    cursor:pointer;font-size:13px;white-space:nowrap;}
+  .dd .menu label:hover{background:var(--surface2);}
+  .dd .menu .mact{display:flex;gap:6px;padding:4px 6px 8px;border-bottom:1px solid var(--border);margin-bottom:5px;}
+  .dd .menu .mact button{font-family:inherit;font-size:11.5px;color:var(--accent-2);background:none;
+    border:1px solid var(--border);border-radius:7px;padding:3px 9px;cursor:pointer;}
+  .dd .menu .mact button:hover{border-color:var(--accent);background:var(--accent-soft);}
+  .bar>i.hot{background:var(--danger);}
+  .stale{color:var(--warn);background:var(--warn-bg);border-radius:6px;padding:1px 6px;font-weight:600;}
+  .amb{font-size:10px;color:var(--warn);background:var(--warn-bg);border-radius:6px;
+    padding:2px 6px;margin-left:7px;font-weight:600;}
+  tr.team{cursor:pointer;background:var(--surface2);}
+  tr.team:hover .pod{color:var(--accent-2);}
+  tr.team td{padding:10px;}
+  tr.team .caret{color:var(--hint);font-size:10px;margin-right:6px;}
+  tr.team .tmeta{color:var(--muted);font-size:12px;margin:0 10px;}
+  tr.sub-row td.ind{padding-left:26px;}
+  .podwrap{display:flex;flex-wrap:wrap;gap:3px;max-width:230px;}
+  .podchip{display:inline-block;font-size:10px;font-weight:600;line-height:1.5;
+    color:var(--muted);background:var(--surface2);border-radius:5px;padding:1px 5px;white-space:nowrap;}
+  .podchip.own{color:var(--accent-2);background:var(--accent-soft);}
+  .podchip.more{color:var(--hint);background:none;border:1px dashed var(--border);}
+  button.copy{font-family:inherit;font-size:11px;color:var(--accent-2);background:var(--surface);
+    border:1px solid var(--border);border-radius:7px;padding:3px 9px;cursor:pointer;margin-left:10px;}
+  button.copy:hover{border-color:var(--accent);background:var(--accent-soft);}
+  button.copy.done{color:var(--ok);border-color:var(--ok-bg);background:var(--ok-bg);}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Pod Dependencies</h1>
+  <div class="byline" id="byline">loading…</div>
+  <div class="rule"></div>
+
+  <h2>Headline</h2><div class="sec"></div>
+  <div class="cards" id="cards"></div>
+
+  <h2>Per dependent pod</h2><div class="sec"></div>
+  <div class="controls">
+    <button class="bt on" id="driBtn">Tech DRI: me</button>
+    <div class="dd" id="ddCycles"><button type="button">Planning cycle: all</button><div class="menu"></div></div>
+    <button class="bt" id="reload" title="Rebuild this register from Jira">↻ Reload from Jira</button>
+    <span class="foot" id="scopeNote"></span>
+  </div>
+  <div class="panel" id="groups"><div class="state">Loading…</div></div>
+
+  <h2>Dependencies register</h2><div class="sec"></div>
+  <div class="controls">
+    <button class="bt on" id="podWise">POD wise</button>
+    <button class="bt" id="flatList">Flat list</button>
+    <button class="bt" id="expandAll">Expand all</button>
+    <button class="bt" id="collapseAll">Collapse all</button>
+    <button class="bt" id="copyAll" title="Copy the filtered list as text you can paste to an EM">⧉ Copy list</button>
+    <div class="dd" id="ddCols"><button type="button">＋ Columns</button><div class="menu"></div></div>
+    <input type="search" id="q" placeholder="Filter initiatives…">
+    <select id="podSel"><option value="">Pod: all</option></select>
+    <select id="stateSel">
+      <option value="">Status: all</option>
+      <option>Missing epic</option><option>Missing budget</option>
+      <option>No due date</option><option>Ready</option>
+    </select>
+    <span class="foot" id="rowCount"></span>
+  </div>
+  <div class="panel" id="rows"><div class="state">Loading…</div></div>
+</div>
+<script>
+let D = null, DRI = 'me', CYCLES = [];
+const esc = s => String(s==null?'':s).replace(/[<>&"]/g, c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+const CMON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function byCycle(a,b){
+  const p = s => { const [m,y] = String(s).split('-'); return (+y||0)*100 + (CMON.indexOf(m)+1); };
+  return p(a) - p(b) || String(a).localeCompare(b);
+}
+// prefixes are not unique (BOARD covers Transactions AND Accounting) — disambiguate collisions
+function podShortLabels(pods){
+  const parts = pods.map(p=>{ const i = p.indexOf(' - ');
+    return i < 0 ? [p.trim(), ''] : [p.slice(0, i).trim(), p.slice(i + 3).trim()]; });
+  const seen = {};
+  parts.forEach(([pre])=>{ seen[pre] = (seen[pre] || 0) + 1; });
+  return parts.map(([pre, rest], i)=>{
+    if(seen[pre] < 2 || !rest) return pre;
+    const words = rest.replace(/\b(platform|pod|team)\b/ig, '').trim().split(/\s+/).filter(Boolean);
+    return words.length ? `${pre}·${words[words.length - 1]}` : `${pre}·${i + 1}`;
+  });
+}
+const POD_CHIP_CAP = 6;
+function podChips(pods, mine){
+  pods = (pods || []).filter(Boolean);
+  if(!pods.length) return '<span class="sub">—</span>';
+  const own = new Set(mine || []);
+  const labels = podShortLabels(pods);
+  const shown = pods.slice(0, POD_CHIP_CAP).map((p, i)=>
+    `<span class="podchip${own.has(p) ? ' own' : ''}" title="${esc(p)}">${esc(labels[i])}</span>`).join('');
+  const extra = pods.length - POD_CHIP_CAP;
+  return `<span class="podwrap" title="${esc(pods.join('\n'))}">${shown}` +
+    (extra > 0 ? `<span class="podchip more">+${extra}</span>` : '') + '</span>';
+}
+const pillClass = s => s==='Ready'?'ready':s==='Missing epic'?'epic':s==='Missing budget'?'budget':'due';
+
+function cycleToYm(c){
+  const [m, y] = String(c).split('-');
+  const i = CMON.indexOf(m);
+  return i < 0 ? null : `20${y}-${String(i+1).padStart(2,'0')}`;
+}
+function defaultWindow(){
+  const n = new Date(), a = new Date(n.getFullYear(), n.getMonth(), 1),
+        b = new Date(n.getFullYear(), n.getMonth()+1, 1);
+  return [a, b].map(d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`);
+}
+// the months whose budgets we show ARE the selected cycles — no separate window picker
+function selectedMonths(){
+  const yms = [...new Set(CYCLES.map(cycleToYm).filter(Boolean))].sort();
+  return yms.length ? yms : defaultWindow();
+}
+const label = ym => new Date(+ym.split('-')[0], +ym.split('-')[1]-1, 1)
+  .toLocaleString('en-US',{month:'short', year:'2-digit'}).replace(' ','-');
+
+async function load(fresh){
+  const btn = document.getElementById('reload');
+  btn.disabled = true; btn.textContent = fresh ? '↻ Reloading…' : '↻ Reload from Jira';
+  document.getElementById('groups').innerHTML =
+    `<div class="state">${fresh?'Rebuilding from Jira — this walks every counterpart pod\'s epics, so it takes a moment…':'Loading…'}</div>`;
+  document.getElementById('rows').innerHTML = '<div class="state">Loading…</div>';
+  const q = new URLSearchParams();
+  q.set('dri', DRI);
+  q.set('months', selectedMonths().join(','));
+  if(fresh) q.set('fresh', '1');
+  try{
+    D = await (await fetch('/api/dependencies?'+q)).json();
+  }catch(e){ D = {__error__: e.message}; }
+  btn.disabled = false; btn.textContent = '↻ Reload from Jira';
+  if(D.__error__){
+    document.getElementById('groups').innerHTML = `<div class="state">failed: ${esc(D.__error__)}</div>`;
+    document.getElementById('rows').innerHTML = '';
+    return;
+  }
+  renderAll();
+}
+
+// Planning cycle scopes the whole report — cards, per-pod table and rows — so the totals
+// always describe the same set of initiatives you are looking at.
+function scopeRows(){
+  if(!CYCLES.length) return D.rows;
+  return D.rows.filter(r=>(r.cycles||[]).some(c=>CYCLES.includes(c)));
+}
+// Planning Cycle / budgets are edited in Jira all day during planning season, so a cached
+// payload that is merely an hour old can already disagree with Jira and silently show an
+// initiative under the wrong cycle. Past STALE_MINS the age is called out, not just stated.
+const STALE_MINS = 30;
+function freshnessAge(){
+  const g = D.generated ? new Date(D.generated) : null;
+  if(!g || isNaN(g)) return null;
+  return Math.round((Date.now() - g.getTime()) / 60000);
+}
+function freshness(){
+  const mins = freshnessAge();
+  if(mins === null) return 'generated —';
+  const age = mins < 1 ? 'just now' : mins < 60 ? `${mins} min ago`
+            : mins < 1440 ? `${Math.round(mins/60)} h ago` : `${Math.round(mins/1440)} d ago`;
+  return `from Jira ${age}${D.cached ? ' (cached)' : ''}`;
+}
+function freshnessHtml(){
+  const mins = freshnessAge();
+  const txt = esc(freshness());
+  if(mins === null || mins < STALE_MINS) return txt;
+  return `<span class="stale" title="Jira may have changed since this was built — hit ↻ Reload from Jira">`
+       + `${txt} · may be out of date</span>`;
+}
+const cycleText = () => CYCLES.length ? CYCLES.join(', ') : '';
+function summarise(rows){
+  const mlabels = D.months.map(m=>m.label);
+  const groups = new Map();
+  rows.forEach(r=>{
+    let g = groups.get(r.pod);
+    if(!g){ g = {pod:r.pod, count:0, sp:0, missingEpic:0, missingBudget:0, ready:0,
+                 months:Object.fromEntries(mlabels.map(l=>[l,0]))}; groups.set(r.pod, g); }
+    g.count++; g.sp = Math.round((g.sp + r.sp)*10)/10;
+    mlabels.forEach(l=>{ g.months[l] = Math.round((g.months[l] + (r.months[l]||0))*10)/10; });
+    if(r.state==='Missing epic') g.missingEpic++;
+    else if(r.state==='Missing budget') g.missingBudget++;
+    else if(r.state==='Ready') g.ready++;
+  });
+  const list = [...groups.values()].sort((a,b)=>b.count-a.count || a.pod.localeCompare(b.pod));
+  const top = list[0];
+  return {groups:list, cards:{
+    initiatives: new Set(rows.map(r=>r.key)).size,
+    pods: list.length,
+    sp: Math.round(list.reduce((a,g)=>a+g.sp,0)*10)/10,
+    topPod: top?top.pod:'', topCount: top?top.count:0,
+    missingEpic: list.reduce((a,g)=>a+g.missingEpic,0),
+    missingBudget: list.reduce((a,g)=>a+g.missingBudget,0),
+    ready: list.reduce((a,g)=>a+g.ready,0),
+  }};
+}
+
+function renderAll(){
+  const scoped = scopeRows();
+  const {groups: GROUPS, cards: c} = summarise(scoped);
+  const ms = D.months.map(m=>m.label).join(' + ');
+  document.getElementById('byline').innerHTML =
+    `<b>${esc(D.me.name||'—')}</b> · ${esc(D.myPods.join(', '))}`
+    + ` &nbsp;|&nbsp; ${esc(ms)} &nbsp;|&nbsp; ${freshnessHtml()}`;
+  document.getElementById('scopeNote').textContent =
+    (D.driOnly ? 'Only initiatives where you are the Tech DRI.' : 'All initiatives on your pod.')
+    + (CYCLES.length ? ` Planning cycle ${cycleText()} only.` : '');
+
+  const card = (l,v,s,cls='') => `<div class="card"><div class="l">${l}</div>
+    <div class="v ${cls}">${v}</div><div class="s">${s}</div></div>`;
+  document.getElementById('cards').innerHTML =
+      card('Shared initiatives', c.initiatives,
+           CYCLES.length?`in ${esc(cycleText())}`:(D.driOnly?'where you are Tech DRI':'on your pod'))
+    + card('Dependent pods', c.pods, 'teams tagged on your initiatives')
+    + card('Dependencies', scoped.length, 'initiative × pod rows')
+    + card('No delivery epic', c.missingEpic, 'team tagged, nothing created their side',
+           c.missingEpic?'bad':'good')
+    + card('No budget', c.missingBudget, 'their epic exists, no SP', c.missingBudget?'warn':'good')
+    + card('Biggest gap', esc(c.topPod.split(' - ')[0]||'—'), `${c.topCount} without an epic`, 'small');
+
+  const max = Math.max(1, ...GROUPS.map(g=>g.count));
+  const mlabels = D.months.map(m=>m.label);
+  document.getElementById('groups').innerHTML = GROUPS.length ? `<table>
+    <thead><tr><th>Dependent pod</th><th class="n">Deps</th><th class="n">No epic</th>
+      <th class="n">No budget</th><th class="n">Ready</th>
+      ${mlabels.map(l=>`<th class="n">${esc(l)} SP</th>`).join('')}
+      <th class="n">Their SP</th></tr></thead>
+    <tbody>${GROUPS.map(g=>`<tr class="grp" data-pod="${esc(g.pod)}">
+      <td><span class="pod">${esc(g.pod)}</span>${g.ambiguous?'<span class="amb" title="This pod shares your Jira project, so a linked epic cannot be attributed to one pod or the other">shared project</span>':''}
+          <div class="bar"><i class="${g.missingEpic?'hot':''}" style="width:${g.count/max*100}%"></i></div></td>
+      <td class="n mono">${g.count}</td>
+      <td class="n mono" style="color:${g.missingEpic?'var(--danger)':'var(--hint)'}"><b>${g.missingEpic}</b></td>
+      <td class="n mono" style="color:${g.missingBudget?'var(--warn)':'var(--hint)'}">${g.missingBudget}</td>
+      <td class="n mono" style="color:${g.ready?'var(--ok)':'var(--hint)'}">${g.ready}</td>
+      ${mlabels.map(l=>`<td class="n mono">${g.months[l]||0}</td>`).join('')}
+      <td class="n mono"><b>${g.sp}</b></td>
+    </tr>`).join('')}</tbody></table>`
+    : `<div class="state">No shared initiatives${CYCLES.length?` in ${esc(cycleText())}`:''}.</div>`;
+  document.querySelectorAll('tr.grp').forEach(tr=>tr.addEventListener('click', ()=>{
+    document.getElementById('podSel').value = tr.dataset.pod;
+    OPEN.add(tr.dataset.pod);
+    renderRows();
+    document.getElementById('rows').scrollIntoView({behavior:'smooth', block:'start'});
+  }));
+
+  renderCycleMenu([...new Set(D.rows.flatMap(r=>r.cycles||[]))].sort(byCycle));
+  renderColMenu();
+  const pods = [...new Set(scoped.map(r=>r.pod))].sort();
+  const ps = document.getElementById('podSel'), keep = ps.value;
+  ps.innerHTML = '<option value="">Pod: all</option>' +
+    pods.map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join('');
+  ps.value = pods.includes(keep) ? keep : '';
+  renderRows();
+}
+
+let VIEW = 'pod', OPEN = new Set();
+// A paste-ready chase list. Plain text with real Jira links, because this ends up in Slack
+// or mail where a table would not survive.
+// Handover readiness, SOP v2. Source: engg-cycle-planner scripts/emplan/scorer.py —
+// per initiative x team x cycle month: 1 (no delivery epic), 3 (epic but the month's budget
+// field is empty), 10 (both). A budget field SET to 0 counts as filled for the score, so it
+// is reported separately rather than silently passing or silently failing.
+function depScore(hasEpic, budgetSet){ return !hasEpic ? 1 : (!budgetSet ? 3 : 10); }
+// Cancelled epics do not count as linked; Done epics do.
+const depLive = r => !!r.epic && String(r.epicStatus || '').toLowerCase() !== 'cancelled';
+
+function readinessRows(r){
+  const viewed = CYCLES.length ? CYCLES : D.months.map(m=>m.label);
+  const own = r.cycles || [];
+  const inBoth = viewed.filter(l => !own.length || own.includes(l));
+  // An initiative tagged for a cycle outside the current view is still worth chasing, but
+  // it must be labelled with ITS cycle rather than scored against months it does not claim.
+  const use = inBoth.length ? inBoth : (own.length ? own : viewed);
+  return use.map(l=>{
+    const sp  = +((r.months||{})[l]) || 0;
+    const set = ((r.monthsSet||{})[l]) === true;
+    return {month:l, sp, set, zero: set && sp <= 0, score: depScore(depLive(r), set)};
+  });
+}
+
+function copyText(rows, podName){
+  const mine  = D.myPods.join(', ');
+  const scope = CYCLES.length ? `planning cycle ${cycleText()}` : D.months.map(m=>m.label).join(' + ');
+  const head  = podName
+    ? `${podName} \u2014 what is still open for ${mine} (${scope})`
+    : `Cross-pod dependencies on ${mine} (${scope})`;
+
+  // one readiness row per initiative x cycle month, exactly as the handover score counts them
+  const all = [];
+  rows.forEach(r => readinessRows(r).forEach(x => all.push({r, ...x})));
+  const avg = all.length ? Math.round(all.reduce((t,x)=>t+x.score,0) / all.length * 10) / 10 : null;
+  const green = all.filter(x=>x.score === 10 && !x.zero).length;
+
+  const tag = r => `  \u2022 ${r.key} \u2014 ${r.summary}${podName ? '' : ` [${r.pod}]`}\n    ${r.url}`;
+  const uniq = xs => [...new Map(xs.map(x=>[x.r.key, x.r])).values()];
+  const sect = (title, items, detail) => items.length
+    ? `\n${title}\n` + items.map(x =>
+        tag(x.r) + (detail ? `\n    ${detail(x)}` : '')).join('\n') + '\n'
+    : '';
+
+  const noEpic   = all.filter(x=>x.score === 1);
+  const noBudget = all.filter(x=>x.score === 3);
+  const zeroBud  = all.filter(x=>x.zero);
+  const noDue    = uniq(all.filter(x=>x.score === 10 && !x.zero && depLive(x.r) && !x.r.epicDue))
+                     .map(r=>({r}));
+
+  // collapse the per-month rows so an initiative is listed once with the months it is missing
+  const byInit = list => {
+    const m = new Map();
+    list.forEach(x=>{ const e = m.get(x.r.key) || {r:x.r, months:[]}; e.months.push(x.month); m.set(x.r.key, e); });
+    return [...m.values()];
+  };
+
+  let body = '';
+  body += byInit(noEpic).length
+    ? `\nNO DELIVERY EPIC \u2014 scores 1/10 until one exists\n`
+      + byInit(noEpic).map(e=>`${tag(e.r)}\n    needed for ${e.months.join(', ')}`).join('\n') + '\n'
+    : '';
+  body += byInit(noBudget).length
+    ? `\nEPIC EXISTS BUT NO BUDGET \u2014 scores 3/10 until the month is filled\n`
+      + byInit(noBudget).map(e=>`${tag(e.r)}\n    ${e.r.epic} has no budget for ${e.months.join(', ')}`).join('\n') + '\n'
+    : '';
+  body += byInit(zeroBud).length
+    ? `\nBUDGETED 0 SP \u2014 counts as filled for the score, but nothing is committed\n`
+      + byInit(zeroBud).map(e=>`${tag(e.r)}\n    ${e.r.epic} is set to 0 for ${e.months.join(', ')}`).join('\n') + '\n'
+    : '';
+  body += noDue.length
+    ? `\nNOT FORMALLY ACCEPTED \u2014 epic has no due date, which is the acceptance signal.\n`
+      + `These score 10, so they read green on the sheet.\n`
+      + noDue.map(x=>`${tag(x.r)}\n    ${x.r.epic} has no due date`).join('\n') + '\n'
+    : '';
+
+  const flagged = new Set([...noEpic, ...noBudget, ...zeroBud].map(x=>x.r.key)
+                          .concat(noDue.map(x=>x.r.key)));
+  const ready = uniq(all.filter(x=>x.score === 10 && !x.zero && x.r.epicDue
+                                   && !flagged.has(x.r.key)));
+  if(ready.length) body += `\nALREADY READY\n` + ready.map(r=>
+    `  \u2022 ${r.key} \u2014 ${r.epic} \u00b7 due ${r.epicDue}`).join('\n') + '\n';
+
+  const asks = [];
+  if(byInit(noEpic).length)   asks.push('create and link a delivery epic for the items above');
+  if(byInit(noBudget).length) asks.push('fill the monthly budget on the epics listed');
+  if(byInit(zeroBud).length)  asks.push('confirm the 0 SP entries are deliberate');
+  if(noDue.length)            asks.push('put a due date on the epics listed, which is what signals you have accepted the dependency');
+  const ask = asks.length ? `\nAsk: ${asks.join('; ')}.\n` : '\nNothing outstanding.\n';
+
+  const score = avg == null ? ''
+    : `Handover readiness for these rows: ${green}/${all.length} ready \u00b7 average ${avg}/10\n`
+      + `(these are ${podName || 'their'} rows, scored on their side \u2014 1 = no epic, `
+      + `3 = epic but no budget for the month, 10 = both)\n`;
+  return `${head}\nTech DRI: ${D.me.name}\n${score}${body}${ask}`;
+}
+async function copyToClipboard(text, btn){
+  const label = btn.textContent;
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(text);
+    }else{
+      // file:// and older browsers have no async clipboard — fall back to a hidden textarea
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); ta.remove();
+    }
+    btn.textContent = '✓ Copied'; btn.classList.add('done');
+  }catch(e){
+    btn.textContent = 'Copy failed'; 
+  }
+  setTimeout(()=>{ btn.textContent = label; btn.classList.remove('done'); }, 1800);
+}
+
+// one definition of "what you are looking at", shared by the table and the copy buttons
+function visibleRows(){
+  const q = document.getElementById('q').value.trim().toLowerCase();
+  const pod = document.getElementById('podSel').value;
+  const st = document.getElementById('stateSel').value;
+  return scopeRows().filter(r=>
+    (!pod || r.pod === pod) && (!st || r.state === st) &&
+    (!q || (r.key + ' ' + r.summary + ' ' + r.pod + ' ' + r.epic).toLowerCase().includes(q)));
+}
+// Register columns. "Team / initiative" is the row's identity and always shows; everything
+// else is opt-in. `months` is one entry that expands to a column per selected month.
+const REG_COLS = [
+  {id:'pods',       label:'PODs',            render:r=>podChips(r.podTags, D.myPods)},
+  {id:'state',      label:'Status',          render:r=>r.epic
+    ? `<span class="pill ${pillClass(r.state)}">${esc(r.state)}</span>`
+    : '<span class="pill epic">Missing (team tagged, no delivery epic)</span>'},
+  {id:'theirEpic',  label:'Their epic',      render:r=>r.epic
+    ? `<a class="key" href="${esc(r.epicUrl)}" target="_blank" rel="noopener">${esc(r.epic)}</a>
+       <span class="sub">${esc(r.epicStatus||'')}</span>` : '<span class="sub">No epic</span>'},
+  {id:'epicDue',    label:'Epic due',        render:r=>r.epicDue?`<span class="mono">${esc(r.epicDue)}</span>`:'<span class="sub">—</span>'},
+  {id:'epicOwner',  label:'Owner',           render:r=>`<span class="sub">${esc(r.epicOwner||'—')}</span>`},
+  {id:'epicHealth', label:'Their health',    render:r=>`<span class="sub">${esc(r.epicHealth||'—')}</span>`},
+  {id:'months',     label:'Their SP',        months:true},
+  {id:'myEpic',     label:'Your epic',       render:r=>r.myEpic
+    ? `<a class="key" href="${esc(r.myEpicUrl)}" target="_blank" rel="noopener">${esc(r.myEpic)}</a>` : '<span class="sub">—</span>'},
+  {id:'cycles',     label:'Planning cycle',  render:r=>`<span class="sub">${esc((r.cycles||[]).join(', ')||'—')}</span>`},
+  {id:'orgPri',     label:'Org priority',    render:r=>`<span class="sub">${esc(r.orgPriority||'—')}</span>`},
+  {id:'initStatus', label:'Initiative status', render:r=>`<span class="sub">${esc(r.status||'—')}</span>`},
+  {id:'techDri',    label:'Tech DRI',        render:r=>`<span class="sub">${esc(r.techDri||'—')}</span>`},
+  {id:'prodDri',    label:'Product DRI',     render:r=>`<span class="sub">${esc(r.prodDri||'—')}</span>`},
+  {id:'action',     label:'Next action',     render:r=>`<span class="act">${esc(r.nextAction)}</span>`},
+];
+const DEFAULT_COLS = ['state','theirEpic','epicDue','epicOwner','months','myEpic','action'];
+let COLS = (()=>{ try{ return JSON.parse(localStorage.getItem('depsCols')) || DEFAULT_COLS.slice(); }
+                  catch(e){ return DEFAULT_COLS.slice(); } })();
+const activeCols = () => REG_COLS.filter(c=>COLS.includes(c.id));
+function saveCols(){ try{ localStorage.setItem('depsCols', JSON.stringify(COLS)); }catch(e){} }
+function renderColMenu(){
+  const dd = document.getElementById('ddCols');
+  dd.querySelector('.menu').innerHTML =
+    `<div class="mact"><button data-reset>Reset</button><button data-none>Clear</button></div>` +
+    REG_COLS.map(c=>`<label><input type="checkbox" value="${c.id}" ${COLS.includes(c.id)?'checked':''}> ${esc(c.label)}</label>`).join('');
+  const btn = dd.querySelector('button');
+  btn.textContent = `＋ Columns (${COLS.length})`;
+  const apply = ()=>{
+    const on = new Set([...dd.querySelectorAll('.menu input:checked')].map(x=>x.value));
+    COLS = REG_COLS.filter(c=>on.has(c.id)).map(c=>c.id);   // keep registry order
+    saveCols(); renderColMenu(); renderRows();
+  };
+  dd.querySelectorAll('.menu input').forEach(cb=>cb.addEventListener('change', apply));
+  dd.querySelector('[data-reset]').addEventListener('click', ()=>{ COLS = DEFAULT_COLS.slice(); saveCols(); renderColMenu(); renderRows(); });
+  dd.querySelector('[data-none]').addEventListener('click', ()=>{ COLS = []; saveCols(); renderColMenu(); renderRows(); });
+}
+
+function renderRows(){
+  const scoped = scopeRows();
+  const list = visibleRows();
+  const mlabels = D.months.map(m=>m.label);
+  const teams = [...new Set(list.map(r=>r.pod))].length;
+  document.getElementById('rowCount').textContent =
+    `${teams} teams · ${list.length} dependencies` + (CYCLES.length ? ` · ${cycleText()}` : '');
+
+  const cols = activeCols();
+  const head = `<thead><tr><th>Team / initiative</th>${cols.map(c=>c.months
+      ? mlabels.map(l=>`<th class="n">${esc(l)}</th>`).join('')
+      : `<th>${esc(c.label)}</th>`).join('')}</tr></thead>`;
+  const cells = r => cols.map(c=>c.months
+      ? mlabels.map(l=>`<td class="n mono">${r.months[l]||0}</td>`).join('')
+      : `<td>${c.render(r)}</td>`).join('');
+  const span = 1 + cols.reduce((a,c)=>a + (c.months ? mlabels.length : 1), 0);
+
+  if(!list.length){
+    document.getElementById('rows').innerHTML = '<div class="state">Nothing matches these filters.</div>';
+    return;
+  }
+  if(VIEW === 'flat'){
+    document.getElementById('rows').innerHTML = `<table>${head}<tbody>${list.map(r=>`<tr>
+      <td><a class="key" href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.key)}</a>
+          <span class="sum">${esc(r.summary)}</span>
+          <span class="sub">${esc(r.pod)}</span></td>${cells(r)}</tr>`).join('')}</tbody></table>`;
+    return;
+  }
+  // POD wise: one collapsible block per team, worst (most missing epics) first
+  const by = new Map();
+  list.forEach(r=>{ if(!by.has(r.pod)) by.set(r.pod, []); by.get(r.pod).push(r); });
+  const blocks = [...by.entries()].sort((a,b)=>
+    b[1].filter(r=>!r.epic).length - a[1].filter(r=>!r.epic).length || b[1].length - a[1].length);
+  document.getElementById('rows').innerHTML = `<table>${head}<tbody>${blocks.map(([podName, rs])=>{
+    const open = OPEN.has(podName);
+    const miss = rs.filter(r=>!r.epic).length;
+    return `<tr class="team" data-pod="${esc(podName)}">
+        <td colspan="${span}">
+          <span class="caret">${open?'▾':'▸'}</span>
+          <span class="pod">${esc(podName)}</span>
+          <span class="tmeta">${rs.length} dependenc${rs.length===1?'y':'ies'}</span>
+          ${miss?`<span class="pill epic">${miss} without a delivery epic</span>`:'<span class="pill ready">all have epics</span>'}
+          <button class="copy" data-copy="${esc(podName)}" title="Copy this team's list to send to their EM">⧉ Copy</button>
+        </td></tr>`
+      + (open ? rs.map(r=>`<tr class="sub-row">
+          <td class="ind"><a class="key" href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.key)}</a>
+              <span class="sum">${esc(r.summary)}</span></td>${cells(r)}</tr>`).join('') : '');
+  }).join('')}</tbody></table>`;
+  document.querySelectorAll('tr.team').forEach(tr=>tr.addEventListener('click', e=>{
+    if(e.target.closest('button.copy')) return;     // copying must not toggle the block
+    const k = tr.dataset.pod;
+    OPEN.has(k) ? OPEN.delete(k) : OPEN.add(k);
+    renderRows();
+  }));
+  document.querySelectorAll('button.copy[data-copy]').forEach(b=>b.addEventListener('click', e=>{
+    e.stopPropagation();
+    const pod = b.dataset.copy;
+    copyToClipboard(copyText(by.get(pod), pod), b);
+  }));
+}
+
+document.getElementById('podWise').addEventListener('click', ()=>{
+  VIEW='pod'; document.getElementById('podWise').classList.add('on');
+  document.getElementById('flatList').classList.remove('on'); if(D) renderRows();
+});
+document.getElementById('flatList').addEventListener('click', ()=>{
+  VIEW='flat'; document.getElementById('flatList').classList.add('on');
+  document.getElementById('podWise').classList.remove('on'); if(D) renderRows();
+});
+document.getElementById('expandAll').addEventListener('click', ()=>{
+  if(!D) return; scopeRows().forEach(r=>OPEN.add(r.pod)); renderRows();
+});
+document.getElementById('collapseAll').addEventListener('click', ()=>{ OPEN.clear(); renderRows(); });
+document.getElementById('reload').addEventListener('click', ()=>load(true));
+document.getElementById('copyAll').addEventListener('click', e=>{
+  if(!D) return;
+  const rows = visibleRows();
+  if(!rows.length){ e.target.textContent = 'Nothing to copy';
+    setTimeout(()=>e.target.textContent='⧉ Copy list', 1500); return; }
+  const pods = new Set(rows.map(r=>r.pod));
+  copyToClipboard(copyText(rows, pods.size === 1 ? [...pods][0] : ''), e.target);
+});
+document.getElementById('q').addEventListener('input', ()=>D&&renderRows());
+document.getElementById('podSel').addEventListener('change', ()=>D&&renderRows());
+document.getElementById('stateSel').addEventListener('change', ()=>D&&renderRows());
+document.getElementById('driBtn').addEventListener('click', e=>{
+  DRI = DRI === 'me' ? 'all' : 'me';
+  e.target.classList.toggle('on', DRI === 'me');
+  e.target.textContent = DRI === 'me' ? 'Tech DRI: me' : 'Tech DRI: anyone';
+  load();
+});
+
+
+function renderCycleMenu(cycles){
+  const dd = document.getElementById('ddCycles');
+  dd.querySelector('.menu').innerHTML =
+    `<div class="mact"><button data-all>Select all</button><button data-none>Clear</button></div>` +
+    (cycles.map(c=>`<label><input type="checkbox" value="${esc(c)}" ${CYCLES.includes(c)?'checked':''}> ${esc(c)}</label>`).join('')
+     || '<div class="foot">no planning cycle set on these initiatives</div>');
+  const btn = dd.querySelector('button');
+  btn.textContent = CYCLES.length ? `Planning cycle: ${CYCLES.length===1?CYCLES[0]:CYCLES.length+' selected'}`
+                                  : 'Planning cycle: all';
+  btn.classList.toggle('on', CYCLES.length > 0);
+  const apply = () => {
+    const before = selectedMonths().join(',');
+    CYCLES = [...dd.querySelectorAll('.menu input:checked')].map(x=>x.value).sort(byCycle);
+    // the budget columns follow the cycles, so changing them needs fresh months from Jira
+    if(selectedMonths().join(',') !== before) load(); else renderAll();
+  };
+  dd.querySelectorAll('.menu input').forEach(cb=>cb.addEventListener('change', apply));
+  dd.querySelector('[data-all]').addEventListener('click', ()=>{
+    dd.querySelectorAll('.menu input').forEach(cb=>cb.checked = true); apply();
+  });
+  dd.querySelector('[data-none]').addEventListener('click', ()=>{
+    dd.querySelectorAll('.menu input').forEach(cb=>cb.checked = false); apply();
+  });
+}
+['ddCycles','ddCols'].forEach(id=>{
+  document.getElementById(id).querySelector('button').addEventListener('click', ()=>{
+    document.querySelectorAll('.dd').forEach(d=>{ if(d.id!==id) d.classList.remove('open'); });
+    document.getElementById(id).classList.toggle('open');
+  });
+});
+document.addEventListener('click', e=>{
+  if(!e.target.closest('.dd')) document.querySelectorAll('.dd').forEach(d=>d.classList.remove('open'));
+});
+load();
+</script>
+</body>
+</html>

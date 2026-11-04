@@ -1,0 +1,2411 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monthly Planner — Initiatives &amp; Capacity</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+  :root{
+    --bg:#f3f6fa; --surface:#ffffff; --surface2:#eef2f8; --border:#e4e9f2;
+    --text:#15202e; --muted:#5b6675; --hint:#9aa6b4;
+    --accent:#3a55d9; --accent-2:#2c41b8; --accent-soft:rgba(58,85,217,.07);
+    --ok:#3b6b3f; --ok-bg:#e9f1e8; --warn:#866113; --warn-bg:#f6efdd; --danger:#b23a4a; --danger-bg:#f8edef;
+    --shadow:0 1px 2px rgba(20,32,46,.04),0 2px 6px rgba(20,32,46,.05);
+    --radius:14px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:'Hanken Grotesk',-apple-system,system-ui,sans-serif;font-size:14px;line-height:1.45;}
+  .wrap{max-width:1180px;margin:0 auto;padding:26px 24px 70px;}
+  .top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px;}
+  h1{font-size:20px;font-weight:700;margin:0;letter-spacing:-.01em;}
+  .sub{color:var(--muted);font-size:12.5px;margin:2px 0 0;}
+  .filters{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;}
+  .dd{position:relative;}
+  .dd>button{font-family:inherit;font-size:12.5px;color:var(--text);background:var(--surface);
+    border:1px solid var(--border);border-radius:10px;padding:8px 12px;cursor:pointer;min-width:150px;text-align:left;}
+  .dd>button:hover{border-color:var(--accent);}
+  .dd .menu{display:none;position:absolute;z-index:20;right:0;margin-top:4px;background:var(--surface);
+    border:1px solid var(--border);border-radius:11px;box-shadow:var(--shadow);padding:8px;min-width:230px;max-height:320px;overflow:auto;}
+  .dd.open .menu{display:block;}
+  .dd .menu label{display:flex;gap:8px;align-items:center;padding:6px 8px;border-radius:8px;cursor:pointer;font-size:13px;}
+  .dd .menu label:hover{background:var(--surface2);}
+  .dd .menu .grp{font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--hint);
+    font-weight:600;padding:8px 8px 3px;}
+  .dd .menu .grp:first-child{padding-top:2px;}
+  button.recalc{font-family:inherit;font-size:12.5px;padding:8px 12px;border-radius:10px;cursor:pointer;
+    border:1px solid var(--border);background:var(--surface);}
+  button.recalc:hover{background:var(--surface2);}
+  /* capacity strip */
+  .strip{margin:8px 0 20px;}
+  .mcap{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 16px;}
+  .mcap .mn{font-size:13px;font-weight:700;}
+  .mcap .nums{display:flex;gap:16px;margin:8px 0 8px;font-family:'IBM Plex Mono',monospace;}
+  .mcap .nums .lbl{font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);display:block;}
+  .mcap .nums b{font-size:20px;}
+  .mcap .planned b{color:var(--accent-2);}
+  .bar{height:7px;border-radius:5px;background:var(--surface2);overflow:hidden;}
+  .bar>i{display:block;height:100%;border-radius:5px;}
+  .bar>i.cool{background:var(--ok);} .bar>i.warm{background:var(--warn);} .bar>i.hot{background:var(--danger);}
+  .verdict{font-size:11.5px;font-weight:600;margin-top:6px;}
+  .verdict.cool{color:var(--ok);} .verdict.warm{color:var(--warn);} .verdict.hot{color:var(--danger);}
+  .cards-strip{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));}
+  .mcap{cursor:pointer;position:relative;} .mcap:hover{border-color:var(--accent);}
+  .mcap .caret{position:absolute;top:12px;right:14px;color:var(--hint);font-size:11px;}
+  .cappanel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:6px 18px 10px;margin-top:12px;}
+  .cappanel .ph{font-size:12px;font-weight:700;padding:12px 8px 4px;}
+  .capcards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:6px 0 14px;}
+  .capcards .c{background:var(--surface2);border-radius:10px;padding:10px 12px;}
+  .capcards .l{font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);}
+  .capcards .v{font-size:20px;font-weight:700;font-family:'IBM Plex Mono',monospace;margin-top:2px;}
+  .gridwrap{overflow-x:auto;}
+  .daygrid{border-collapse:collapse;font-size:11px;} .daygrid th,.daygrid td{border:1px solid var(--border);}
+  .daygrid th.gd{padding:3px 4px;text-align:center;color:var(--muted);min-width:22px;}
+  .daygrid th.gd.we{background:var(--surface2);} .daygrid th.gd.hol{background:var(--accent-soft);}
+  .daygrid th.gd small{display:block;font-size:8px;}
+  .daygrid td.gname,.daygrid th.gname{text-align:left;padding:4px 8px;white-space:nowrap;position:sticky;left:0;background:var(--surface);}
+  .daygrid td.gname .role{color:var(--muted);font-size:10px;}
+  .daygrid td.gname .deduct{font-size:9.5px;color:var(--muted);margin-top:1px;}
+  .daygrid td.dc{width:22px;height:22px;text-align:center;font-weight:600;font-size:10px;}
+  .daygrid td.dc.lv-cell:hover{outline:2px solid var(--accent);outline-offset:-2px;}
+  /* An EM-entered day is marked so a reconstructed absence never looks like a reported one. */
+  /* An override is a different kind of fact from a reported absence, and this page says
+     so with the accent rather than with the shared underline. */
+  .daygrid td.dc.lv-man{box-shadow:inset 0 -3px 0 var(--accent);text-decoration:none;}
+  .daygrid td.dc.saving{opacity:.45;}
+  .dc.c-av{background:#e9f1e8;} .dc.c-w{background:#dfeccf;color:#3b6b3f;} .dc.c-o{background:#e7eefa;color:#2b57a8;}
+  .dc.c-l{background:#f6e9ec;color:#a23b4e;} .dc.c-h{background:#eceaf9;} .dc.c-we{background:var(--surface2);}
+  :root[data-theme]{} /* daygrid marker colors are light-fixed; readable on both themes */
+  .glegend{display:flex;gap:12px;flex-wrap:wrap;font-size:10.5px;color:var(--muted);margin-top:8px;align-items:center;}
+  .seedbar{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:9997;
+    display:flex;align-items:center;gap:12px;background:var(--surface);
+    border:1px solid var(--accent);border-radius:12px;padding:10px 14px;
+    box-shadow:0 6px 24px rgba(20,32,46,.18);font-size:13px;max-width:min(760px,94vw);}
+  .seedbar .btn{font:600 12.5px 'Hanken Grotesk',sans-serif;padding:7px 12px;border-radius:9px;
+    border:1px solid var(--border);background:var(--surface);cursor:pointer;white-space:nowrap;}
+  .seedbar #planSeedGo{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .glegend .lg{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:3px;vertical-align:middle;}
+  /* initiative detail row */
+  .summ-toggle{cursor:pointer;} .summ-toggle:hover .nm{color:var(--accent-2);}
+  .caretline{color:var(--hint);font-size:10px;margin-right:5px;}
+  tr.detail td{background:var(--surface2);padding:14px 16px;}
+  .detail h4{margin:0 0 4px;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);}
+  .detail p{margin:0 0 12px;white-space:pre-wrap;font-size:13px;color:var(--text);}
+  .detail .impact{color:var(--accent-2);font-weight:600;}
+  /* table */
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:6px 16px 10px;}
+  /* Enough optional columns (delivery dates, PODs, cycle) and the table outgrows the panel.
+     It used to just spill out and clip the action column, putting Submit out of reach. */
+  .tablewrap{overflow-x:auto;}
+  table{width:100%;border-collapse:separate;border-spacing:0;}
+  /* the action column stays pinned to the right edge while the rest scrolls under it */
+  th.act,td.act{position:sticky;right:0;z-index:2;background:var(--surface);
+    border-left:1px solid var(--border);width:1%;white-space:nowrap;text-align:right;}
+  tr.row:hover td.act{background:var(--surface2);}
+  th{text-align:left;font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);
+    font-weight:600;padding:12px 8px 9px;border-bottom:1px solid var(--border);}
+  th.mcol,td.mcol{text-align:center;width:120px;}
+  td{padding:9px 8px;border-bottom:1px solid var(--border);vertical-align:middle;background:var(--surface);}
+  tr:last-child td{border-bottom:none;}
+  tr.row{cursor:grab;}
+  tr.row.drag{opacity:.4;}
+  tr.row.over td{border-top:2px solid var(--accent);}
+  .handle{color:var(--hint);cursor:grab;user-select:none;padding-right:2px;}
+  .rank{color:var(--hint);font-family:'IBM Plex Mono',monospace;font-size:11px;width:20px;}
+  .key a{color:var(--accent-2);text-decoration:none;font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;}
+  .key a:hover{text-decoration:underline;}
+  .nm{font-weight:600;font-size:13.5px;}
+  .pri{color:var(--muted);font-size:11px;}
+  .dri{color:var(--hint);font-size:11px;margin-top:3px;} .dri b{color:var(--muted);font-weight:600;}
+  .epic a{color:var(--muted);text-decoration:none;font-family:'IBM Plex Mono',monospace;font-size:11px;}
+  .epic a:hover{color:var(--accent-2);text-decoration:underline;}
+  .noepic{color:var(--danger);font-size:10.5px;}
+  /* unlink stays hidden until the row is hovered — it is one click from removing a link */
+  .unlinkbtn{font-family:inherit;font-size:10px;line-height:1;color:var(--hint);background:none;
+    border:1px solid transparent;border-radius:5px;padding:2px 4px;margin-left:5px;cursor:pointer;
+    visibility:hidden;}
+  tr.row:hover .unlinkbtn{visibility:visible;}
+  .unlinkbtn:hover{color:var(--danger);border-color:var(--danger-bg);background:var(--danger-bg);}
+  .linkbtn{font-family:inherit;font-size:11px;color:var(--accent-2);background:var(--accent-soft);
+    border:1px solid var(--border);border-radius:7px;padding:3px 8px;cursor:pointer;}
+  .linkbtn:hover{border-color:var(--accent);}
+  .subbtn{font-family:inherit;font-size:12px;color:var(--accent-2);background:none;border:1px solid var(--border);
+    border-radius:7px;padding:2px 7px;cursor:pointer;margin-left:6px;white-space:nowrap;}
+  .subbtn:hover{border-color:var(--accent);background:var(--accent-soft);}
+  .subbtn:disabled{color:var(--hint);border-color:var(--border);background:none;cursor:default;}
+  .subbtn:disabled:hover{border-color:var(--border);background:none;}
+  .subbtn.pending{border-color:var(--accent);background:var(--accent-soft);font-weight:600;}
+  .subbtn.stale:disabled{color:var(--warn);background:var(--warn-bg);border-color:var(--warn-bg);}
+  button.recalc:disabled{color:var(--hint);border-color:var(--border)!important;cursor:default;}
+  button.recalc:disabled:hover{background:var(--surface);}
+  .pendnote{color:var(--accent-2);font-weight:600;}
+.estsp{width:52px;font-family:'IBM Plex Mono',monospace;font-size:13px;text-align:right;
+    border:1px solid var(--border);border-radius:7px;padding:4px 6px;font-weight:600;}
+  .over{color:var(--danger);font-size:10px;margin-top:2px;}
+  /* gantt */
+  .gtable{width:100%;border-collapse:collapse;}
+  .gtable th{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:6px 8px;text-align:center;}
+  .gtable th.gname{text-align:left;width:38%;}
+  .gtable td{padding:4px 8px;border-top:1px solid var(--border);vertical-align:middle;}
+  .gtable td.gname{font-size:12.5px;font-weight:600;}
+  .gtable td.gname .k{color:var(--accent-2);font-family:'IBM Plex Mono',monospace;font-size:11px;margin-right:6px;}
+  .gcell{height:20px;border-radius:5px;background:var(--surface2);position:relative;}
+  .gcell.fill{background:var(--accent);} .gcell.fill.hot{background:var(--danger);}
+  .gcell .gsp{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    color:#fff;font-size:10.5px;font-family:'IBM Plex Mono',monospace;}
+  .gspill{color:var(--danger);font-size:11px;font-weight:600;}
+  .mcell{display:inline-flex;align-items:center;gap:6px;}
+  .mcell input[type=number]{width:52px;font-family:'IBM Plex Mono',monospace;font-size:13px;text-align:right;
+    border:1px solid var(--border);border-radius:7px;padding:4px 6px;}
+  .mcell input[type=number]:disabled{background:var(--surface2);color:var(--hint);}
+  /* ghost = the live Jira budget for a month you have not planned */
+  .mcell input[type=number]::placeholder{color:var(--hint);opacity:1;font-style:italic;}
+  .mcell input[type=number]:placeholder-shown{background:var(--surface2);}
+  /* a month cell whose epic total differs from what Jira holds = not yet submitted */
+  .mcell input[type=number].dirty{border-color:var(--accent);background:var(--accent-soft);
+    color:var(--accent-2);font-weight:600;}
+  .mcell .sync{width:9px;display:inline-block;text-align:center;font-size:10px;color:var(--hint);}
+  .mcell .sync.dirty{color:var(--accent);}
+  .state{padding:26px;text-align:center;color:var(--muted);}
+  /* dependency group header */
+  tr.grp td{background:var(--surface2);padding:9px 10px;border-bottom:1px solid var(--border);
+    position:sticky;top:0;}
+  tr.grp .gname{font-size:12.5px;font-weight:700;letter-spacing:.01em;}
+  tr.grp .gmeta{color:var(--muted);font-size:11.5px;margin-left:10px;}
+  /* optional columns */
+  th.xcol,td.xcol{font-size:12px;color:var(--muted);white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis;}
+  td.xcol .mono{font-family:'IBM Plex Mono',monospace;font-size:11.5px;}
+  td.xcol:has(.podwrap){white-space:normal;max-width:230px;}
+  .podwrap{display:flex;flex-wrap:wrap;gap:3px;}
+  .podchip{display:inline-block;font-size:10px;font-weight:600;line-height:1.5;
+    color:var(--muted);background:var(--surface2);border-radius:5px;padding:1px 5px;white-space:nowrap;}
+  .podchip.own{color:var(--accent-2);background:var(--accent-soft);}
+  .podchip.more{color:var(--hint);background:none;border:1px dashed var(--border);}
+  input.duedate{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--text);
+    border:1px solid var(--border);border-radius:7px;padding:3px 6px;background:var(--surface);}
+  input.duedate:hover{border-color:var(--accent);}
+  input.duedate.unset{color:var(--hint);border-style:dashed;}
+  input.duedate.past{color:var(--danger);border-color:var(--danger-bg);background:var(--danger-bg);}
+  input.duedate.late{color:var(--warn);border-color:var(--warn-bg);background:var(--warn-bg);}
+  input.duedate.saving{opacity:.5;}
+  /* inline editing */
+  td.xcol.editable{cursor:pointer;}
+  td.xcol.editable:hover{background:var(--accent-soft);box-shadow:inset 0 -1px 0 var(--accent);}
+  td.xcol.saving{opacity:.45;pointer-events:none;}
+  td.xcol{position:relative;}
+  .inline{font-family:inherit;font-size:12px;color:var(--text);background:var(--surface);
+    border:1px solid var(--accent);border-radius:7px;padding:3px 6px;width:100%;max-width:190px;}
+  select.inline[multiple]{padding:2px;}
+  .usermenu{position:absolute;z-index:30;left:6px;right:6px;background:var(--surface);
+    border:1px solid var(--border);border-radius:9px;box-shadow:var(--shadow);max-height:190px;
+    overflow:auto;margin-top:2px;}
+  .usermenu:empty{display:none;}
+  .uopt{padding:5px 9px;font-size:12px;cursor:pointer;}
+  .uopt:hover{background:var(--accent-soft);}
+  .uopt small{display:block;color:var(--hint);font-size:10px;}
+  .uopt.none{color:var(--hint);cursor:default;}
+  .hint{color:var(--hint);}
+  /* epic picker */
+  .modal-back{position:fixed;inset:0;z-index:50;background:rgba(20,32,46,.34);
+    display:flex;align-items:center;justify-content:center;padding:24px;}
+  .modal{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+    box-shadow:0 10px 40px rgba(20,32,46,.22);padding:18px 20px 14px;width:min(560px,100%);
+    max-height:80vh;overflow:auto;}
+  .modal h3{margin:0 0 2px;font-size:15px;font-weight:700;}
+  .modal .msub{margin:0 0 12px;color:var(--muted);font-size:12.5px;}
+  .modal .msub.none{color:var(--hint);}
+  .plist{display:flex;flex-direction:column;gap:6px;margin-bottom:10px;}
+  button.pick{display:flex;align-items:center;gap:9px;width:100%;text-align:left;font-family:inherit;
+    font-size:13px;color:var(--text);background:var(--surface);border:1px solid var(--border);
+    border-radius:10px;padding:9px 12px;cursor:pointer;}
+  button.pick:hover,button.pick:focus{border-color:var(--accent);background:var(--accent-soft);outline:none;}
+  button.pick .pk{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--accent-2);font-weight:600;}
+  button.pick .ps{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  button.pick .pbadge{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--ok);
+    background:var(--ok-bg);border-radius:6px;padding:2px 6px;font-weight:600;}
+  button.pick .pst{font-size:10.5px;color:var(--hint);}
+  button.pick.create{border-style:dashed;color:var(--accent-2);font-weight:600;}
+  .mfoot{display:flex;align-items:center;justify-content:space-between;margin-top:12px;font-size:11.5px;}
+  .mfoot button{font-family:inherit;font-size:12.5px;border:1px solid var(--border);background:var(--surface);
+    border-radius:9px;padding:6px 14px;cursor:pointer;color:var(--muted);}
+  .mfoot button:hover{background:var(--surface2);}
+  .mfoot .mgo{color:var(--accent-2);border-color:var(--accent);font-weight:600;}
+  .mfoot .mgo:hover{background:var(--accent-soft);}
+  /* toasts — replace the confirm/alert round-trips */
+  .toasts{position:fixed;right:18px;bottom:18px;z-index:60;display:flex;flex-direction:column;gap:8px;align-items:flex-end;}
+  .toast{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--accent);
+    border-radius:10px;box-shadow:var(--shadow);padding:10px 14px;font-size:12.5px;max-width:400px;
+    display:flex;gap:12px;align-items:center;transition:opacity .18s;animation:tin .16s ease-out;}
+  .toast.ok{border-left-color:var(--ok);} .toast.bad{border-left-color:var(--danger);} .toast.warn{border-left-color:var(--warn);}
+  .toast span{flex:1;}
+  .toast button{font-family:inherit;font-size:12px;font-weight:600;color:var(--accent-2);background:none;
+    border:1px solid var(--border);border-radius:7px;padding:3px 9px;cursor:pointer;white-space:nowrap;}
+  .toast button:hover{border-color:var(--accent);background:var(--accent-soft);}
+  @keyframes tin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  tr.archived .nm, tr.archived .key a{opacity:.55;}
+  .archtag{font-size:10px;font-weight:600;color:var(--warn);background:var(--warn-bg);
+           border-radius:6px;padding:1px 6px;margin-left:6px;vertical-align:middle;}
+  tr.detail a{color:var(--accent-2);text-decoration:underline;}
+  .stranded{font-size:12px;color:var(--warn);background:var(--warn-bg);border-radius:8px;
+            padding:7px 10px;margin:8px 4px 4px;}
+  /* Revealed off-cycle rows. Interleaved in rank order they were indistinguishable from the
+     cycle's own rows, so they are banded off below a heading and tinted for the whole run. */
+  tr.offsep td{font-size:11px;font-weight:650;color:var(--warn);background:var(--warn-bg);
+               padding:7px 12px;border-top:2px solid var(--warn);}
+  tr.offsep .sub{font-weight:400;color:var(--hint);}
+  tr.row.offcycle > td{background:var(--warn-bg);}
+  tr.row.offcycle > td:first-child{box-shadow:inset 3px 0 0 var(--warn);}
+  .offtag{font-size:10px;font-weight:600;color:var(--warn);background:var(--bg);
+          border:1px solid var(--warn);border-radius:6px;padding:1px 6px;margin-left:6px;
+          vertical-align:middle;}
+  .slink{font:inherit;color:var(--accent-2);background:none;border:0;padding:0 0 0 8px;
+         cursor:pointer;text-decoration:underline;}
+  /* Schedule lane: the SAME day columns as the per-person team grid above, so a bar sits
+     directly under the days it consumes. Deliberately not a second calendar. */
+  .schhead{display:flex;align-items:center;gap:10px;padding:10px 14px 8px;cursor:pointer;}
+  .schhead .t{font-size:12px;font-weight:650;}
+  .schhead .n{font-size:11.5px;color:var(--hint);}
+  .schwrap{overflow-x:auto;padding:0 0 10px;}
+  table.sch{border-collapse:collapse;font-size:11px;}
+  table.sch th,table.sch td{border:1px solid var(--border);}
+  table.sch th.gd{padding:3px 4px;text-align:center;color:var(--muted);min-width:22px;}
+  table.sch th.gd small{display:block;font-size:8px;}
+  table.sch th.gd.we{background:var(--surface2);}
+  table.sch th.gd.hol{background:var(--accent-soft);}
+  table.sch th.mo{font-size:10px;letter-spacing:.05em;text-transform:uppercase;padding:4px;}
+  table.sch td.sname,table.sch th.sname{text-align:left;padding:4px 8px;white-space:nowrap;
+    position:sticky;left:0;background:var(--surface);z-index:2;max-width:300px;}
+  table.sch td.sname .s{display:block;max-width:270px;overflow:hidden;text-overflow:ellipsis;}
+  table.sch td.sc{width:22px;height:22px;padding:0;position:relative;}
+  table.sch td.sc.we{background:var(--surface2);}
+  table.sch td.sc.hol{background:var(--accent-soft);}
+  .sbar{position:absolute;top:3px;bottom:3px;left:-1px;right:-1px;
+    background:var(--accent);opacity:.9;cursor:grab;touch-action:none;}
+  .sbar.late{background:var(--danger);}
+  .sbar.s{border-radius:4px 0 0 4px;left:2px;}
+  .sbar.e{border-radius:0 4px 4px 0;right:2px;}
+  .sbar.one{border-radius:4px;left:2px;right:2px;}
+  .sdue{position:absolute;top:0;bottom:0;left:45%;width:2px;background:var(--danger);}
+  /* drag to move the start day. Whole-row feedback, because a bar is painted as one div
+     per day cell and the div under the cursor is replaced on every repaint. */
+  tr.sdrag .sbar{cursor:grabbing;opacity:1;box-shadow:0 1px 6px rgba(0,0,0,.22);}
+  tr.sdrag td.sname{background:var(--accent-soft);}
+  .spin{font:inherit;font-size:9.5px;line-height:1;margin-left:5px;padding:1px 5px;
+    cursor:pointer;color:var(--accent-2);background:var(--accent-soft);
+    border:1px solid var(--border);border-radius:5px;}
+  .spin:hover{border-color:var(--accent);}
+  .heads{display:inline-flex;align-items:center;gap:2px;border:1px solid var(--border);
+    border-radius:6px;background:var(--surface2);margin-left:6px;}
+  .heads button{font:inherit;font-size:10px;line-height:1;border:0;background:none;
+    cursor:pointer;color:var(--muted);padding:2px 4px;}
+  .heads button:hover{color:var(--text);}
+  .heads b{font-size:10px;min-width:16px;text-align:center;}
+  .sflag{font-size:9.5px;font-weight:600;border-radius:5px;padding:0 5px;margin-left:5px;
+    color:var(--danger);background:var(--danger-bg);}
+  .mcap .mn .win{display:block;font-size:10.5px;font-weight:500;color:var(--hint);margin-top:1px;}
+  .mcap .mn .cyc{display:block;}
+  .mcap .mn .win{display:inline-flex;align-items:center;gap:5px;font:inherit;font-size:11px;
+    font-weight:500;color:var(--muted);margin-top:4px;cursor:pointer;
+    border:1px solid var(--border);border-radius:7px;padding:3px 8px;background:var(--surface2);}
+  .mcap .mn .win:hover{border-color:var(--accent);color:var(--accent-2);background:var(--surface);}
+  .mcap .mn .win .wedit{font-size:10px;color:var(--hint);text-transform:uppercase;
+    letter-spacing:.04em;font-weight:600;}
+  .mcap .mn .win:hover .wedit{color:var(--accent-2);}
+  .mcap .mn .win.custom{border-color:var(--warn);color:var(--warn);background:var(--warn-bg);}
+  .mcap .mn .win.custom .wedit{color:var(--warn);}
+  .mcap .mn .win:hover{color:var(--accent-2);}
+  .mcap .mn .win.custom{color:var(--warn);}
+  .wined{margin:8px 0 2px;padding:9px 10px;border:1px solid var(--border);border-radius:9px;
+    background:var(--surface2);display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;}
+  .wined label{display:flex;gap:5px;align-items:center;color:var(--muted);}
+  .wined input{font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--border);
+    border-radius:6px;background:var(--surface);color:var(--text);}
+  .wined button{font:inherit;font-size:12px;padding:4px 10px;border:1px solid var(--border);
+    border-radius:7px;background:var(--surface);cursor:pointer;color:var(--text);}
+  .wined button:hover{background:var(--surface2);}
+  .wined button[disabled]{opacity:.45;cursor:default;}
+  .wined .whint{flex-basis:100%;color:var(--hint);font-size:11px;}
+  .rdy{display:inline-block;width:16px;height:16px;line-height:16px;text-align:center;
+    border-radius:5px;font-size:11px;font-weight:700;margin-right:6px;vertical-align:1px;
+    cursor:help;}
+  .rdy.ok{color:var(--ok);background:var(--ok-bg);}
+  .rdy.pend{color:var(--hint);background:var(--surface2);letter-spacing:-1px;}
+  .rdy.warn{color:var(--warn);background:var(--warn-bg);}
+  .rdy.bad{color:var(--danger);background:var(--danger-bg);}
+  .rdy.rev{color:var(--danger);background:var(--danger-bg);}
+  #handover{padding:12px 14px 10px;margin-bottom:14px;}
+  .hhdr{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px;}
+  .hhdr .t{font-size:12px;font-weight:650;}
+  .hhdr .n{font-size:11.5px;color:var(--hint);}
+  .hclear{font:inherit;font-size:11px;border:1px solid var(--border);background:var(--surface);
+    border-radius:7px;padding:2px 8px;cursor:pointer;color:var(--accent-2);margin-left:auto;}
+  .hcards{display:flex;gap:12px;flex-wrap:wrap;}
+  .hcard{flex:1 1 260px;border:1px solid var(--border);border-radius:11px;padding:10px 12px;
+    background:var(--surface2);}
+  .hhead{font-size:12px;font-weight:650;display:flex;justify-content:space-between;align-items:baseline;}
+  .hhead .hrows{font-size:11px;font-weight:500;color:var(--hint);}
+  .hscore{font-size:26px;font-weight:650;letter-spacing:-.02em;margin-top:2px;}
+  .hscore small{font-size:12px;font-weight:500;color:var(--hint);}
+  .hscore.good{color:var(--ok);} .hscore.warn{color:var(--warn);} .hscore.bad{color:var(--danger);}
+  .hbar{height:6px;border-radius:4px;background:var(--border);overflow:hidden;margin:4px 0 5px;}
+  .hbar i{display:block;height:100%;background:var(--hint);}
+  .hbar i.good{background:var(--ok);} .hbar i.warn{background:var(--warn);} .hbar i.bad{background:var(--danger);}
+  .hverdict{font-size:11.5px;color:var(--muted);}
+  .hverdict.good{color:var(--ok);} .hverdict.warn{color:var(--warn);} .hverdict.bad{color:var(--danger);}
+  .hchips{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px;}
+  .hchip{font:inherit;font-size:10.5px;font-weight:600;border-radius:6px;padding:2px 7px;
+    border:1px solid transparent;cursor:pointer;}
+  .hchip.bad{color:var(--danger);background:var(--danger-bg);}
+  .hchip.warn{color:var(--warn);background:var(--warn-bg);}
+  .hchip.on{border-color:currentColor;}
+  .hnote{font-size:11px;color:var(--hint);margin-top:9px;}
+  .hcounts{font-size:11px;color:var(--hint);margin-top:4px;}
+  .htrend{font-size:10.5px;color:var(--hint);margin-top:6px;}
+  .htrend .hwhy{display:block;font-style:italic;}
+  .hexp{margin-top:12px;border-top:1px solid var(--border);padding-top:10px;}
+  .hexph{font-size:12px;font-weight:650;}
+  .hexph .n{font-weight:500;color:var(--hint);font-size:11px;margin-left:8px;}
+  .hteams{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px;}
+  .hteam{font:inherit;font-size:11px;border:1px solid var(--border);border-radius:8px;
+    padding:4px 9px;background:var(--surface);cursor:pointer;color:var(--text);}
+  .hteam:hover{border-color:var(--accent);}
+  .hteam.on{border-color:var(--accent);background:var(--surface2);}
+  .hteam span.bad{color:var(--danger);font-weight:700;}
+  .hteam span.warn{color:var(--warn);font-weight:700;}
+  .hteam span.good{color:var(--ok);font-weight:700;}
+  .hteam small{color:var(--hint);margin-left:4px;}
+  .holist{margin-top:11px;border:1px solid var(--border);border-radius:10px;overflow:hidden;}
+  .holh{background:var(--surface2);padding:7px 11px;font-size:12px;font-weight:650;
+    border-bottom:1px solid var(--border);}
+  .holh .n{font-weight:500;color:var(--hint);font-size:11px;margin-left:8px;}
+  .hor{display:flex;gap:9px;align-items:baseline;padding:6px 11px;font-size:12px;
+    border-bottom:1px solid var(--border);}
+  .hor:last-child{border-bottom:none;}
+  .hor .sc{font-size:10px;font-weight:700;border-radius:5px;padding:1px 6px;min-width:20px;
+    text-align:center;}
+  .hor .sc.s1{color:var(--danger);background:var(--danger-bg);}
+  .hor .sc.s3{color:var(--warn);background:var(--warn-bg);}
+  .hor .sc.s10{color:var(--ok);background:var(--ok-bg);}
+  .hor .k{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--accent-2);
+    text-decoration:none;white-space:nowrap;}
+  .hor .k:hover{text-decoration:underline;}
+  .hor .s{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .hor .m{color:var(--hint);font-size:11px;white-space:nowrap;}
+  .hor .g{color:var(--muted);font-size:11px;white-space:nowrap;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div>
+      <h1>Monthly Planner</h1>
+      <div class="sub" id="sub">Filter initiatives → assign months → set budgets → stack-rank. Saved locally ·
+        <span class="pendnote">●</span> = differs from Jira, not yet submitted.
+        <span id="dataage"></span></div>
+    </div>
+    <div class="filters">
+      <div class="dd" id="ddPods"><button type="button">Pods</button><div class="menu"></div></div>
+      <div class="dd" id="ddMonths"><button type="button">Months</button><div class="menu"></div></div>
+      <div class="dd" id="ddCols"><button type="button">＋ Columns</button><div class="menu"></div></div>
+      <button class="recalc" id="dri" title="Only initiatives where you are the Tech DRI">Tech DRI: anyone</button>
+      <button class="recalc" id="toggleAll">Show all</button>
+      <button class="recalc" id="toggleArch" title="Archived ideas are hidden by default; their budget never counts toward capacity">Archived: hidden</button>
+      <button class="recalc" id="submit" disabled style="border-color:var(--accent);color:var(--accent-2)">⤴ Submit all</button>
+      <button class="recalc" id="recalc">↻ Reload from Jira</button>
+    </div>
+  </div>
+
+  <div class="strip" id="strip"></div>
+  <div class="panel" id="handover"></div>
+  <div class="panel" id="sched"></div>
+  <div class="panel" id="board"><div class="state">Loading…</div></div>
+</div>
+<div class="toasts" id="toasts"></div>
+<script src="/leave-editor.js"></script>
+<script>
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const LSKEY = 'monthlyPlanner_v1';
+const monthName = ym => MONTHS[parseInt(ym.split('-')[1],10)-1];
+const monthLabel = ym => new Date(+ym.split('-')[0], +ym.split('-')[1]-1, 1).toLocaleString('en-US',{month:'short',year:'numeric'});
+const cycleTag = ym => `${monthName(ym)}-${ym.split('-')[0].slice(2)}`;   // "2026-09" -> "Sep-26" (Planning Cycle option format)
+const monthEnd = ym => { const [y,m]=ym.split('-').map(Number);           // "2026-10" -> "2026-10-31"
+  return new Date(Date.UTC(y, m, 0)).toISOString().slice(0,10); };
+
+let PODS = [];          // available pod option strings
+let INITS = null;       // {pods, initiatives:[...]}
+let CAPS = {};          // ym -> month capacity model
+let DETAILS = {};       // initiative key -> {descriptionText, impact}  (in-memory only)
+const LOADING = new Set();  // initiative keys with a detail fetch in flight
+let ME = {};            // signed-in Jira user (for the 'Tech DRI: me' filter)
+let EDITABLE = {};      // planner column id -> {target, field}  (from /api/planner-fields)
+const FMETA = new Map();// "ISSUE|col" -> /editmeta answer for that cell
+let REVEAL = false;     // temporarily show off-cycle rows that still carry budget/plan
+let DEPS = {};          // initiative key -> counterpart-pod rows (/api/dependencies)
+let applyIdentity = () => {};   // set during init; see the /api/me fetch
+let OVERFLOW = {};      // initiative key -> Est. SP that didn't fit the window (from Auto-plan)
+let ST = load();        // persisted state
+
+function load(){
+  try{ return JSON.parse(localStorage.getItem(LSKEY)) || {}; }catch(e){ return {}; }
+}
+function save(){
+  try{ localStorage.setItem(LSKEY, JSON.stringify(ST)); }catch(e){}
+  pushPlan();
+}
+
+// ---- the plan lives on the server, not in one browser ------------------------------
+// It used to live only in localStorage, which meant the desktop app and Chrome were two
+// different planners that happened to look alike: the same board, a different stack rank,
+// and no way to tell which one was real. The server copy is the plan; a browser is a view
+// of it. Every save keeps the version it replaced, so nothing is lost either way.
+let PLAN_SYNC = false;        // true once this browser is allowed to write
+let PLAN_T = null;
+let PLAN_REV = 0;             // the revision this window last saw
+let PLAN_SIG = '';            // what it last published, so a view toggle publishes nothing
+// What travels: everything you typed or dragged. What does not: which panels are open,
+// show-all, archived, Tech DRI - those say what you are looking at, not what the plan is.
+const PLAN_LISTS = ['order', 'months', 'cols'];
+const PLAN_MAPS = ['plan', 'est', 'heads', 'schStart'];
+function planBody(){
+  const b = {pods: ST.pods || null, savedBy: location.host};
+  PLAN_LISTS.forEach(k => { b[k] = ST[k] || []; });
+  PLAN_MAPS.forEach(k => { b[k] = ST[k] || {}; });
+  return b;
+}
+function pushPlan(){
+  if(!PLAN_SYNC) return;
+  // Opening a panel calls save(). Publishing on that would send this window's whole plan
+  // for a change that is not part of the plan at all - and if the window is behind, that
+  // is how a stale copy overwrites a newer one. Only publish when the plan itself moved.
+  const body = planBody();
+  const sig = JSON.stringify(body);
+  if(sig === PLAN_SIG) return;
+  clearTimeout(PLAN_T);
+  PLAN_T = setTimeout(function(){
+    body.rev = PLAN_REV;
+    fetch('/api/monthly-plan', {method:'POST', headers:{'Content-Type':'application/json'},
+                                body: JSON.stringify(body)})
+      .then(r=>r.json())
+      .then(r=>{
+        if(r && r.ok){ PLAN_REV = r.rev; PLAN_SIG = sig; return; }
+        if(r && r.conflict){ onConflict(r); return; }
+        console.warn('plan not saved:', r && r.__error__);
+      })
+      .catch(()=>{})
+      // PLAN_T doubles as "a write is in flight", and refreshPlan stands off while it is.
+      // Leaving it set after the write finished stopped this window ever catching up again.
+      .finally(()=>{ PLAN_T = null; });
+  }, 600);
+}
+
+// Two windows, both allowed to write. Whoever is behind is refused rather than applied,
+// and the choice of what to do about it is the planner's - resolving it either way on
+// their behalf is how a rank disappears without anyone seeing it happen.
+function onConflict(r){
+  if(document.getElementById('planClash')) return;
+  const theirs = (r.plan && r.plan.order || []).length;
+  const mine = (ST.order || []).length;
+  const bar = document.createElement('div');
+  bar.id = 'planClash';
+  bar.className = 'seedbar';
+  bar.innerHTML = `<span>Another window saved a different plan
+    (<b>${theirs}</b> ranked) while this one was showing <b>${mine}</b>.
+    Nothing was overwritten.</span>
+    <button class="btn" id="clashTake" type="button">Load theirs</button>
+    <button class="btn" id="clashMine" type="button">Keep mine</button>`;
+  document.body.appendChild(bar);
+  document.getElementById('clashTake').addEventListener('click', ()=>{
+    bar.remove(); adopt(r.plan); PLAN_SIG = JSON.stringify(planBody()); rerender();
+    toast('Loaded the newer plan · '+theirs+' ranked', 'ok');
+  });
+  document.getElementById('clashMine').addEventListener('click', ()=>{
+    bar.remove();
+    PLAN_REV = r.rev;          // write on top of theirs, deliberately; the old one is kept
+    PLAN_SIG = '';
+    pushPlan();
+    toast('Kept this window\'s plan. The other one is in the version history.', 'warn');
+  });
+}
+
+// A named surface for the plan, so two-window behaviour can be driven by a test instead
+// of only by hand. Everything here is something the UI already does.
+window.synapsePlan = {
+  rev: () => PLAN_REV,
+  order: () => (ST.order || []).slice(),
+  setOrder: v => { ST.order = v; save(); },
+  touchView: () => { ST.capOpen = Object.assign({}, ST.capOpen, {_t: Date.now()}); save(); },
+  refresh: () => refreshPlan(),
+  clash: () => document.getElementById('planClash'),
+};
+
+// Catch up when you come back to a window that has been sitting there. Most clashes are
+// just a stale tab, and this removes them before anything is typed into it.
+function refreshPlan(){
+  if(!PLAN_SYNC || PLAN_T) return;
+  fetch('/api/monthly-plan').then(r=>r.json()).then(d=>{
+    if(!d || !d.has || !d.plan) return;
+    if((+d.plan.rev || 0) === PLAN_REV) return;
+    adopt(d.plan);
+    PLAN_SIG = JSON.stringify(planBody());
+    rerender();
+    toast('Plan updated in another window · '+(d.plan.order||[]).length+' ranked', 'ok');
+  }).catch(()=>{});
+}
+
+// Adopt what the server holds, or offer to seed it from here. Deliberately NOT automatic:
+// whichever browser opened first would otherwise win, and the one with the wrong order is
+// just as likely to be first.
+async function syncPlan(){
+  let d = null;
+  try{ d = await (await fetch('/api/monthly-plan')).json(); }catch(e){ return; }
+  if(d && d.has){
+    adopt(d.plan || {});
+    PLAN_SYNC = true;
+    PLAN_SIG = JSON.stringify(planBody());
+    try{ localStorage.setItem(LSKEY, JSON.stringify(ST)); }catch(e){}
+    return;
+  }
+  if((ST.order||[]).length) offerSeed();
+}
+
+function adopt(p){
+    // A record speaks only for the fields it was actually written with. A browser running
+    // yesterday's page sends just the rank; letting that record also assert "no columns"
+    // would blank a view that was fine - which is the bug this whole change is about.
+    const has = new Set(p.fields || ['order', 'plan', 'pods', 'months']);
+    if(has.has('order')) ST.order = p.order || [];
+    if(has.has('plan')) ST.plan = p.plan || {};
+    if(has.has('pods')) ST.pods = p.pods;
+    if(has.has('months') && (p.months||[]).length) ST.months = p.months;
+    if(has.has('cols')) ST.cols = p.cols || [];
+    PLAN_MAPS.forEach(k => { if(k !== 'plan' && has.has(k)) ST[k] = p[k] || {}; });
+  PLAN_REV = +p.rev || 0;
+  try{ localStorage.setItem(LSKEY, JSON.stringify(ST)); }catch(e){}
+}
+
+function offerSeed(){
+  if(document.getElementById('planSeed')) return;
+  const bar = document.createElement('div');
+  bar.id = 'planSeed';
+  bar.className = 'seedbar';
+  bar.innerHTML = `<span>Your plan is only in this browser.
+    <b>${(ST.order||[]).length}</b> ranked initiatives.
+    Save it to Synapse so every browser and the desktop app show the same one.</span>
+    <button class="btn" id="planSeedGo" type="button">Save this plan</button>
+    <button class="btn" id="planSeedNo" type="button">Not now</button>`;
+  document.body.appendChild(bar);
+  document.getElementById('planSeedGo').addEventListener('click', async ()=>{
+    const body = planBody();
+    body.rev = PLAN_REV;
+    const r = await (await fetch('/api/monthly-plan', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)})).json();
+    bar.remove();
+    if(r && r.ok){ PLAN_SYNC = true; PLAN_REV = r.rev; PLAN_SIG = JSON.stringify(body);
+                   toast('Plan saved to Synapse · '+r.order+' ranked', 'ok'); }
+    else toast('Could not save the plan: '+((r&&r.__error__)||'unknown'), 'warn');
+  });
+  document.getElementById('planSeedNo').addEventListener('click', ()=>bar.remove());
+}
+function defaults(){
+  const now = new Date();
+  const cur = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+  const nxt = new Date(now.getFullYear(), now.getMonth()+1, 1);
+  const nxtYm = `${nxt.getFullYear()}-${String(nxt.getMonth()+1).padStart(2,'0')}`;
+  ST.pods = ST.pods || null;                 // null = configured default pod
+  ST.months = ST.months || [cur, nxtYm];     // 2-month planning window
+  ST.order = ST.order || [];
+  ST.plan = ST.plan || {};                   // key -> { MonthName: {on:bool, sp:number} }
+  ST.showAll = ST.showAll || false;          // false = only initiatives in the selected cycle
+  ST.capOpen = ST.capOpen || {};             // ym -> expanded per-person capacity
+  ST.initOpen = ST.initOpen || {};           // initiative key -> expanded detail
+  ST.est = ST.est || {};                     // initiative key -> total Est. SP estimate
+  ST.cols = ST.cols || [];                   // optional column ids shown in the table
+  ST.driMe = ST.driMe || false;              // only rows where I am Tech DRI
+  ST.heads = ST.heads || {};                 // initiative key -> devs on it, for the schedule
+  ST.schStart = ST.schStart || {};           // initiative key -> dragged start DATE (not index)
+}
+defaults();
+
+// ---- toasts (no confirm()/alert() round-trips: one click writes, Undo is the safety net) ----
+function toast(msg, kind='ok', action=null, ms=null){
+  const host = document.getElementById('toasts');
+  const el = document.createElement('div'); el.className = `toast ${kind}`;
+  const s = document.createElement('span'); s.textContent = msg; el.appendChild(s);
+  let timer;
+  if(action){
+    const b = document.createElement('button'); b.textContent = action.label;
+    b.addEventListener('click', ()=>{ clearTimeout(timer); el.remove(); action.fn(); });
+    el.appendChild(b);
+  }
+  host.appendChild(el);
+  timer = setTimeout(()=>{ el.style.opacity='0'; setTimeout(()=>el.remove(), 200); },
+                     ms || (action ? 12000 : 4500));
+}
+
+// ---- optional columns (the ＋ Columns picker) ----
+const esc = s => String(s==null?'':s).replace(/[<>&"]/g, c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+// Pod labels are "PREFIX - Long Name". The prefix alone is NOT unique — BOARD covers both
+// "Core Payments Platform" and "Core Ledger Platform", so 30 of ~100 initiatives would
+// render as "BOARD, BOARD". Disambiguate only the prefixes that actually collide on this row.
+function podShortLabels(pods){
+  const parts = pods.map(p=>{ const i = p.indexOf(' - ');
+    return i < 0 ? [p.trim(), ''] : [p.slice(0, i).trim(), p.slice(i + 3).trim()]; });
+  const seen = {};
+  parts.forEach(([pre])=>{ seen[pre] = (seen[pre] || 0) + 1; });
+  return parts.map(([pre, rest], i)=>{
+    if(seen[pre] < 2 || !rest) return pre;
+    const words = rest.replace(/\b(platform|pod|team)\b/ig, '').trim().split(/\s+/).filter(Boolean);
+    return words.length ? `${pre}·${words[words.length - 1]}` : `${pre}·${i + 1}`;
+  });
+}
+// One initiative carries up to 31 pods, so cap what is drawn and keep the rest in the title.
+const POD_CHIP_CAP = 6;
+function podChips(pods, mine){
+  pods = (pods || []).filter(Boolean);
+  if(!pods.length) return '—';
+  const own = new Set(mine || []);
+  const labels = podShortLabels(pods);
+  const shown = pods.slice(0, POD_CHIP_CAP).map((p, i)=>
+    `<span class="podchip${own.has(p) ? ' own' : ''}" title="${esc(p)}">${esc(labels[i])}</span>`).join('');
+  const extra = pods.length - POD_CHIP_CAP;
+  return `<span class="podwrap" title="${esc(pods.join('\n'))}">${shown}` +
+    (extra > 0 ? `<span class="podchip more">+${extra}</span>` : '') + '</span>';
+}
+const dash = v => (v===0 || v) && String(v).length ? esc(v) : '—';
+// Only ever emit an href we know is a normal web link. A description link comes from Jira,
+// so `javascript:` / `data:` must never reach an anchor even though esc() would keep the
+// text itself inert.
+function safeUrl(u){
+  const t = String(u||'').trim();
+  return /^https?:\/\//i.test(t) ? t : '';
+}
+// descriptionRich is [[{t,h},...],...] from capacity_engine._adf_rich(): blocks of spans,
+// each span optionally carrying a link. Text is escaped; only the anchor is structural.
+function richHtml(blocks, fallback){
+  if(!Array.isArray(blocks) || !blocks.length)
+    return `<p>${esc(fallback||'—')}</p>`;
+  return blocks.map(b=>'<p>' + b.map(sp=>{
+    const txt = esc(sp.t||'').replace(/\n/g, '<br>');
+    const href = safeUrl(sp.h);
+    if(!href) return txt;
+    return `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${txt || esc(href)}</a>`;
+  }).join('') + '</p>').join('');
+}
+// Initiative delivery dates (JPD stores these as a date-range blob; the server hands back
+// the start as YYYY-MM-DD). Shaded like the epic due date so slippage is visible at a glance.
+function dateCell(d){
+  if(!d) return '<span class="sub">—</span>';
+  const today = new Date().toISOString().slice(0,10);
+  const last = ST.months.length ? monthEnd(ST.months[ST.months.length-1]) : null;
+  const cls = d < today ? 'past' : (last && d > last ? 'late' : '');
+  const why = d < today ? 'in the past' : (last && d > last ? 'lands after the selected months' : '');
+  return `<span class="mono ${cls}" title="${esc(why)}">${esc(d)}</span>`;
+}
+// Where each editable column's display value lives on a row, so an inline edit can be
+// mirrored into the in-memory model. Keys match capacity_engine.planner_editable_fields().
+const COL_MODEL = {
+  status:    {scope:'init', attr:'status'},      orgPri:    {scope:'init', attr:'orgPriority'},
+  engDri:    {scope:'init', attr:'engDri'},      prodDri:   {scope:'init', attr:'prodDri'},
+  cycles:    {scope:'init', attr:'cycles', list:true},
+  goLive:    {scope:'init', attr:'targetGoLive'},   handover:   {scope:'init', attr:'targetHandover'},
+  actGoLive: {scope:'init', attr:'actualGoLive'},   actHandover:{scope:'init', attr:'actualHandover'},
+  pods:      {scope:'init', attr:'podTags', list:true},
+  epicSumm:  {scope:'epic', attr:'summary'},     epicDue:   {scope:'epic', attr:'dueDate'},
+  epicStatus:{scope:'epic', attr:'status'},      epicOwner: {scope:'epic', attr:'assignee'},
+  epicHealth:{scope:'epic', attr:'health'},      epicCycle: {scope:'epic', attr:'cycles', list:true},
+  epicPri:   {scope:'epic', attr:'priority'},    epicLabels:{scope:'epic', attr:'labels'},
+  epicChal:  {scope:'epic', attr:'challenges'},
+};
+// `epic` fields come from the linked board epic (pod_initiatives attaches them); `init`
+// fields from the OINT initiative itself. `group` only drives the picker's headings.
+const EXTRA_COLS = [
+  {id:'status',   group:'Initiative', label:'Status',         render:it=>dash(it.status)},
+  {id:'orgPri',   group:'Initiative', label:'Org priority',   render:it=>dash(it.orgPriority)},
+  {id:'engDri',   group:'Initiative', label:'Eng DRI',        render:it=>dash(it.engDri)},
+  {id:'prodDri',  group:'Initiative', label:'Prod DRI',       render:it=>dash(it.prodDri)},
+  {id:'cycles',   group:'Initiative', label:'Planning cycle', render:it=>dash((it.cycles||[]).join(', '))},
+  {id:'goLive',   group:'Initiative', label:'Target go-live',  render:it=>dateCell(it.targetGoLive)},
+  {id:'handover', group:'Initiative', label:'Target handover', render:it=>dateCell(it.targetHandover)},
+  {id:'actGoLive',group:'Initiative', label:'Actual go-live',  render:it=>dateCell(it.actualGoLive)},
+  {id:'actHandover',group:'Initiative',label:'Actual handover',render:it=>dateCell(it.actualHandover)},
+  {id:'pods',     group:'Initiative', label:'PODs',
+    render:it=>podChips(it.podTags, (INITS && INITS.pods) || [])},
+  {id:'est',      group:'Initiative', label:'Est. SP',        render:it=>
+    `<input class="estsp" type="number" min="0" step="0.5" data-k="${esc(it.key)}" value="${esc(ST.est[it.key]||'')}">`},
+
+  {id:'epicSumm', group:'Epic', label:'Epic summary',  render:it=>dash(it.epic&&it.epic.summary)},
+  {id:'epicDue',  group:'Epic', label:'Epic due date', render:it=>{
+    if(!it.epic) return '—';
+    const d = it.epic.dueDate || '';
+    // editable: writes straight to the epic's Jira due date (with undo), see wireBoard
+    const last = ST.months.length ? monthEnd(ST.months[ST.months.length-1]) : null;
+    const today = new Date().toISOString().slice(0,10);
+    const cls = !d ? 'unset' : (d < today ? 'past' : (last && d > last ? 'late' : ''));
+    const why = !d ? 'not set — pick a date to write it to Jira'
+      : (d < today ? 'past due' : (last && d > last ? 'lands after the selected months' : ''));
+    return `<input type="date" class="duedate ${cls}" data-k="${esc(it.key)}" data-epic="${esc(it.epic.key)}"
+      value="${esc(d)}" title="${esc(why)}">`;}},
+  {id:'epicStatus',group:'Epic', label:'Epic status',   render:it=>dash(it.epic&&it.epic.status)},
+  {id:'epicOwner', group:'Epic', label:'Epic assignee', render:it=>dash(it.epic&&it.epic.assignee)},
+  {id:'epicHealth',group:'Epic', label:'Epic health',   render:it=>dash(it.epic&&it.epic.health)},
+  {id:'epicCycle', group:'Epic', label:'Epic cycle',    render:it=>dash(it.epic&&(it.epic.cycles||[]).join(', '))},
+  // NOTE: no "Overall budget" column — jira_fields.overall_budget (customfield_11861) does not
+  // exist in this Jira instance, so it is blank on every epic. pod_initiatives still carries
+  // epic.overallBudget, so fixing that config id is all it takes to add the column back.
+  {id:'epicPri',   group:'Epic', label:'Epic priority', render:it=>dash(it.epic&&it.epic.priority)},
+  {id:'epicLabels',group:'Epic', label:'Epic labels',   render:it=>dash(it.epic&&it.epic.labels)},
+  {id:'epicChal',  group:'Epic', label:'Challenges',    render:it=>dash(it.epic&&it.epic.challenges)},
+
+  {id:'planned',  group:'Plan', label:'Planned (sel.)', render:it=>{
+    const t = ST.months.reduce((a,ym)=>{ const c=ST.plan[it.key]?.[monthName(ym)]; return a + (c&&c.on ? (+c.sp||0) : 0); }, 0);
+    return `<span class="mono">${Math.round(t*10)/10}</span>`;}},
+  {id:'jira',     group:'Plan', label:'In Jira (sel.)', render:it=>{
+    if(!it.epic) return '—';
+    return `<span class="mono">${ST.months.map(ym=>{ const mn=monthName(ym);
+      return `${mn} ${+((it.budgets||{})[mn])||0}`; }).join(' · ')}</span>`;}},
+];
+function activeCols(){ return EXTRA_COLS.filter(c=>ST.cols.includes(c.id)); }
+
+// ---- plan helpers ----
+function cell(key, mn){
+  ST.plan[key] = ST.plan[key] || {};
+  return (ST.plan[key][mn] = ST.plan[key][mn] || {on:false, sp:0});
+}
+function seedPlan(){
+  // for each initiative & each selected month, seed from the epic budget if untouched
+  if(!INITS || !Array.isArray(INITS.initiatives)) return;
+  const selMn = ST.months.map(monthName);
+  INITS.initiatives.forEach(it=>{
+    selMn.forEach(mn=>{
+      const c = cell(it.key, mn);
+      if(c.seeded) return;
+      const b = it.budgets[mn] || 0;
+      c.sp = c.sp || b; c.on = c.on || b>0; c.seeded = true;
+    });
+  });
+  // Order is GLOBAL and sticky. Never prune keys that are merely outside the current pod /
+  // month filter — dropping them used to wipe your stack-rank the moment you changed a filter
+  // (and rebuild it from Jira's created-DESC order). orderedInits() already skips keys that
+  // aren't in the current response, so carrying them costs nothing.
+  const known = new Set(ST.order);
+  INITS.initiatives.forEach(i=>{ if(!known.has(i.key)){ ST.order.push(i.key); known.add(i.key); } });
+  save();
+}
+function orderedInits(){
+  if(!INITS || !Array.isArray(INITS.initiatives)) return [];
+  const byKey = Object.fromEntries(INITS.initiatives.map(i=>[i.key,i]));
+  return ST.order.map(k=>byKey[k]).filter(Boolean);
+}
+// Planning Cycle alone decides what the month filter shows. This used to also keep any
+// row you had planned locally, which meant an initiative retagged in Jira (Oct -> Dec) never
+// left the Oct view, because the local draft plan lives in localStorage and nothing
+// re-derives it. That read as a broken filter.
+function inCycle(it){
+  return ST.months.some(ym=>(it.cycles||[]).includes(cycleTag(ym)));
+}
+// Rows the strict filter drops that still carry something real for these months: an
+// un-submitted local plan, or a budget already filed on their epic in Jira. Hiding a filed
+// budget silently would lose capacity from the view, so they are surfaced as a count.
+function strandedInits(){
+  if(ST.showAll || !ST.months.length) return [];
+  const mns = ST.months.map(monthName);
+  return orderedInits().filter(it=> !inCycle(it) && !isArchived(it) && mns.some(mn=>
+    ST.plan[it.key]?.[mn]?.on || (+((it.budgets||{})[mn]) || 0) > 0));
+}
+// Keys of the off-cycle rows the reveal is currently showing — empty unless REVEAL is on.
+// renderBoard needs the same set visibleInits() sorted by, so it is computed once here.
+function revealedKeys(){
+  return REVEAL ? new Set(strandedInits().map(i=>i.key)) : null;
+}
+function visibleInits(){
+  const all = orderedInits();
+  const stranded = revealedKeys();
+  const byCycle = ST.showAll ? all : all.filter(it=>inCycle(it) || (stranded && stranded.has(it.key)));
+  const mine = ST.driMe && ME.name ? byCycle.filter(it=>it.engDri === ME.name) : byCycle;
+  // Revealed rows go to the BOTTOM, as one contiguous run, so the separator row rendered
+  // before the first of them bands off the whole group. In rank order they landed scattered
+  // through the table and there was no way to tell which ones the button had just added.
+  if(!stranded) return mine;
+  return mine.filter(it=>!stranded.has(it.key)).concat(mine.filter(it=>stranded.has(it.key)));
+}
+// Archived ideas are shown for reference only. Their budget is excluded from every
+// capacity total and from submit, so turning the toggle on never moves the planned number.
+const isArchived = it => !!(it && it.archived);
+function plannedFor(mn){
+  let sum=0;
+  orderedInits().forEach(it=>{
+    // Archived, and off-cycle rows the month filter hides, must not contribute: an SP figure
+    // you cannot see in the table is worse than a wrong one, because nothing explains it.
+    if(isArchived(it)) return;
+    if(!ST.showAll && ST.months.length && !inCycle(it)) return;
+    const c=ST.plan[it.key]?.[mn]; if(c&&c.on) sum += (+c.sp||0); });
+  return Math.round(sum*10)/10;
+}
+
+// ---- what is still un-submitted ----
+// Mirrors capacity_engine.submit_budgets() exactly: for every epic that has at least one
+// assigned month in the selection, compare the SUMMED plan against the epic's live Jira
+// budget for EVERY selected month (an unchecked month writes 0, so it counts as a diff).
+function epicJiraBudgets(){
+  const cur = {};
+  orderedInits().forEach(it=>{ if(it.epic && !(it.epic.key in cur)) cur[it.epic.key] = it.budgets || {}; });
+  return cur;
+}
+function pendingDiffs(){
+  const eb = gatherEpicBudgets(), cur = epicJiraBudgets(), selMn = ST.months.map(monthName);
+  const out = {};
+  Object.keys(eb).forEach(ek=>{
+    const ds = [];
+    selMn.forEach(mn=>{
+      const to  = Math.round((+eb[ek][mn] || 0) * 10) / 10;
+      const frm = Math.round((+((cur[ek] || {})[mn]) || 0) * 10) / 10;
+      if(to !== frm) ds.push({month:mn, from:frm, to});
+    });
+    if(ds.length) out[ek] = ds;
+  });
+  return out;
+}
+const diffText = ds => ds.map(d=>`${d.month} ${d.from} → ${d.to}`).join(', ');
+
+// Re-paint the "needs submitting" affordances WITHOUT re-rendering (keeps input focus).
+function refreshPending(){
+  if(!INITS || !Array.isArray(INITS.initiatives)) return;
+  const pend = pendingDiffs(), planned = new Set(Object.keys(gatherEpicBudgets()));
+  const cur = epicJiraBudgets(), selMn = ST.months.map(monthName);
+  // epic carries a budget in Jira but has no month assigned here: Submit skips it entirely
+  // (submit_budgets only writes epics you assigned), so the Jira value is left stale.
+  const stale = ek => !planned.has(ek) && selMn.some(mn => (+((cur[ek]||{})[mn]) || 0) > 0);
+  const epicOf = {};
+  orderedInits().forEach(it=>{ if(it.epic) epicOf[it.key] = it.epic.key; });
+
+  board.querySelectorAll('.mcell').forEach(cell=>{
+    const inp = cell.querySelector('input[type=number]'); if(!inp) return;
+    const ek = epicOf[inp.dataset.k];
+    const hit = !!(ek && (pend[ek]||[]).some(d=>d.month===inp.dataset.m));
+    inp.classList.toggle('dirty', hit);
+    const dot = cell.querySelector('.sync');
+    if(dot){ dot.classList.toggle('dirty', hit); dot.textContent = hit ? '●' : '';
+      dot.title = hit ? 'not yet submitted to Jira' : ''; }
+  });
+
+  board.querySelectorAll('.subbtn').forEach(b=>{
+    const ek = epicOf[b.dataset.k], ds = ek ? pend[ek] : null;
+    b.classList.toggle('pending', !!(ds && ds.length));
+    b.classList.toggle('stale', !!(ek && !(ds && ds.length) && stale(ek)));
+    if(ds && ds.length){
+      b.disabled = false; b.textContent = `⤴ Submit (${ds.length})`;
+      b.title = `Write to ${ek} — ${diffText(ds)}`;
+    }else if(ek && planned.has(ek)){
+      b.disabled = true;  b.textContent = '✓ in Jira';
+      b.title = `${ek} already matches the plan for the selected month(s)`;
+    }else if(ek && stale(ek)){
+      b.disabled = true;  b.textContent = '⚠ stale in Jira';
+      b.title = `${ek} still holds ${selMn.map(mn=>`${mn} ${(+((cur[ek]||{})[mn])||0)}`).join(', ')} in Jira, `
+              + 'but no month is planned here. Submit does not clear it — type 0 into the month to zero it out.';
+    }else{
+      b.disabled = true;  b.textContent = '— not planned';
+      b.title = 'No month assigned in the selected window — nothing to submit';
+    }
+  });
+
+  const n = Object.values(pend).reduce((a,ds)=>a+ds.length, 0);
+  const epics = Object.keys(pend).length;
+  const btn = document.getElementById('submit');
+  btn.disabled = n === 0;
+  btn.textContent = n ? `⤴ Submit all (${n})` : '✓ All submitted';
+  btn.title = n ? Object.entries(pend).map(([k,ds])=>`${k}: ${diffText(ds)}`).join('\n')
+                : 'Every planned epic already matches Jira for the selected month(s)';
+  const note = document.getElementById('pendnote');
+  if(note) note.innerHTML = n
+    ? ` · <span class="pendnote">${n} change(s) across ${epics} epic(s) not yet in Jira</span>`
+    : ' · all budgets match Jira';
+}
+
+// ---- render ----
+function fitClass(pct){ return pct>=100?'hot':pct>=90?'warm':'cool'; }
+
+function deductNote(p){
+  const bits = [];
+  if (p.leave)  bits.push(`−${p.leave} leave`);
+  if (p.oncall) bits.push(`−${p.oncall} on-call`);
+  return bits.length ? `<div class="deduct">${bits.join(' · ')}</div>` : '';
+}
+function capHTML(m){
+  // month-level capacity detail (collapsible) — sprint-style: cards + per-person daily grid
+  const cards = `<div class="capcards">
+    <div class="c"><div class="l">Working days</div><div class="v">${m.workingDays}</div></div>
+    <div class="c"><div class="l">Team net days</div><div class="v">${m.teamNetDays}</div></div>
+    <div class="c"><div class="l">Effective SP</div><div class="v">${m.teamSP}</div></div>
+    <div class="c"><div class="l">Utilisation</div><div class="v">${m.utilisation||0}<small style="font-size:12px;color:var(--muted)">%</small></div></div>
+  </div>`;
+  const days = m.days || [];
+  const clsOf = s => s==='WE'?'c-we':s==='L'?'c-l':s==='O'?'c-o':s==='W'?'c-w':s==='H'?'c-h':'c-av';
+  const head = days.map(d=>`<th class="gd ${d.weekend?'we':''} ${d.holiday?'hol':''}" title="${esc(d.holiday?(d.holiday.occasion||'holiday'):'')}">${esc(d.date.slice(8))}<small>${esc(d.dow[0])}</small></th>`).join('');
+  const rows = m.people.map(p=>{
+    const cells = (p.statuses||[]).map((s,i)=>{
+      const d = days[i] || {};
+      const mk = (p.manual||[])[i] || '';
+      // Weekends and public holidays are not anyone's leave to mark; LeaveEditor returns
+      // nothing for those, so they stay inert.
+      return `<td class="dc ${clsOf(s)} ${LeaveEditor.cls(s, mk)}"${
+        LeaveEditor.attrs(p.canonical, d.date, s, mk, p.name)
+      }>${LeaveEditor.isFixed(s)?'':s}</td>`;
+    }).join('');
+    return `<tr><td class="gname"><span class="nm" title="efficiency ${esc(p.eff)}">${esc(p.name)}</span> <span class="role">${esc(p.role)}</span>${deductNote(p)}</td>${cells}<td class="num"><span class="net">${p.net}d</span></td><td class="num"><span class="sp">${p.sp}</span></td></tr>`;
+  }).join('');
+  return `<div class="cappanel">
+    <div class="ph">${m.label} — team capacity</div>
+    ${cards}
+    <div class="gridwrap"><table class="daygrid"><thead><tr><th class="gname">Person</th>${head}<th class="num">Net</th><th class="num">SP</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="glegend"><span><span class="lg c-av"></span>available</span><span><span class="lg c-w"></span>WFH</span><span><span class="lg c-o"></span>on-call</span><span><span class="lg c-l"></span>leave</span><span><span class="lg c-h"></span>holiday</span><span><span class="lg c-we"></span>weekend</span>
+      <span style="color:var(--hint)">· click any weekday to mark leave the team never posted
+      (underlined = entered here, not reported)</span></div>
+  </div>`;
+}
+
+const winLabel = m => {
+  if(!m || !m.start || !m.end) return '';   // a payload without dates has no window to show
+  const d = iso => { const [y,mo,da] = String(iso).split('-').map(Number);
+    return `${da} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][mo-1]}`; };
+  return `${d(m.start)} \u2192 ${d(m.end)}`;
+};
+function winEditor(ym, m){
+  const w = (ST.win||{})[ym] || {};
+  return `<div class="wined" data-ym="${esc(ym)}">
+    <label>from <input type="date" class="wfrom" value="${esc(w.start || m.start)}"></label>
+    <label>to <input type="date" class="wto" value="${esc(w.end || m.end)}"></label>
+    <button class="wapply">Apply</button>
+    <button class="wreset" ${m.customWindow?'':'disabled'}>Reset</button>
+    <div class="whint">Default is the whole calendar month. A planning cycle is usually two
+      sprints, so it starts and ends mid-month.</div>
+  </div>`;
+}
+// Marking leave lives in /leave-editor.js, shared with the sprint board and the sprint
+// planner, so the gesture and its meaning are the same wherever a capacity calendar is
+// drawn. This page is where it started, which is why its behaviour is the behaviour.
+function wireLeaveCells(){
+  LeaveEditor.wire(strip, {
+    by: ME.name || 'em',
+    toast: (msg, kind, undo)=> toast(msg, kind, undo),
+    // Capacity is cached per window, so the numbers only move once it is rebuilt.
+    onChange: async ()=>{ CAPS = {}; await loadCaps(); },
+  });
+}
+
+function renderStrip(){
+  const cards = ST.months.map(ym=>{
+    const m = CAPS[ym]; const cap = m ? m.teamSP : null;
+    const planned = plannedFor(monthName(ym));
+    const pct = cap ? Math.round(planned/cap*100) : 0;
+    const cls = fitClass(pct);
+    const diff = cap!=null ? Math.round((cap-planned)*10)/10 : null;
+    const verdict = cap==null ? 'capacity loading…' : (diff<0 ? `over by ${Math.abs(diff)} SP` : `${diff} SP headroom`);
+    return `<div class="mcap" data-ym="${ym}">
+      <span class="caret">${ST.capOpen[ym]?'▾ hide team':'▸ team'}</span>
+      <div class="mn"><span class="cyc">${esc(m && m.cycle ? m.cycle : monthLabel(ym))}</span>${
+        (m && m.start && m.end) ? `<button type="button" class="win ${m.customWindow?'custom':''}" data-win="${esc(ym)}"
+             title="Set this cycle's start and end dates. Default is the whole calendar month."
+             >📅 ${esc(winLabel(m))} <span class="wedit">${m.customWindow?'edited':'edit dates'}</span></button>` : ''}</div>
+      ${ST.winOpen===ym && m ? winEditor(ym, m) : ''}
+      <div class="nums">
+        <span class="planned"><span class="lbl">Planned</span><b>${planned}</b></span>
+        <span><span class="lbl">Capacity</span><b>${cap==null?'…':cap}</b></span>
+      </div>
+      <div class="bar"><i class="${cls}" style="width:${Math.min(100,pct)}%"></i></div>
+      <div class="verdict ${cls}">${cap==null?verdict:`${pct}% · ${verdict}`}</div>
+    </div>`;
+  }).join('');
+  const panels = ST.months.filter(ym=>ST.capOpen[ym] && CAPS[ym]).map(ym=>capHTML(CAPS[ym])).join('');
+  strip.innerHTML = `<div class="cards-strip">${cards}</div>${panels}`;
+  wireLeaveCells();
+  strip.querySelectorAll('.mcap').forEach(c=>c.addEventListener('click', e=>{
+    if(e.target.closest('.wined') || e.target.closest('.win')) return;   // editor owns its clicks
+    const ym=c.dataset.ym; ST.capOpen[ym]=!ST.capOpen[ym]; save(); renderStrip();
+  }));
+  strip.querySelectorAll('.win').forEach(el=>el.addEventListener('click', e=>{
+    e.stopPropagation();
+    const ym = el.dataset.win;
+    ST.winOpen = ST.winOpen === ym ? null : ym; save(); renderStrip();
+  }));
+  strip.querySelectorAll('.wined').forEach(box=>{
+    box.addEventListener('click', e=>e.stopPropagation());
+    const ym = box.dataset.ym;
+    const apply = (start, end)=>{
+      ST.win = ST.win || {};
+      if(start && end) ST.win[ym] = {start, end}; else delete ST.win[ym];
+      ST.winOpen = null; save();
+      delete CAPS[ym];                       // the window changed, so the capacity must too
+      renderStrip(); loadCaps();
+    };
+    box.querySelector('.wapply').addEventListener('click', ()=>{
+      const a = box.querySelector('.wfrom').value, b = box.querySelector('.wto').value;
+      if(!a || !b){ toast('Pick both a start and an end date.', 'warn'); return; }
+      if(b < a){ toast('End date is before the start date.', 'bad'); return; }
+      apply(a, b);
+    });
+    box.querySelector('.wreset').addEventListener('click', ()=>apply(null, null));
+  });
+}
+
+/* ---------------- schedule lane -------------------------------------------------
+   Bars over the SAME calendar the team grid above already draws. A bar's length is
+   its budgeted SP divided by (people x team SP per person-day), laid across real
+   working days, so weekends and public holidays push the end date out.
+   `rate` is SP per day actually worked (teamSP / teamNetDays), which already has
+   leave averaged out; `avail` then models how likely a given day is worked at all. */
+function schDays(){
+  const out = [];
+  ST.months.forEach(ym=>{
+    const c = CAPS[ym];
+    if(!c || !Array.isArray(c.days)) return;
+    const team = (c.people||[]).length || 1;
+    const rate = c.teamNetDays ? c.teamSP / c.teamNetDays : 0;
+    c.days.forEach((d,i)=>{
+      const present = (c.people||[]).filter(p=>{
+        const st = (p.statuses||[])[i]; return st === '' || st === 'W'; }).length;
+      const mand = d.holiday && d.holiday.type === 'holiday';
+      out.push({ ym, date:d.date, dow:d.dow, weekend:!!d.weekend, holiday: mand?d.holiday:null,
+                 working: !d.weekend && !mand, rate, avail: team?present/team:1 });
+    });
+  });
+  out.sort((a,b)=> a.date<b.date?-1:a.date>b.date?1:0);
+  return out;
+}
+const headsFor = k => Math.max(1, Math.min(9, +(ST.heads||{})[k] || 1));
+function schLayout(sp, heads, days, from){
+  let left = sp, start = -1, end = -1;
+  for(let i=Math.max(0,from); i<days.length; i++){
+    const d = days[i];
+    if(!d.working) continue;
+    const per = d.rate * heads * d.avail;
+    if(per <= 0) continue;
+    if(start < 0) start = i;
+    left -= per; end = i;
+    if(left <= 0.0001) break;
+  }
+  return {start, end, over: Math.max(0, Math.round(left*10)/10)};
+}
+// Where a bar begins when you have not moved it: the first day of the earliest selected
+// month it carries a budget in.
+function schAuto(per, days){
+  const firstOf = {};
+  days.forEach((d,i)=>{ if(firstOf[d.ym]===undefined) firstOf[d.ym]=i; });
+  const earliest = Object.keys(per).sort()[0];
+  return firstOf[earliest] ?? 0;
+}
+// A start day you dragged, as an index into `days`. Stored as a DATE, not an index, so it
+// survives a change of months or cycle window: the same calendar day keeps its meaning
+// where an index would silently point at a different date. Out of the current window it is
+// kept but ignored, because the window may well come back.
+function schPinned(key, days){
+  const iso = (ST.schStart||{})[key];
+  if(!iso) return -1;
+  const i = days.findIndex(d=>d.date >= iso);
+  return i;
+}
+function schRow(it, days, mns){
+  if(isArchived(it)) return null;
+  const per = {};
+  mns.forEach((mn,i)=>{ const c = ST.plan[it.key]?.[mn];
+    const v = c && c.on ? (+c.sp||0) : 0; if(v>0) per[ST.months[i]] = v; });
+  const sp = Object.values(per).reduce((a,b)=>a+b,0);
+  if(sp <= 0) return null;
+  const auto = schAuto(per, days);
+  const pinIso = (ST.schStart||{})[it.key] || '';
+  const pin = schPinned(it.key, days);
+  const lay = schLayout(sp, headsFor(it.key), days, pin >= 0 ? pin : auto);
+  const endDate = lay.end >= 0 ? days[lay.end].date : '';
+  const due = (it.epic && it.epic.dueDate) || '';
+  // pinLost: a start day you dragged that now falls outside the window (you changed months,
+  // or edited the cycle dates). The bar quietly reverts to auto, so the ⟲ has to stay
+  // visible or the stored date would be unreachable and unexplained.
+  return {it, sp, ...lay, auto, pinIso, pinned: pin >= 0 && !!pinIso,
+          pinLost: !!pinIso && pin < 0, endDate, due,
+          late: !!(due && endDate && endDate > due)};
+}
+function schRows(days){
+  const mns = ST.months.map(monthName);
+  return visibleInits().map(it=>schRow(it, days, mns))
+    .filter(Boolean).sort((a,b)=>(a.start-b.start)||(b.sp-a.sp));
+}
+
+/* ---------------- handover readiness -------------------------------------------
+   Source of truth is the program team's own readiness CLI, via /api/handover. This page
+   deliberately does NOT recompute the score: the CLI counts rows a PODs JQL cannot see
+   (the Horizontals field, and epics linked to initiatives that never declared your POD),
+   and a local reimplementation read 6.5 where the real figure was 6.77.
+
+   Rules: ~/engg-cycle-planning/handover-score-rules.md                                  */
+const jiraBase = () => {
+  const u = ((INITS||{}).initiatives||[]).map(i=>i.url).find(Boolean) || '';
+  const m = u.match(/^https?:\/\/[^/]+/);
+  return m ? m[0] : '';
+};
+const jiraUrl = key => { const b = jiraBase(); return b ? `${b}/browse/${key}` : ''; };
+
+let HO = null;              // {readiness, acceptance, history}
+let HOSTATE = 'idle';       // idle | loading | ready | failed
+let HOLIST = null;          // which gap list is expanded, e.g. "missingEpic:Oct-26"
+
+async function loadHandover(fresh){
+  if(HOSTATE === 'loading') return;
+  HOSTATE = 'loading'; renderHandover();
+  try{
+    const d = await (await fetch('/api/handover' + (fresh ? '?fresh=1' : ''))).json();
+    if(!d || d.error) throw new Error((d && d.error) || 'no payload');
+    HO = d;
+    HOSTATE = (d.readiness && d.readiness.__error__) ? 'failed' : 'ready';
+    if(HOSTATE === 'failed') toast('Handover score unavailable: ' + d.readiness.__error__, 'warn');
+  }catch(e){ HOSTATE = 'failed'; toast('Could not load the handover score: ' + e.message, 'warn'); }
+  renderHandover();
+}
+
+const hoRows = () => ((HO && HO.readiness && HO.readiness.rows) || []);
+// your POD's rows only: other teams' rows never move your score
+const hoMine = () => hoRows().filter(r => r.mine);
+const hoProj = () => ((HO && HO.readiness && HO.readiness.rollup
+                      && HO.readiness.rollup.per_project) || []);
+
+// A row scoring 10 that is not really green: budget present but zero, or epic with no due
+// date (the SOP's dependency-acceptance signal, which the score does not look at).
+const hoZero   = r => r.score === 10 && !(+r.budget > 0);
+const hoNoDue  = r => r.score === 10 && !r.epic_due;
+
+function hoTrend(project, month){
+  const h = ((HO && HO.history) || [])
+    .filter(x => x.project === project && x.month === month)
+    .sort((a,b) => (a.date < b.date ? -1 : 1));
+  if(h.length < 2) return null;
+  const now = h[h.length-1], prev = h[h.length-2];
+  return {from: prev, to: now,
+          dAvg: Math.round(((now.avg||0) - (prev.avg||0)) * 100) / 100,
+          dRows: (now.rows||0) - (prev.rows||0)};
+}
+
+function renderHandover(){
+  const host = document.getElementById('handover');
+  if(!host) return;
+  if(HOSTATE === 'idle'){ host.innerHTML = ''; host.style.display = 'none'; return; }
+  host.style.display = '';
+  if(HOSTATE === 'loading'){
+    host.innerHTML = `<div class="hhdr"><span class="t">Handover readiness</span>
+      <span class="n">running the readiness check…</span></div>`; return;
+  }
+  if(HOSTATE === 'failed'){
+    host.innerHTML = `<div class="hhdr"><span class="t">Handover readiness</span>
+      <span class="n">unavailable — ${esc(((HO||{}).readiness||{}).__error__ || 'check the CLI config')}</span>
+      <button class="hclear" id="horetry">retry</button></div>`;
+    const b = document.getElementById('horetry');
+    if(b) b.addEventListener('click', ()=>loadHandover(true));
+    return;
+  }
+
+  const chip = (n, label, kind, id) => n
+    ? `<button class="hchip ${kind}${HOLIST === id ? ' on' : ''}" data-l="${esc(id)}"
+        title="click to list these rows">${n} ${esc(label)}</button>` : '';
+
+  // ---- per cycle month: the headline, its bar, and what makes it up ----
+  const cards = hoProj().map(p => {
+    const rows = hoMine().filter(r => r.month === p.month);
+    const zero = rows.filter(hoZero).length, nodue = rows.filter(hoNoDue).length;
+    // the CLI reports only the bar from the checkpoint in force, which can be silent about
+    // a cycle whose bar still applies, so fall back to the planner's per-cycle resolution
+    const pc = (((INITS||{}).bars||{}).perCycle||{})[p.month] || null;
+    const bar = p.bar != null ? p.bar : (pc ? pc.bar : null);
+    const over = bar != null && p.avg >= bar;
+    const allGreen = !!(pc && pc.allGreen);
+    const when = pc ? ` (${pc.passed ? 'was due' : 'due'} ${pc.date})` : '';
+    const verdict = bar == null ? 'no bar set'
+      : over ? (allGreen && p.pct_green < 100
+          ? `above ${bar}, but that checkpoint wants every row green${when}`
+          : `above the bar of ${bar}${when}`)
+        : `below the bar of ${bar}${when}`;
+    const cls = bar == null ? '' : over ? (allGreen && p.pct_green < 100 ? 'warn' : 'good') : 'bad';
+    const t = hoTrend(p.project, p.month);
+    const trend = t
+      ? `<div class="htrend">since ${esc(t.from.date)}: ${t.dAvg >= 0 ? '+' : ''}${t.dAvg} avg
+         · ${t.dRows >= 0 ? '+' : ''}${t.dRows} rows
+         <span class="hwhy">${t.dRows !== 0 ? 'the denominator moved, so compare the counts' : ''}</span></div>`
+      : `<div class="htrend">first snapshot today — a trend needs a second day</div>`;
+    return `<div class="hcard">
+      <div class="hhead">${esc(p.project)} · ${esc(p.month)}<span class="hrows">${p.rows} rows</span></div>
+      <div class="hscore ${cls}">${p.avg}<small>/10</small></div>
+      <div class="hbar"><i class="${cls}" style="width:${Math.min(100,(p.avg||0)*10)}%"></i></div>
+      <div class="hverdict ${cls}">${p.pct_green}% green · ${esc(verdict)}</div>
+      <div class="hcounts">${rows.filter(r=>r.status==='OK').length} OK
+        · ${p.missing_budget} missing budget · ${p.missing_epic} missing epic</div>
+      <div class="hchips">
+        ${chip(p.missing_epic, 'no epic', 'bad', `missingEpic:${p.month}`)}
+        ${chip(p.missing_budget, 'no budget', 'warn', `missingBudget:${p.month}`)}
+        ${chip(zero, 'budgeted 0', 'warn', `zero:${p.month}`)}
+        ${chip(nodue, 'no due date', 'warn', `nodue:${p.month}`)}
+      </div>${trend}</div>`;
+  }).join('');
+
+  // ---- EM acceptance: gated on the INITIATIVE's target dates, not the epic ----
+  const a = (HO && HO.acceptance) || {};
+  const acc = a.__error__ ? `<div class="hcard"><div class="hhead">EM acceptance</div>
+      <div class="hverdict bad">unavailable</div></div>`
+    : `<div class="hcard">
+        <div class="hhead">EM acceptance<span class="hrows">${a.total} initiatives</span></div>
+        <div class="hscore ${a.missingEither ? (a.accepted ? 'warn' : 'bad') : 'good'}">${a.accepted}<small>/${a.total}</small></div>
+        <div class="hbar"><i class="${a.missingEither ? (a.accepted ? 'warn' : 'bad') : 'good'}"
+          style="width:${a.total ? Math.round(100*a.accepted/a.total) : 0}%"></i></div>
+        <div class="hverdict ${a.missingEither ? 'warn' : 'good'}">${a.missingEither} missing a target date</div>
+        <div class="hcounts">you are Tech DRI · separate from the handover score</div>
+        <div class="hchips">
+          ${chip(a.missingGoLive, 'no go-live', 'warn', 'accGoLive:')}
+          ${chip(a.missingHandover, 'no handover', 'warn', 'accHandover:')}
+        </div></div>`;
+
+  // ---- Tech DRI exposure: other teams' rows on your initiatives ----
+  const ex = {};
+  hoRows().filter(r => !r.mine).forEach(r => {
+    (ex[r.team] = ex[r.team] || []).push(r);
+  });
+  const exTeams = Object.entries(ex)
+    .map(([team, rs]) => ({team, rows: rs.length,
+      avg: Math.round(rs.reduce((t,x)=>t+x.score,0) / rs.length * 100) / 100,
+      bad: rs.filter(x=>x.score < 10).length}))
+    .sort((a,b) => a.avg - b.avg);
+  const exposure = exTeams.length ? `<div class="hexp">
+      <div class="hexph">Tech DRI exposure
+        <span class="n">${hoRows().filter(r=>!r.mine).length} rows across ${exTeams.length} teams ·
+        not in your score, but you are the resolution owner</span></div>
+      <div class="hteams">${exTeams.map(t=>`
+        <button class="hteam${HOLIST === 'team:'+t.team ? ' on' : ''}" data-l="team:${esc(t.team)}">
+          <b>${esc(t.team)}</b> <span class="${t.avg < 5 ? 'bad' : t.avg < 8 ? 'warn' : 'good'}">${t.avg}</span>
+          <small>${t.bad}/${t.rows} to fix</small></button>`).join('')}</div></div>` : '';
+
+  host.innerHTML = `<div class="hhdr">
+      <span class="t">Handover readiness</span>
+      <span class="n">${esc(((HO||{}).readiness||{}).cycle_id || '')} · from the program team's
+        readiness check${((HO||{}).readiness||{}).fetched
+          ? ` · ${esc(String(HO.readiness.fetched).replace('T',' ').slice(0,16))}` : ''}</span>
+      <button class="hclear" id="horeload">↻ recheck</button>
+    </div>
+    <div class="hcards">${cards}${acc}</div>
+    ${exposure}
+    <div id="holist"></div>
+    <div class="hnote">A budget of 0 scores 10 — presence is checked, not value. A due date
+      is not scored at all, but the SOP treats it as the dependency acceptance signal, so a
+      row can score 10 and still be unaccepted. The denominator moves as initiatives join and
+      leave the cycle, so read the counts, not just the average.</div>`;
+
+  renderHoList();
+  const rl = document.getElementById('horeload');
+  if(rl) rl.addEventListener('click', ()=>loadHandover(true));
+  host.querySelectorAll('[data-l]').forEach(b=>b.addEventListener('click', ()=>{
+    HOLIST = HOLIST === b.dataset.l ? null : b.dataset.l;
+    renderHandover();
+  }));
+}
+
+function renderHoList(){
+  const host = document.getElementById('holist');
+  if(!host || !HOLIST) return;
+  const [kind, arg] = HOLIST.split(':');
+  let rows = [], title = '', note = '';
+
+  if(kind === 'team'){
+    rows = hoRows().filter(r => r.team === arg && r.score < 10).sort((a,b)=>a.score-b.score);
+    title = `${arg} · rows to fix on your initiatives`;
+    note = 'These do not count in your score. You are the resolution owner.';
+  } else if(kind === 'accGoLive' || kind === 'accHandover'){
+    const want = kind === 'accGoLive' ? 'Target Go-Live' : 'Target Handover';
+    const a = (HO && HO.acceptance) || {};
+    const list = (a.rows || []).filter(r => (r.missing || []).includes(want));
+    host.innerHTML = `<div class="holist"><div class="holh">${esc(want)} not set
+        <span class="n">${list.length} initiative${list.length===1?'':'s'} · EM acceptance, not the handover score</span></div>
+      ${list.map(r=>`<div class="hor">
+        <a class="k" href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.key)}</a>
+        <span class="s">${esc(r.summary)}</span>
+        <span class="m">${esc((r.months||[]).join(', '))}</span>
+        <span class="g">${esc(r.missing.join(' + '))} missing</span></div>`).join('')}</div>`;
+    return;
+  } else {
+    const month = arg;
+    const base = hoMine().filter(r => r.month === month);
+    if(kind === 'missingEpic'){ rows = base.filter(r=>r.status === 'Missing epic');
+      title = `No delivery epic · ${month}`; note = 'Scores 1 until one is created and linked.'; }
+    if(kind === 'missingBudget'){ rows = base.filter(r=>r.status === 'Missing budget');
+      title = `Epic but no budget · ${month}`; note = 'Scores 3. Filling the budget is +7 per row, the cheapest move.'; }
+    if(kind === 'zero'){ rows = base.filter(hoZero);
+      title = `Budgeted 0 · ${month}`; note = 'Scores 10 because presence is checked, not value. Nothing is committed.'; }
+    if(kind === 'nodue'){ rows = base.filter(hoNoDue);
+      title = `No due date · ${month}`; note = 'Scores 10. The SOP treats a missing target date as an unaccepted dependency.'; }
+    rows.sort((a,b)=> a.score - b.score || a.initiative.localeCompare(b.initiative));
+  }
+
+  host.innerHTML = `<div class="holist"><div class="holh">${esc(title)}
+      <span class="n">${rows.length} row${rows.length===1?'':'s'} · ${esc(note)}</span></div>
+    ${rows.map(r=>`<div class="hor">
+      <span class="sc s${r.score}">${r.score}</span>
+      <a class="k" href="${esc(jiraUrl(r.initiative))}" target="_blank" rel="noopener">${esc(r.initiative)}</a>
+      <span class="s">${esc(r.initiative_summary || '')}</span>
+      <span class="m">${esc(r.team)} · ${esc(r.month)}</span>
+      <span class="g">${esc((r.epics||[]).join(', ') || r.status)}${
+        r.note ? ` · ${esc(r.note)}` : ''}</span></div>`).join('')}</div>`;
+}
+
+function renderSchedule(){
+  const host = document.getElementById('sched');
+  if(!host) return;
+  if(!INITS || !ST.months.length){ host.innerHTML=''; host.style.display='none'; return; }
+  host.style.display='';
+  const days = schDays();
+  if(!days.length){
+    host.innerHTML = `<div class="schhead" id="schToggle"><span>\u25b8</span>
+      <span class="t">Schedule</span><span class="n">loading the team calendar\u2026</span></div>`;
+    return;
+  }
+  const rs = schRows(days);
+  const open = !!ST.schOpen;
+  const late = rs.filter(r=>r.late).length, over = rs.filter(r=>r.over>0).length;
+  const note = !rs.length ? 'nothing planned in these months'
+    : `${rs.length} planned · ${late} past the epic due date · ${over} spill past the window`;
+  let head = `<div class="schhead" id="schToggle"><span>${open?'▾':'▸'}</span>
+    <span class="t">Schedule</span><span class="n">${esc(note)}</span></div>`;
+  if(!open || !rs.length){ host.innerHTML = head; wireSched(); return; }
+
+  let band = '';
+  ST.months.forEach(ym=>{ const n = days.filter(d=>d.ym===ym).length;
+    const c = CAPS[ym];
+    if(n) band += `<th class="mo" colspan="${n}">${esc(c && c.cycle ? c.cycle : monthLabel(ym))}</th>`; });
+  const dh = days.map(d=>`<th class="gd ${d.weekend?'we':''} ${d.holiday?'hol':''}"
+      title="${esc(d.date)}${d.holiday?' · '+esc(d.holiday.occasion||'holiday'):''}">${esc(d.date.slice(8))}<small>${esc(d.dow[0])}</small></th>`).join('');
+  const body = rs.map(r=>`<tr data-k="${esc(r.it.key)}">${schNameCell(r)}${schCells(r, days)}</tr>`).join('');
+
+  host.innerHTML = head + `<div class="schwrap"><table class="sch" id="schtab">
+    <thead><tr><th class="sname" rowspan="2">Initiative</th>${band}</tr><tr>${dh}</tr></thead>
+    <tbody>${body}</tbody></table></div>
+    <div class="note" style="color:var(--hint);font-size:11.5px;margin:0 14px 10px">
+      Bar length = planned SP ÷ (devs × team SP per working day), over real working days.
+      Drag a bar sideways to move its start day; ⟲ puts it back. Leave is a team-wide
+      average, so an individual's leave does not yet shorten their own bar.</div>`;
+  wireSched(days);
+}
+// The two halves of a schedule row, kept separate so a drag can repaint one row in place
+// instead of re-rendering (and re-sorting) the whole table under the cursor.
+function schCells(r, days){
+  const k = r.it.key;
+  return days.map((d,i)=>{
+    let inner = '';
+    if(r.start>=0 && i>=r.start && i<=r.end && d.working){
+      const e = (i===r.start&&i===r.end)?'one':i===r.start?'s':i===r.end?'e':'';
+      inner += `<div class="sbar ${e} ${r.late?'late':''}"
+                 title="${esc(k)} · ${esc(String(r.sp))} SP · ${headsFor(k)} dev · ${
+                   esc(days[r.start].date)} → ${esc(r.endDate)}&#10;drag sideways to move the start day"></div>`;
+    }
+    if(r.due && d.date===r.due) inner += `<div class="sdue" title="epic due ${esc(r.due)}"></div>`;
+    return `<td class="sc ${d.weekend?'we':''} ${d.holiday?'hol':''}" data-i="${i}">${inner}</td>`;
+  }).join('');
+}
+function schNameCell(r){
+  const k = r.it.key;
+  const flag = r.late ? `<span class="sflag" title="ends ${esc(r.endDate)}, due ${esc(r.due)}">past due</span>`
+             : r.over>0 ? `<span class="sflag">${esc(String(r.over))} SP spills</span>` : '';
+  const pin = r.pinned
+    ? `<button class="spin" data-k="${esc(k)}" title="Start day moved to ${esc(r.pinIso)} — click to put it back where the budget says">⟲</button>`
+    : r.pinLost
+    ? `<button class="spin" data-k="${esc(k)}" title="Start day was moved to ${esc(r.pinIso)}, which is outside the months you are viewing — the bar is back on its default. Click to drop the moved date.">⟲ ${esc(r.pinIso)}</button>`
+    : '';
+  return `<td class="sname"><span class="s"><b>${esc(k)}</b> ${esc(r.it.summary)}</span>
+    <span class="heads"><button data-k="${esc(k)}" data-s="-1">−</button><b>${headsFor(k)}</b><button data-k="${esc(k)}" data-s="1">+</button></span>${flag}${pin}</td>`;
+}
+// A dropped start day snaps forward to the next working day, so the stored date is one the
+// bar actually begins on. Without this the pin tooltip and the ⟲ title could name a Sunday
+// the layout had already skipped past.
+function schSnap(i, days){
+  for(let j=Math.max(0,i); j<days.length; j++) if(days[j].working) return j;
+  for(let j=Math.min(i,days.length-1); j>=0; j--) if(days[j].working) return j;
+  return -1;
+}
+// Where a drop lands. Separate from the pointer handling so it is testable without a layout
+// engine: jsdom has no elementFromPoint and no pointer capture, and a test that reimplemented
+// this instead would pass with the real path broken.
+function schCommitStart(key, at, auto, days){
+  const snapped = schSnap(at, days);
+  if(snapped < 0){ renderSchedule(); return; }
+  ST.schStart = ST.schStart || {};
+  // Dropping a bar back on its own default CLEARS the pin rather than freezing today's date.
+  // Freezing would quietly stop the bar tracking the budget: retag the initiative to another
+  // month and it would still sit on the old start, looking like the planner was wrong.
+  if(snapped === auto) delete ST.schStart[key];
+  else ST.schStart[key] = days[snapped].date;
+  save(); renderSchedule();
+}
+function wireSched(days){
+  const t = document.getElementById('schToggle');
+  if(t) t.addEventListener('click', ()=>{ ST.schOpen = !ST.schOpen; save(); renderSchedule(); });
+  document.querySelectorAll('#sched .heads button').forEach(b=>b.addEventListener('click', e=>{
+    e.stopPropagation();
+    const k = b.dataset.k;
+    ST.heads = ST.heads || {};
+    ST.heads[k] = Math.max(1, Math.min(9, headsFor(k) + (+b.dataset.s)));
+    save(); renderSchedule();
+  }));
+  document.querySelectorAll('#sched .spin').forEach(b=>b.addEventListener('click', e=>{
+    e.stopPropagation();
+    if(ST.schStart) delete ST.schStart[b.dataset.k];
+    save(); renderSchedule();
+  }));
+  if(days) wireSchedDrag(days);
+}
+
+// ---- drag a bar sideways to move its start day ----------------------------------
+// Pointer events, not HTML5 drag-and-drop: the bar is a div per day cell, so a native drag
+// would lose its source element the moment the row repaints. The cursor is tracked against
+// the day COLUMN under it (elementFromPoint -> td[data-i]) rather than against pixels, so
+// the grid, not an assumed column width, decides which day you are on.
+function wireSchedDrag(days){
+  const tab = document.getElementById('schtab');
+  if(!tab) return;
+  const mns = ST.months.map(monthName);
+  let drag = null;
+
+  const colAt = (x,y)=>{
+    const el = document.elementFromPoint ? document.elementFromPoint(x,y) : null;
+    const td = el && el.closest ? el.closest('td.sc') : null;
+    return td ? +td.dataset.i : -1;
+  };
+
+  tab.addEventListener('pointerdown', e=>{
+    const bar = e.target.closest && e.target.closest('.sbar');
+    if(!bar || e.button) return;
+    const tr = bar.closest('tr'), key = tr && tr.dataset.k;
+    const it = key && (INITS.initiatives||[]).find(i=>i.key===key);
+    const r = it && schRow(it, days, mns);
+    if(!r || r.start < 0) return;
+    e.preventDefault();
+    drag = {tr, key, r, grab: colAt(e.clientX, e.clientY), start: r.start, at: r.start};
+    tr.classList.add('sdrag');
+    // capture on the TABLE: the bar under the cursor is destroyed by the first repaint,
+    // so capturing on the bar itself would drop the pointer after one move.
+    try{ tab.setPointerCapture(e.pointerId); }catch(_){}
+  });
+
+  tab.addEventListener('pointermove', e=>{
+    if(!drag) return;
+    const c = colAt(e.clientX, e.clientY);
+    if(c < 0 || drag.grab < 0) return;
+    const want = Math.max(0, Math.min(days.length-1, drag.start + (c - drag.grab)));
+    if(want === drag.at) return;
+    drag.at = want;
+    // repaint only the dragged row, so the table does not re-sort out from under the cursor
+    const lay = schLayout(drag.r.sp, headsFor(drag.key), days, want);
+    const endDate = lay.end >= 0 ? days[lay.end].date : '';
+    const live = Object.assign({}, drag.r, lay, {endDate, pinned:true,
+      late: !!(drag.r.due && endDate && endDate > drag.r.due)});
+    drag.live = live;
+    [...drag.tr.querySelectorAll('td.sc')].forEach(td=>td.remove());
+    drag.tr.insertAdjacentHTML('beforeend', schCells(live, days));
+  });
+
+  const finish = e=>{
+    if(!drag) return;
+    const d = drag; drag = null;
+    d.tr.classList.remove('sdrag');
+    try{ tab.releasePointerCapture(e.pointerId); }catch(_){}
+    if(d.at === d.start) renderSchedule();                 // click, or dragged back
+    else schCommitStart(d.key, d.at, d.r.auto, days);
+  };
+  tab.addEventListener('pointerup', finish);
+  tab.addEventListener('pointercancel', finish);
+}
+
+/* ---------------- handover readiness ------------------------------------------
+   Rules: ~/engg-cycle-planning/handover-score-rules.md (SOP v2 + CONFIG-7, verified
+   against live data). The three things that are easy to get wrong:
+
+   SCOPE. A row is initiative x tagged team x cycle month. Your HEADLINE score counts only
+   rows for your OWN pod, across every initiative tagging you - not just the ones you are
+   Tech DRI on. A partner pod failing to budget does NOT lower your score; that is their
+   row. You are measured on your pod and accountable for the rest, and those are different
+   numbers, so they are shown separately.
+
+   ZERO COUNTS AS FILLED. The budget check is presence, not value, so an explicit 0 scores
+   10. Four green rows can represent zero committed effort.
+
+   DUE DATE IS NOT SCORED, BUT IS THE ACCEPTANCE SIGNAL. "A tagged team with no linked
+   epic, or an epic with no target date, counts as a missing/unaccepted dependency." So a
+   row can score 10 and still be formally unaccepted. Both are shown.                     */
+const READY_OK = 'OK', READY_NO_BUDGET = 'Missing budget', READY_NO_EPIC = 'Missing epic';
+function scoreRow(hasEpic, budgetSet){
+  if(!hasEpic)    return {score:1,  status:READY_NO_EPIC};
+  if(!budgetSet)  return {score:3,  status:READY_NO_BUDGET};
+  return {score:10, status:READY_OK};
+}
+// Cancelled epics are excluded from "linked"; Done epics still count.
+const liveEpic = e => !!e && String(e.status || '').toLowerCase() !== 'cancelled';
+
+function readiness(it){
+  const mons = ST.months.filter(ym=>(it.cycles||[]).includes(cycleTag(ym)));
+  if(!mons.length) return null;
+  const epic = liveEpic(it.epic) ? it.epic : null;
+
+  // what you are MEASURED on: your own pod's row per cycle month
+  const own = mons.map(ym=>{
+    const mn = monthName(ym), tag = cycleTag(ym);
+    const filed = +((it.budgets||{})[mn]) || 0;
+    const set = ((it.budgetsSet||{})[mn]) === true;
+    return Object.assign({tag, mn, filed, zero: !!epic && set && filed <= 0}, scoreRow(!!epic, set));
+  });
+  const worst = own.reduce((a,b)=> b.score < a.score ? b : a);
+  const avg = Math.round(own.reduce((t,r)=>t+r.score,0) / own.length * 10) / 10;
+
+  // what you are ACCOUNTABLE for as Tech DRI: the other tagged pods' rows. Not in your
+  // headline average, but the SOP names the Tech DRI as resolution owner.
+  const others = [];
+  if(ME.name && it.engDri === ME.name){
+    (DEPS[it.key] || []).forEach(d=>{
+      const theirEpic = d.epic && String(d.epicStatus || '').toLowerCase() !== 'cancelled';
+      mons.forEach(ym=>{
+        const tag = cycleTag(ym);
+        const v = +((d.months||{})[tag]) || 0;
+        const vs = ((d.monthsSet||{})[tag]) === true;
+        others.push(Object.assign({tag, pod: d.pod, filed: v, zero: vs && v <= 0,
+                                   unaccepted: !!theirEpic && !d.epicDue},
+                                  scoreRow(!!theirEpic, vs)));
+      });
+    });
+  }
+  // acceptance is the epic's due date, and is NOT part of the score
+  const unaccepted = !!epic && !epic.dueDate;
+  return {own, others, worst, avg, unaccepted,
+          zeros: own.filter(x=>x.zero),
+          reversed: !!(it.epic && it.epic.linkReversed)};
+}
+
+function readyBadge(it){
+  if(!ME.name) return '';
+  const r = readiness(it);
+  if(!r) return '';
+  const isDri = it.engDri === ME.name;
+
+  if(r.reversed){
+    return `<span class="rdy rev" title="${esc('Epic is linked the wrong way round, so JPD does not treat it as the delivery epic. Reverse-linked epics score nothing until relinked (epic implements initiative).')}">&#9888;</span>`;
+  }
+  // partner-pod rows only load for your own DRI initiatives, and only matter there
+  const pending = isDri && depsState !== 'ready';
+
+  const lines = [`YOUR SCORE (what you are measured on)`];
+  r.own.forEach(x=> lines.push(`  ${x.tag}: ${x.status === READY_OK
+      ? `${x.score}/10${x.zero ? ' \u2014 but budgeted 0 SP, nothing committed' : ` (${x.filed} SP)`}`
+      : `${x.score}/10 \u2014 ${x.status}`}`));
+  if(r.unaccepted)
+    lines.push(`  ACCEPTANCE: epic has no due date, so it is formally an unaccepted dependency (not scored)`);
+
+  if(isDri){
+    if(pending) lines.push('', 'Checking the other tagged pods\u2026');
+    else {
+      const gaps = r.others.filter(x=>x.status !== READY_OK || x.zero || x.unaccepted);
+      if(gaps.length){
+        lines.push('', `OTHER PODS (not in your score \u2014 you own resolution as Tech DRI)`);
+        gaps.slice(0, 8).forEach(x=> lines.push(`  ${x.tag} \u00b7 ${x.pod}: ${
+          x.status !== READY_OK ? x.status
+          : x.zero ? 'budgeted 0 SP' : 'epic has no due date (unaccepted)'}`));
+      } else if(r.others.length) lines.push('', 'Other tagged pods: all ready.');
+    }
+  }
+
+  // Colour tracks YOUR row, because that is the number in the bar. An otherwise-green row
+  // that is unaccepted or budgeted zero is not shown as a clean tick.
+  const soft = r.unaccepted || r.zeros.length;
+  const cls = r.worst.score === 1 ? 'bad' : r.worst.score === 3 ? 'warn' : soft ? 'warn' : 'ok';
+  const glyph = r.worst.score === 1 ? '&#10007;' : (r.worst.score === 3 || soft) ? '&#9888;' : '&#10003;';
+  const head = r.worst.score === 10
+    ? (r.zeros.length ? `Scores ${r.avg}/10 but budgeted 0 SP`
+       : r.unaccepted ? `Scores ${r.avg}/10 but not formally accepted`
+       : `Ready \u00b7 ${r.avg}/10`)
+    : `${r.worst.status} \u00b7 ${r.avg}/10`;
+  return `<span class="rdy ${cls}" title="${esc(head + '\n\n' + lines.join('\n'))}">${glyph}</span>`;
+}
+
+function renderBoard(){
+  if(!INITS){ board.innerHTML='<div class="state">Loading initiatives…</div>'; return; }
+  const err = INITS.error || INITS.__error__;
+  if(err){ board.innerHTML=`<div class="state">initiatives failed: ${esc(err)}</div>`; return; }
+  if(!Array.isArray(INITS.initiatives)){ board.innerHTML='<div class="state">no initiatives in response</div>'; return; }
+  const selMn = ST.months.map(monthName);
+  const mheads = ST.months.map(ym=>`<th class="mcol">${monthLabel(ym)}</th>`).join('');
+  const xcols = activeCols();
+  const xheads = xcols.map(c=>`<th class="xcol">${c.label}</th>`).join('');
+  const span = 5 + ST.months.length + xcols.length;
+  const vis = visibleInits();
+  const offKeys = revealedKeys();
+  const needDetail = [];
+  const buildRow = (it,idx)=>{
+    const offCycle = !!(offKeys && offKeys.has(it.key));
+    const mcells = ST.months.map(ym=>{
+      const mn = monthName(ym); const c = cell(it.key, mn);
+      // No tick box: a month is planned iff it carries a number. Typing plans it, clearing
+      // the box unplans it. An empty cell still shows what Jira holds as a ghost placeholder,
+      // so the filed budget is visible without touching the plan.
+      const jira = +((it.budgets||{})[mn]) || 0;
+      const ghost = jira ? ` placeholder="${jira}" title="Jira holds ${jira} SP — type to plan it"` : '';
+      return `<td class="mcol"><span class="mcell">
+        <input type="number" min="0" step="0.5" data-k="${esc(it.key)}" data-m="${esc(mn)}" value="${c.on?(c.sp??''):''}"${ghost}>
+        <span class="sync"></span>
+      </span></td>`;
+    }).join('');
+    const open = ST.initOpen[it.key];
+    const d = DETAILS[it.key];
+    let detailRow = '';
+    if(open){
+      // ST.initOpen is persisted but DETAILS is not, so an open row can survive a reload or a
+      // filter change with nothing fetched. Kick the fetch off from the render, not just the click.
+      if(!d) needDetail.push(it.key);
+      const inner = !d ? `Loading ${esc(it.key)}…`
+        : (d.__error__ || d.error ? `<span class="noepic">failed: ${esc(d.__error__||d.error)}</span>
+             <button class="linkbtn retry" data-k="${esc(it.key)}">retry</button>`
+          : `${d.impact?`<h4>Impact</h4><p class="impact">${esc(d.impact)}</p>`:''}
+             <h4>Description</h4>${richHtml(d.descriptionRich, d.descriptionText)}`);
+      detailRow = `<tr class="detail" data-k="${esc(it.key)}"><td colspan="${span}">${inner}</td></tr>`;
+    }
+    const act = it.epic
+      ? `<button class="subbtn" data-k="${esc(it.key)}" title="Submit this epic's budget to Jira">⤴ Submit</button>`
+      : `<span class="noepic" title="Link an epic before submitting">no epic</span>`;
+    // fields promoted to their own column are dropped from the summary sub-line (no duplication)
+    const showPri  = it.orgPriority && !ST.cols.includes('orgPri');
+    const showEng  = it.engDri  && !ST.cols.includes('engDri');
+    const showProd = it.prodDri && !ST.cols.includes('prodDri');
+    const xcells = xcols.map(c=>{
+      // read-only when the column has no Jira field behind it, or the row has no epic to write to
+      const ik = EDITABLE[c.id] ? issueKeyFor(it, c.id) : '';
+      const attrs = ik
+        ? `class="xcol editable" data-col="${c.id}" data-issue="${ik}" data-label="${esc(c.label)}"`
+          + ` title="click to edit ${esc(c.label)} on ${ik}"`
+        : 'class="xcol"';
+      return `<td ${attrs}>${c.render(it)}</td>`;
+    }).join('');
+    return `<tr class="row${isArchived(it)?' archived':''}${offCycle?' offcycle':''}" draggable="true" data-k="${esc(it.key)}">
+      <td class="rank"><span class="handle">⠿</span> ${idx+1}</td>
+      <td class="key"><a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.key)}</a></td>
+      <td class="summ-toggle" data-k="${esc(it.key)}"><div class="nm"><span class="caretline">${open?'▾':'▸'}</span>${esc(it.summary)}${isArchived(it)?`<span class="archtag" title="Archived${it.archivedOn?' on '+esc(it.archivedOn):''} — excluded from capacity and submit">archived</span>`:''}${offCycle?`<span class="offtag" title="Planning Cycle in Jira is ${esc((it.cycles||[]).join(', ')||'unset')} — not in the months you are viewing, so its SP are excluded from every capacity total">${esc((it.cycles||[]).join(', ')||'no cycle')}</span>`:''}</div>${showPri?`<span class="pri">${esc(it.orgPriority)}</span>`:''}${(showEng||showProd)?`<div class="dri">${showEng?`<b>Eng</b> ${esc(it.engDri)}`:''}${showEng&&showProd?' · ':''}${showProd?`<b>Prod</b> ${esc(it.prodDri)}`:''}</div>`:''}</td>
+      <td>${readyBadge(it)}${it.epic
+        ? `<span class="epic"><a href="${esc(it.epic.url)}" target="_blank" rel="noopener">${esc(it.epic.key)}</a>`
+          + `<button class="unlinkbtn" data-k="${esc(it.key)}" data-epic="${esc(it.epic.key)}"`
+          + ` title="Unlink ${esc(it.epic.key)} from ${esc(it.key)} (the epic itself is kept)">✕</button></span>`
+        : `<button class="linkbtn" data-k="${esc(it.key)}">＋ link epic</button>`}</td>
+      ${xcells}
+      ${mcells}
+      <td class="act">${act}</td>
+    </tr>${detailRow}`;
+  };
+  // One heading before the first revealed row. visibleInits() guarantees they are contiguous
+  // and last, so a single separator bands the whole group.
+  let banded = false;
+  const offCount = offKeys ? vis.filter(it=>offKeys.has(it.key)).length : 0;
+  const rows = vis.map((it,idx)=>{
+    let sep = '';
+    if(offKeys && !banded && offKeys.has(it.key)){
+      banded = true;
+      const n = vis.length - idx;
+      // Deliberately NOT "excluded from submit": plannedFor() drops them from capacity, but
+      // gatherEpicBudgets() does not, so a draft left here still goes to Jira on Submit.
+      // That asymmetry is the reason "Clear their draft plans" exists.
+      sep = `<tr class="offsep"><td colspan="${span}">▾ ${n} off-cycle initiative${n===1?'':'s'}
+        — not tagged ${esc(ST.months.map(cycleTag).join(' / '))} in Jira
+        <span class="sub">· shown because they still carry a draft plan or a budget filed on their epic ·
+        their SP are excluded from every capacity total, but a draft left here is still submitted</span></td></tr>`;
+    }
+    return sep + buildRow(it, idx);
+  }).join('');
+  const empty = ST.driMe ? 'No initiatives where you are the Tech DRI in this view.'
+    : (ST.showAll ? 'No initiatives for the selected pod(s).'
+    : 'No initiatives in the selected month(s). Click “Show all” to add some to the cycle.');
+  board.innerHTML = `<div class="tablewrap"><table>
+    <thead><tr><th>#</th><th>Init</th><th>Summary</th><th>Epic</th>${xheads}${mheads}<th class="act"></th></tr></thead>
+    <tbody id="tb">${rows||`<tr><td colspan="${span}" class="state">${empty}</td></tr>`}</tbody>
+  </table></div>
+  <div class="note" style="color:var(--hint);font-size:12px;margin:12px 4px 4px">
+    Showing ${offKeys ? vis.filter(it=>!offKeys.has(it.key)).length : vis.length} of ${orderedInits().length} open initiatives for ${esc(podsNow().join(', ') || 'your pod')}${ST.showAll?'':' · in the selected month(s)'}${ST.driMe?' · Tech DRI = you':''}${offKeys&&offCount?` · plus ${offCount} off-cycle, listed at the bottom`:''}<span id="pendnote"></span>.</div>
+  ${strandedNote()}`;
+  wireBoard();
+  refreshPending();
+  showDataAge();                    // the span is recreated by this render, so refill it
+  renderSchedule();                 // bars share the board's filters and plan numbers
+  renderHandover();                 // published score; its own data, its own filters
+  needDetail.forEach(loadDetail);   // no-ops for keys already in flight
+}
+
+function strandedNote(){
+  const st = strandedInits();
+  if(!st.length) return '';
+  const mns = ST.months.map(monthName).join('/');
+  const filed = st.filter(it=>ST.months.some(ym=>(+((it.budgets||{})[monthName(ym)])||0) > 0));
+  const what = filed.length
+    ? `${filed.length} with a budget already filed in Jira for ${esc(mns)}`
+    : `planned here in an earlier draft`;
+  return `<div class="stranded">
+    ${st.length} initiative${st.length===1?'':'s'} hidden — tagged for another planning cycle, ${what}.
+    <button class="slink" id="revealStranded">${REVEAL?'Hide them again':'Show them at the bottom'}</button>
+    <button class="slink" id="clearStranded">Clear their draft plans</button></div>`;
+}
+
+function showDataAge(){
+  const el = document.getElementById('dataage');
+  if(!el || !INITS || !INITS.generated) return;
+  const today = new Date().toISOString().slice(0,10);
+  const stale = INITS.generated !== today;
+  el.innerHTML = ` · <span style="color:${stale?'var(--warn)':'var(--hint)'}"
+    title="${stale?'Click Reload from Jira to refresh':'built today'}">Jira data: ${esc(INITS.generated)}${stale?' — stale':''}</span>`;
+}
+function rerender(){ renderStrip(); renderBoard(); }   // renderBoard draws the lane
+
+// Greedy capacity pack: pour each initiative's Est. SP into the selected months
+// left-to-right (rank order), filling each month to its effective-SP capacity.
+function autoPlan(){
+  OVERFLOW = {};
+  const sized = it => (+ST.est[it.key] || 0) > 0;
+  // Start from full capacity, then RESERVE what non-sized initiatives already hold
+  // (their existing/epic budgets) — auto-plan only fills the leftover, and only
+  // touches the initiatives you've given an Est. SP (never wipes the others).
+  const rem = {}; ST.months.forEach(ym=>{ rem[ym] = CAPS[ym] ? CAPS[ym].teamSP : 0; });
+  orderedInits().forEach(it=>{
+    if(sized(it)) return;
+    ST.months.forEach(ym=>{ const c = ST.plan[it.key]?.[monthName(ym)]; if(c && c.on) rem[ym] -= (+c.sp||0); });
+  });
+  orderedInits().filter(sized).forEach(it=>{        // clear only the sized rows before re-packing
+    ST.months.forEach(ym=>{ const c = cell(it.key, monthName(ym)); c.on = false; c.sp = 0; });
+  });
+  orderedInits().filter(sized).forEach(it=>{
+    let sp = +ST.est[it.key] || 0;
+    for(const ym of ST.months){
+      if(sp <= 0) break;
+      const put = Math.min(sp, Math.max(0, rem[ym]));
+      if(put > 0){
+        const c = cell(it.key, monthName(ym));
+        c.on = true; c.sp = Math.round(put*10)/10;
+        rem[ym] -= put; sp -= put;
+      }
+    }
+    if(sp > 0.01) OVERFLOW[it.key] = Math.round(sp*10)/10;
+  });
+  save(); rerender();
+}
+
+function renderGantt(){
+  const g = document.getElementById('gantt'); if(!g) return;
+  if(!INITS || !Array.isArray(INITS.initiatives)){ g.innerHTML=''; return; }
+  const rows = orderedInits().filter(it => (+ST.est[it.key]||0) > 0 || ST.months.some(ym=>ST.plan[it.key]?.[monthName(ym)]?.on));
+  if(!rows.length){ g.innerHTML = '<div class="state">Set Est. SP on initiatives, then Auto-plan.</div>'; return; }
+  const gh = ST.months.map(ym=>`<th>${monthLabel(ym)}</th>`).join('');
+  const body = rows.map(it=>{
+    const cells = ST.months.map(ym=>{
+      const c = ST.plan[it.key]?.[monthName(ym)];
+      const v = (c && c.on) ? (+c.sp||0) : 0;
+      const hot = !!OVERFLOW[it.key];
+      return `<td><div class="gcell ${v>0?'fill':''} ${v>0&&hot?'hot':''}">${v>0?`<span class="gsp">${v}</span>`:''}</div></td>`;
+    }).join('');
+    const spill = OVERFLOW[it.key] ? `<span class="gspill" title="doesn't fit the window"> +${OVERFLOW[it.key]}⚠</span>` : '';
+    return `<tr><td class="gname"><span class="k">${esc(it.key)}</span>${esc(it.summary)}${spill}</td>${cells}</tr>`;
+  }).join('');
+  g.innerHTML = `<table class="gtable"><thead><tr><th class="gname">Initiative</th>${gh}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+// ---- board interactions ----
+function wireBoard(){
+  board.querySelectorAll('.mcell input[type=number]').forEach(inp=>{
+    inp.addEventListener('input', e=>{
+      const c = cell(inp.dataset.k, inp.dataset.m);
+      const raw = inp.value.trim();
+      // grouped view can show the same initiative under several pods — keep its twins in step
+      board.querySelectorAll(`.mcell input[type=number][data-k="${inp.dataset.k}"][data-m="${inp.dataset.m}"]`)
+           .forEach(o=>{ if(o !== inp) o.value = inp.value; });
+      c.on = raw !== '';                         // empty = not planned this month
+      c.sp = c.on ? (parseFloat(raw) || 0) : 0;  // "0" is a real plan: it clears Jira's budget
+      save(); renderStrip(); refreshPending();   // live totals without full re-render (keep focus)
+    });
+  });
+  board.querySelectorAll('.estsp').forEach(inp=>inp.addEventListener('input', ()=>{
+    ST.est[inp.dataset.k] = parseFloat(inp.value)||0; save();
+  }));
+  // due date renders as a live date input (the right control for a date), but writes
+  // through the same /api/set-field contract as every other column
+  board.querySelectorAll('input.duedate').forEach(inp=>{
+    inp.addEventListener('change', e=>{
+      e.stopPropagation();
+      setField(inp.dataset.epic, 'epicDue', inp.value, 'Epic due date');
+    });
+    inp.addEventListener('click', e=>e.stopPropagation());   // don't trigger cell edit mode
+  });
+  board.querySelectorAll('td.xcol.editable').forEach(td=>td.addEventListener('click', e=>{
+    if(e.target.closest('input, select, .usermenu')) return;
+    beginEdit(td);
+  }));
+  const rv = document.getElementById('revealStranded');
+  if(rv) rv.addEventListener('click', ()=>{
+    REVEAL = !REVEAL; renderBoard();
+    // the rows land at the bottom of a long table, so take the eye there.
+    // guarded on the method: jsdom does not implement scrollIntoView, and the reveal itself
+    // must not depend on a scroll succeeding.
+    const sep = REVEAL && document.querySelector('tr.offsep');
+    if(sep && sep.scrollIntoView) sep.scrollIntoView({behavior:'smooth', block:'center'});
+  });
+  const cs = document.getElementById('clearStranded');
+  if(cs) cs.addEventListener('click', ()=>{
+    // only clears the LOCAL draft — a budget filed on the epic in Jira is left alone
+    const mns = ST.months.map(monthName), undo = [];
+    strandedInits().forEach(it=>mns.forEach(mn=>{
+      const c = ST.plan[it.key]?.[mn];
+      if(c && c.on){ undo.push([it.key, mn, c.sp||0]); c.on=false; c.sp=0; }
+    }));
+    if(!undo.length){ toast('Nothing to clear — those rows carry no local draft.', 'ok'); return; }
+    save(); renderBoard(); refreshPending();
+    toast(`Cleared ${undo.length} draft entr${undo.length===1?'y':'ies'} on off-cycle initiatives`, 'ok',
+          {label:'Undo', fn:()=>{ undo.forEach(([k,mn,sp])=>{
+              ST.plan[k][mn].on=true; ST.plan[k][mn].sp=sp; });
+            save(); renderBoard(); refreshPending(); }});
+  });
+  board.querySelectorAll('.linkbtn:not(.retry)').forEach(b=>b.addEventListener('click', ()=>linkEpic(b.dataset.k)));
+  board.querySelectorAll('.unlinkbtn').forEach(b=>b.addEventListener('click', e=>{
+    e.stopPropagation(); unlinkEpic(b.dataset.k, b.dataset.epic);
+  }));
+  board.querySelectorAll('.linkbtn.retry').forEach(b=>b.addEventListener('click', ()=>{
+    delete DETAILS[b.dataset.k]; loadDetail(b.dataset.k);
+  }));
+  board.querySelectorAll('.subbtn').forEach(b=>b.addEventListener('click', ()=>submitOne(b.dataset.k)));
+  board.querySelectorAll('.summ-toggle').forEach(td=>td.addEventListener('click', ()=>{
+    const k=td.dataset.k; ST.initOpen[k]=!ST.initOpen[k]; save();
+    if(ST.initOpen[k] && !DETAILS[k]) loadDetail(k); else renderBoard();
+  }));
+  // drag to reorder
+  let dragK=null;
+  board.querySelectorAll('tr.row').forEach(tr=>{
+    tr.addEventListener('dragstart', e=>{ dragK=tr.dataset.k; tr.classList.add('drag'); });
+    tr.addEventListener('dragend', ()=>{ tr.classList.remove('drag'); board.querySelectorAll('tr.over').forEach(r=>r.classList.remove('over')); });
+    tr.addEventListener('dragover', e=>{ e.preventDefault(); tr.classList.add('over'); });
+    tr.addEventListener('dragleave', ()=> tr.classList.remove('over'));
+    tr.addEventListener('drop', e=>{
+      e.preventDefault(); tr.classList.remove('over');
+      const tgt=tr.dataset.k; if(!dragK||dragK===tgt) return;
+      const arr=ST.order.slice();
+      arr.splice(arr.indexOf(dragK),1);
+      arr.splice(arr.indexOf(tgt),0,dragK);
+      ST.order=arr; save(); rerender();
+    });
+  });
+}
+
+// ---- filters (multi-select dropdowns) ----
+function wireDropdown(id, onOpen){
+  const dd=document.getElementById(id);
+  dd.querySelector('button').addEventListener('click', e=>{
+    document.querySelectorAll('.dd').forEach(d=>{ if(d!==dd) d.classList.remove('open'); });
+    if(!dd.classList.contains('open')) onOpen();
+    dd.classList.toggle('open');
+  });
+}
+document.addEventListener('click', e=>{ if(!e.target.closest('.dd')) document.querySelectorAll('.dd').forEach(d=>d.classList.remove('open')); });
+
+// The button used to read "Pods (1)". With `oint_pod` as a silent default, the pod you were
+// looking at was named NOWHERE on the page — when the pod was renamed in Jira the board was
+// right and there was still no way to see that from the screen. Name it when there is one;
+// fall back to a count only when several are selected.
+// INITS.pods, not ST.pods: that is the pod the server actually loaded, and ST.pods is null
+// whenever the configured default is in use.
+function podsNow(){
+  const p = (INITS && INITS.pods && INITS.pods.length) ? INITS.pods : (ST.pods || []);
+  return p.filter(Boolean);
+}
+function podBtnLabel(){
+  const p = podsNow();
+  if(p.length === 1) return p[0];
+  return p.length ? `Pods (${p.length})` : 'Pods';
+}
+function syncPodBtn(){
+  const b = document.getElementById('ddPods').querySelector('button');
+  b.textContent = podBtnLabel();
+  b.title = podsNow().join('\n') || 'no pod loaded';
+}
+function renderPodMenu(){
+  const sel = new Set(podsNow());
+  const dd=document.getElementById('ddPods');
+  dd.querySelector('.menu').innerHTML = PODS.map(p=>
+    `<label><input type="checkbox" value="${esc(p)}" ${sel.has(p)?'checked':''}> ${esc(p)}</label>`).join('') || '<div class="state">no pods</div>';
+  syncPodBtn();
+  dd.querySelectorAll('input').forEach(cb=>cb.addEventListener('change',()=>{
+    const chosen=[...dd.querySelectorAll('input:checked')].map(x=>x.value);
+    ST.pods = chosen.length?chosen:null; save(); loadInitiatives(false);
+  }));
+}
+function renderMonthMenu(){
+  const now=new Date(); const opts=[];
+  for(let off=-3;off<=6;off++){ const d=new Date(now.getFullYear(),now.getMonth()+off,1);
+    opts.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`); }
+  const dd=document.getElementById('ddMonths');
+  dd.querySelector('.menu').innerHTML = opts.map(ym=>
+    `<label><input type="checkbox" value="${ym}" ${ST.months.includes(ym)?'checked':''}> ${monthLabel(ym)}</label>`).join('');
+  dd.querySelector('button').textContent = `Months (${ST.months.length})`;
+  dd.querySelectorAll('input').forEach(cb=>cb.addEventListener('change',()=>{
+    ST.months=[...dd.querySelectorAll('input:checked')].map(x=>x.value)
+      .sort();
+    save(); DEPS = {}; depsState = 'idle';
+    seedPlan(); loadCaps(); loadDeps(); rerender();
+  }));
+}
+
+function renderColMenu(){
+  const dd = document.getElementById('ddCols');
+  let html = '', seen = '';
+  EXTRA_COLS.forEach(c=>{
+    if(c.group !== seen){ seen = c.group; html += `<div class="grp">${c.group}</div>`; }
+    html += `<label><input type="checkbox" value="${c.id}" ${ST.cols.includes(c.id)?'checked':''}> ${c.label}</label>`;
+  });
+  dd.querySelector('.menu').innerHTML = html;
+  dd.querySelectorAll('input').forEach(cb=>cb.addEventListener('change',()=>{
+    // keep EXTRA_COLS order so columns don't jump around as you tick them
+    const on = new Set([...dd.querySelectorAll('input:checked')].map(x=>x.value));
+    ST.cols = EXTRA_COLS.filter(c=>on.has(c.id)).map(c=>c.id);
+    save(); syncColBtn(); renderBoard();
+  }));
+}
+function syncColBtn(){
+  document.getElementById('ddCols').querySelector('button').textContent =
+    ST.cols.length ? `＋ Columns (${ST.cols.length})` : '＋ Columns';
+}
+
+// ---- data loading ----
+function winQS(ym){
+  const w = (ST.win||{})[ym];
+  return w && w.start && w.end
+    ? `&start=${encodeURIComponent(w.start)}&end=${encodeURIComponent(w.end)}` : '';
+}
+// Counterpart-pod readiness for initiatives you are Tech DRI on. Loaded separately and
+// late: it walks every tagged pod's epics across projects, so it is much slower than the
+// board, and the board must never wait for it.
+let depsState = 'idle';   // idle | loading | ready | failed
+async function loadDeps(){
+  if(depsState === 'loading' || depsState === 'ready' || !ME.name || !ST.months.length) return;
+  depsState = 'loading'; renderBoard();
+  const q = new URLSearchParams({dri:'me', months: ST.months.join(',')});
+  try{
+    const d = await (await fetch('/api/dependencies?'+q)).json();
+    if(!d || !Array.isArray(d.rows)) throw new Error(d && (d.__error__ || d.error) || 'bad payload');
+    const by = {};
+    d.rows.forEach(r=>{ (by[r.key] = by[r.key] || []).push(r); });
+    DEPS = by; depsState = 'ready';
+  }catch(e){
+    depsState = 'failed';
+    toast('Could not check partner pods, so readiness is incomplete: ' + e.message, 'warn');
+  }
+  renderBoard();
+}
+
+async function loadCaps(){
+  await Promise.all(ST.months.filter(ym=>!(ym in CAPS)).map(async ym=>{
+    try{ const d=await (await fetch(`/api/month?ym=${ym}${winQS(ym)}`)).json(); CAPS[ym]=d.error?null:d; }
+    catch(e){ CAPS[ym]=null; }
+  }));
+  renderStrip();
+  renderSchedule();   // the lane needs the calendar, which only exists once caps land
+}
+async function loadDetail(key){
+  if(LOADING.has(key)) return;          // one in-flight fetch per initiative
+  LOADING.add(key);
+  try{ DETAILS[key] = await (await fetch('/api/initiative?key='+encodeURIComponent(key))).json(); }
+  catch(e){ DETAILS[key] = {__error__: e.message}; }
+  finally{ LOADING.delete(key); }
+  renderBoard();
+}
+// A pod can be RENAMED in Jira (TEAM - Old Pod Name -> TEAM - New Pod Name). The
+// old option then matches nothing, so the filter silently returns an empty board and reads
+// as the planner being broken. Drop stored pod names the project no longer offers; if that
+// empties the selection, fall back to null = the configured default pod.
+// ST.plan/order/est/heads/schStart are keyed by INITIATIVE key, which a pod rename does not
+// touch, so nothing here can lose a plan.
+function prunePods(){
+  if(!ST.pods || !PODS.length) return;
+  const live = ST.pods.filter(p=>PODS.includes(p));
+  if(live.length === ST.pods.length) return;
+  const gone = ST.pods.filter(p=>!PODS.includes(p));
+  ST.pods = live.length ? live : null;
+  save();
+  toast(`Pod renamed in Jira — dropped ${gone.map(p=>'“'+p+'”').join(', ')} from your filter.`
+        + (live.length ? '' : ' Showing your configured pod.') + ' Your plan is untouched.', 'warn');
+  loadInitiatives(false);
+}
+async function loadInitiatives(fresh){
+  const btn = document.getElementById('recalc');
+  if(btn){ btn.disabled = true; btn.textContent = fresh ? '↻ Reloading…' : '↻ Reload from Jira'; }
+  board.innerHTML='<div class="state">'+(fresh?'Reloading from Jira…':'Loading initiatives…')+'</div>';
+  const qs = [];
+  if(ST.pods) qs.push(`pods=${encodeURIComponent(ST.pods.join(','))}`);
+  if(ST.archived) qs.push('archived=1');
+  if(fresh) qs.push('fresh=1');
+  const q = qs.join('&');
+  const was = INITS && INITS.generated;
+  try{ INITS = await (await fetch('/api/initiatives'+(q?'?'+q:''))).json(); }
+  catch(e){ INITS={error:e.message}; }
+  if(btn){ btn.disabled = false; btn.textContent = '↻ Reload from Jira'; }
+  // a reload that finishes in a second with no confirmation reads as "nothing happened"
+  if(fresh){
+    if(INITS.error || INITS.__error__) toast('Reload failed: '+(INITS.error||INITS.__error__), 'bad');
+    else toast(`Reloaded from Jira — ${(INITS.initiatives||[]).length} initiatives`
+               + (was && was !== INITS.generated ? ` (was ${was})` : ''), 'ok');
+  }
+  showDataAge();
+  syncPodBtn();
+  try{ seedPlan(); rerender(); }
+  catch(e){ board.innerHTML=`<div class="state">render error: ${esc(e.message)}. Try “Show all” or reload.</div>`; console.error(e); }
+}
+
+// ---- commit to Jira ----
+async function post(path, body){
+  return (await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json();
+}
+function gatherEpicBudgets(){
+  // {epicKey:{Month:sp}} summed across initiatives sharing an epic, selected months only, assigned rows
+  const selMn = ST.months.map(monthName), eb = {};
+  orderedInits().forEach(it=>{
+    if(!it.epic || isArchived(it)) return;   // never file a budget for an archived idea
+    selMn.forEach(mn=>{
+      const c = ST.plan[it.key]?.[mn];
+      if(c && c.on){ (eb[it.epic.key] = eb[it.epic.key] || {}); eb[it.epic.key][mn] = (eb[it.epic.key][mn]||0) + (+c.sp||0); }
+    });
+  });
+  return eb;
+}
+// Fold what Jira just accepted back into the in-memory epic budgets, so the row flips to
+// "✓ in Jira" immediately instead of staying pending until the next "Reload from Jira".
+function applyDiffsLocally(res){
+  const ok = new Set((res.applied||[]).filter(a=>a.ok).map(a=>a.epic));
+  (res.diffs||[]).forEach(d=>{
+    if(!ok.has(d.epic)) return;
+    INITS.initiatives.forEach(it=>{
+      if(it.epic && it.epic.key===d.epic){ it.budgets = it.budgets || {}; it.budgets[d.month] = d.to; }
+    });
+  });
+}
+// One decision, one click. The old flow asked up to three confirm()s in a row, including a
+// binary "OK = link · Cancel = create" — the picker below shows every candidate at once and
+// makes "create a new epic" an explicit choice rather than the fall-through of a Cancel.
+function pickEpic(initKey, summary, matches){
+  return new Promise(resolve=>{
+    const rows = matches.map((m,i)=>`<button class="pick" data-i="${i}">
+        <span class="pk">${esc(m.key)}</span>
+        <span class="ps">${esc(m.summary)}</span>
+        ${m.exact?'<span class="pbadge">exact</span>':''}
+        ${m.status?`<span class="pst">${esc(m.status)}</span>`:''}
+      </button>`).join('');
+    const back = document.createElement('div');
+    back.className = 'modal-back';
+    back.innerHTML = `<div class="modal" role="dialog" aria-modal="true">
+      <h3>Link an epic to ${esc(initKey)}</h3>
+      <p class="msub">${esc(summary)}</p>
+      ${matches.length ? `<div class="plist">${rows}</div>`
+                       : '<p class="msub none">No similar epic found on the board.</p>'}
+      <button class="pick create" data-i="new">＋ Create a new epic “${esc(summary)}”</button>
+      <div class="mfoot"><span class="hint">Esc to cancel</span><button class="mcancel">Cancel</button></div>
+    </div>`;
+    const done = v => { document.removeEventListener('keydown', onKey); back.remove(); resolve(v); };
+    const onKey = e => { if(e.key === 'Escape'){ e.preventDefault(); done(null); } };
+    back.querySelectorAll('.pick').forEach(b=>b.addEventListener('click', ()=>done(
+      b.dataset.i === 'new' ? {mode:'create'} : {mode:'link', epicKey:matches[+b.dataset.i].key})));
+    back.querySelector('.mcancel').addEventListener('click', ()=>done(null));
+    back.addEventListener('click', e=>{ if(e.target === back) done(null); });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(back);
+    back.querySelector('.pick').focus();
+  });
+}
+// Unlink removes ONLY the issue link. The epic and any budgets already written to it stay
+// in Jira, which is why this is safe to offer as a one-click action with an Undo.
+async function unlinkEpic(key, epicKey){
+  try{
+    const r = await post('/api/unlink-epic', {initiative:key, epicKey});
+    if(r.__error__){ toast('Unlink failed: '+r.__error__, 'bad'); return; }
+    const it = INITS.initiatives.find(i=>i.key===key);
+    if(it){ it.epic = null; it.budgets = {}; }
+    renderBoard();
+    toast(`Unlinked ${r.epic.key} from ${key} — the epic and its budgets are untouched`, 'ok',
+          {label:'Re-link', fn:()=>relinkEpic(key, r.epic.key)});
+  }catch(e){ toast('Error: '+e.message, 'bad'); }
+}
+async function relinkEpic(key, epicKey){
+  try{
+    const res = await post('/api/link-epic', {initiative:key, mode:'link', epicKey});
+    if(res.__error__){ toast('Re-link failed: '+res.__error__, 'bad'); return; }
+    const it = INITS.initiatives.find(i=>i.key===key);
+    if(it) it.epic = res.epic;
+    renderBoard();
+    toast(`Re-linked ${epicKey} to ${key}. Reload from Jira to pull its budgets back.`, 'ok');
+  }catch(e){ toast('Error: '+e.message, 'bad'); }
+}
+async function linkEpic(key){
+  const it = INITS.initiatives.find(i=>i.key===key); if(!it) return;
+  try{
+    const pv = await post('/api/link-epic', {initiative:key, mode:'preview'});
+    if(pv.__error__){ toast('Epic lookup failed: '+pv.__error__, 'bad'); return; }
+    if(pv.status==='already_linked'){
+      it.epic = pv.epic; renderBoard();
+      toast(`${key} is already linked to ${pv.epic.key}.`, 'ok'); return;
+    }
+    const matches = pv.matches || [];
+    // With no candidate epic there is nothing to choose between — a one-button dialog is
+    // just a confirm(). Create straight away and let the toast carry the way out.
+    let choice = {mode:'create'};
+    if(matches.length){
+      choice = await pickEpic(key, pv.initiativeSummary, matches);
+      if(!choice) return;
+    }
+    const res = await post('/api/link-epic', {initiative:key, mode:choice.mode, epicKey:choice.epicKey});
+    if(res.__error__){ toast('Link failed: '+res.__error__, 'bad'); return; }
+    it.epic = res.epic; renderBoard();
+    const made = res.status === 'created';
+    toast(`${made?'Created and linked':'Linked'} ${res.epic.key} to ${key}`, 'ok',
+          // unlink is the honest undo here: a created epic cannot be deleted, but it can be detached
+          {label: made ? 'Undo (unlink)' : 'Unlink', fn: ()=>unlinkEpic(key, res.epic.key)});
+  }catch(e){ toast('Error: '+e.message, 'bad'); }
+}
+// One click = one write. No confirm dialog: the button already names the exact change, and
+// every successful write comes back with an Undo that restores the previous Jira values.
+async function writeBudgets(epicBudgets, label){
+  const months = ST.months.map(monthName);
+  document.querySelectorAll('.subbtn, #submit').forEach(b=>b.disabled = true);
+  try{
+    const res = await post('/api/submit-budgets', {epicBudgets, months, dryRun:false});
+    if(res.__error__){ toast('Submit failed: '+res.__error__, 'bad'); return; }
+    applyDiffsLocally(res); renderBoard();
+    if(!(res.diffs||[]).length){ toast(`${label} already up to date in Jira.`, 'ok'); return; }
+    const bad = (res.applied||[]).filter(a=>!a.ok);
+    if(bad.length){ toast(`${label} failed: ${bad.map(b=>b.epic+' — '+b.error).join('; ')}`, 'bad'); return; }
+    const skipped = orderedInits().filter(it=>!it.epic && months.some(mn=>ST.plan[it.key]?.[mn]?.on));
+    const warn = skipped.length ? ` · ${skipped.length} initiative(s) skipped (no epic)` : '';
+    toast(`Updated ${label} in Jira — ${res.diffs.length} change(s)${warn}`,
+          skipped.length ? 'warn' : 'ok', {label:'Undo', fn:()=>undoWrite(res, label)});
+  }catch(e){ toast('Error: '+e.message, 'bad'); }
+  finally{ refreshPending(); }
+}
+// Restore the pre-write Jira values. The local plan is deliberately left alone, so the row
+// goes back to "pending" — undo reverses Jira, not your planning.
+async function undoWrite(res, label){
+  const ok = new Set((res.applied||[]).filter(a=>a.ok).map(a=>a.epic));
+  const eb = {};
+  (res.diffs||[]).forEach(d=>{ if(ok.has(d.epic)) (eb[d.epic] = eb[d.epic]||{})[d.month] = d.from; });
+  if(!Object.keys(eb).length) return;
+  try{
+    const months = [...new Set((res.diffs||[]).map(d=>d.month))];
+    const r = await post('/api/submit-budgets', {epicBudgets:eb, months, dryRun:false});
+    if(r.__error__){ toast('Undo failed: '+r.__error__, 'bad'); return; }
+    applyDiffsLocally(r); renderBoard(); refreshPending();
+    toast(`Reverted ${label} in Jira — your plan is unchanged, so it shows as pending again.`, 'ok');
+  }catch(e){ toast('Undo error: '+e.message, 'bad'); }
+}
+// ---- inline column editing ----
+// Every column backed by a Jira field is editable in place. The server decides what may
+// actually be written (via /editmeta, so screen + permission aware) and hands back the
+// control kind and its options; nothing about specific fields is hardcoded here.
+async function setField(issueKey, col, value, label){
+  const cells = [...board.querySelectorAll(`[data-col="${col}"][data-issue="${issueKey}"]`)];
+  cells.forEach(c=>c.classList.add('saving'));
+  try{
+    const r = await post('/api/set-field', {key:issueKey, column:col, value});
+    if(r.__error__){ toast(`${issueKey} ${label}: ${r.__error__}`, 'bad'); return false; }
+    applyFieldLocally(issueKey, col, r.display);
+    FMETA.delete(`${issueKey}|${col}`);          // options/current value are now stale
+    renderBoard();
+    if(r.unchanged){ toast(`${issueKey} ${label} unchanged.`, 'ok'); return true; }
+    const shown = r.display || 'cleared';
+    toast(`${issueKey} ${label} → ${shown}`, 'ok',
+          r.undoable ? {label:'Undo', fn:()=>setField(issueKey, col, r.from, label)} : null);
+    return true;
+  }catch(e){ toast('Error: '+e.message, 'bad'); return false; }
+  finally{ cells.forEach(c=>c.classList.remove('saving')); }
+}
+// mirror the write into the in-memory rows so the cell repaints without a Jira refetch
+function applyFieldLocally(issueKey, col, display){
+  const m = COL_MODEL[col]; if(!m) return;
+  const val = m.list ? String(display||'').split(',').map(s=>s.trim()).filter(Boolean) : (display||'');
+  INITS.initiatives.forEach(it=>{
+    if(m.scope==='init'  && it.key===issueKey) it[m.attr] = val;
+    if(m.scope==='epic'  && it.epic && it.epic.key===issueKey) it.epic[m.attr] = val;
+  });
+}
+function issueKeyFor(it, col){
+  const m = COL_MODEL[col]; if(!m) return '';
+  return m.scope==='init' ? it.key : (it.epic ? it.epic.key : '');
+}
+
+async function fieldMeta(issueKey, col){
+  const ck = `${issueKey}|${col}`;
+  if(FMETA.has(ck)) return FMETA.get(ck);
+  const r = await post('/api/field-meta', {key:issueKey, columns:[col]});
+  const meta = r.__error__ ? {editable:false, why:r.__error__} : (r.fields||{})[col] || {editable:false};
+  FMETA.set(ck, meta);
+  return meta;
+}
+
+let EDITING = null;   // the <td> currently showing a control
+async function beginEdit(td){
+  if(EDITING === td) return;
+  const col = td.dataset.col, issueKey = td.dataset.issue, label = td.dataset.label;
+  if(!issueKey) return;
+  if(EDITING) renderBoard();                    // close any other open editor
+  EDITING = td;
+  const html = td.innerHTML;
+  td.innerHTML = '<span class="hint">…</span>';
+  const meta = await fieldMeta(issueKey, col);
+  if(!meta.editable){
+    td.innerHTML = html; EDITING = null;
+    toast(`${label} is not editable on ${issueKey}${meta.why?` — ${meta.why}`:''}`, 'warn');
+    return;
+  }
+  td.innerHTML = controlFor(meta, col);
+  const ctl = td.querySelector('select, input');
+  if(!ctl){ td.innerHTML = html; EDITING = null; return; }
+  ctl.focus();
+  if(ctl.tagName === 'SELECT' && meta.kind !== 'multi') ctl.size = 0;
+
+  let done = false;
+  const cancel = ()=>{ if(done) return; done = true; EDITING = null; renderBoard(); };
+  const commit = async ()=>{
+    if(done) return; done = true; EDITING = null;
+    const v = readControl(td, meta);
+    const ok = await setField(issueKey, col, v, label);
+    if(!ok) renderBoard();
+  };
+  ctl.addEventListener('keydown', e=>{
+    if(e.key === 'Escape'){ e.preventDefault(); cancel(); }
+    if(e.key === 'Enter' && meta.kind !== 'multi'){ e.preventDefault(); commit(); }
+  });
+  const isUser = meta.kind === 'user' || meta.kind === 'users';
+  ctl.addEventListener('change', ()=>{ if(!isUser) commit(); });
+  // A user cell commits only on an actual pick: blur-committing an unresolved name would
+  // send an empty accountId and silently clear the assignee.
+  ctl.addEventListener('blur', ()=>setTimeout(()=>{
+    if(done) return;
+    isUser ? cancel() : commit();
+  }, 120));
+  if(isUser){ wireUserPicker(td, ctl); ctl.addEventListener('commitpick', commit); }
+}
+function controlFor(meta, col){
+  const opts = meta.options || [];
+  const cur = meta.value;
+  const sel = v => (Array.isArray(cur) ? cur.map(String).includes(String(v)) : String(cur)===String(v));
+  if(meta.kind === 'transition')
+    return `<select class="inline"><option value="">— move to —</option>${
+      opts.map(o=>`<option value="${esc(o.id)}">${esc(o.label)}</option>`).join('')}</select>`;
+  if(meta.kind === 'select')
+    return `<select class="inline"><option value="">— none —</option>${
+      opts.map(o=>`<option value="${esc(o.id)}" ${sel(o.id)?'selected':''}>${esc(o.label)}</option>`).join('')}</select>`;
+  if(meta.kind === 'multi')
+    return `<select class="inline" multiple size="${Math.min(6, Math.max(3, opts.length))}">${
+      opts.map(o=>`<option value="${esc(o.id)}" ${sel(o.id)?'selected':''}>${esc(o.label)}</option>`).join('')}</select>`;
+  if(meta.kind === 'labels')
+    return `<input class="inline" type="text" value="${esc((cur||[]).join(', '))}" placeholder="comma,separated">`;
+  if(meta.kind === 'user' || meta.kind === 'users')
+    return `<input class="inline userpick" type="text" placeholder="type a name…" autocomplete="off">
+            <div class="usermenu"></div>`;
+  if(meta.kind === 'date')  return `<input class="inline" type="date" value="${esc(cur||'')}">`;
+  if(meta.kind === 'number')return `<input class="inline" type="number" step="0.5" value="${esc(cur??'')}">`;
+  return `<input class="inline" type="text" value="${esc(cur??'')}">`;
+}
+function readControl(td, meta){
+  const ctl = td.querySelector('select, input');
+  if(meta.kind === 'multi') return [...ctl.selectedOptions].map(o=>o.value);
+  if(meta.kind === 'labels') return ctl.value.split(',').map(s=>s.trim()).filter(Boolean);
+  if(meta.kind === 'user')  return ctl.dataset.accountid || '';
+  if(meta.kind === 'users') return ctl.dataset.accountid ? [ctl.dataset.accountid] : [];
+  return ctl.value;
+}
+// Jira user pickers need an accountId, not a name — resolve it through a typeahead.
+function wireUserPicker(td, inp){
+  const menu = td.querySelector('.usermenu');
+  let t;
+  inp.addEventListener('input', ()=>{
+    inp.dataset.accountid = '';
+    clearTimeout(t);
+    const q = inp.value.trim();
+    if(q.length < 2){ menu.innerHTML=''; return; }
+    t = setTimeout(async ()=>{
+      const r = await (await fetch('/api/user-search?q='+encodeURIComponent(q))).json();
+      menu.innerHTML = (r.users||[]).map(u=>
+        `<div class="uopt" data-id="${esc(u.accountId)}">${esc(u.label)}<small>${esc(u.email||'')}</small></div>`
+      ).join('') || '<div class="uopt none">no match</div>';
+      menu.querySelectorAll('.uopt[data-id]').forEach(d=>d.addEventListener('mousedown', e=>{
+        e.preventDefault();
+        inp.value = d.firstChild.textContent;
+        inp.dataset.accountid = d.dataset.id;
+        menu.innerHTML = '';
+        inp.dispatchEvent(new Event('commitpick'));
+      }));
+    }, 250);
+  });
+}
+
+async function submitOne(key){
+  const it = INITS.initiatives.find(i=>i.key===key);
+  if(!it || !it.epic){ toast('Link an epic first.', 'warn'); return; }
+  const ek = it.epic.key, mb = gatherEpicBudgets()[ek];   // summed across initiatives sharing this epic
+  if(!mb || !Object.keys(mb).length){ toast(`Nothing assigned for ${ek} in the selected month(s).`, 'warn'); return; }
+  await writeBudgets({[ek]: mb}, ek);
+}
+async function submitBudgets(){
+  const eb = gatherEpicBudgets();
+  if(!Object.keys(eb).length){ toast('Nothing to submit — no linked epic has a budget in the selected months.', 'warn'); return; }
+  const pend = pendingDiffs();
+  if(!Object.keys(pend).length){ toast('Already up to date — nothing to write.', 'ok'); return; }
+  // only send the epics that actually differ, so the toast count matches the button count
+  const only = {}; Object.keys(pend).forEach(ek=>{ only[ek] = eb[ek]; });
+  await writeBudgets(only, `${Object.keys(only).length} epic(s)`);
+}
+
+async function boot(){
+  wireDropdown('ddPods', renderPodMenu);
+  wireDropdown('ddMonths', renderMonthMenu);
+  wireDropdown('ddCols', renderColMenu);
+  syncColBtn();
+  document.getElementById('recalc').addEventListener('click', ()=> loadInitiatives(true));
+  document.getElementById('submit').addEventListener('click', submitBudgets);
+  const driBtn = document.getElementById('dri');
+  const syncViewBtns = ()=>{
+    driBtn.textContent = ST.driMe ? `Tech DRI: ${ME.name || 'me'}` : 'Tech DRI: anyone';
+    driBtn.style.borderColor = ST.driMe ? 'var(--accent)' : '';
+  };
+  driBtn.addEventListener('click', ()=>{
+    if(!ME.name){ toast('Could not identify you from Jira — filter unavailable.', 'warn'); return; }
+    ST.driMe = !ST.driMe; save(); syncViewBtns(); renderBoard();
+  });
+  syncViewBtns();
+  // Named so the re-render is testable: the board renders before this resolves, and both
+  // the Tech DRI filter and the readiness badge key off ME, so it must always redraw.
+  applyIdentity = d => { if(d && !d.__error__){ ME = d; syncViewBtns(); renderBoard();
+    loadDeps(); } };
+  fetch('/api/me').then(r=>r.json()).then(applyIdentity).catch(()=>{});
+  const tgl=document.getElementById('toggleAll');
+  const syncTgl=()=>{ tgl.textContent = ST.showAll ? 'Planned only' : 'Show all'; };
+  tgl.addEventListener('click', ()=>{ ST.showAll=!ST.showAll; save(); syncTgl(); renderBoard(); });
+  syncTgl();
+  const arch=document.getElementById('toggleArch');
+  const syncArch=()=>{ arch.textContent = ST.archived ? 'Archived: shown' : 'Archived: hidden';
+                       arch.style.borderColor = ST.archived ? 'var(--warn)' : ''; };
+  // archived rows are a different row set from the server, so this refetches rather than re-renders
+  arch.addEventListener('click', ()=>{ ST.archived=!ST.archived; save(); syncArch(); loadInitiatives(false); });
+  syncArch();
+  document.getElementById('ddMonths').querySelector('button').textContent = `Months (${ST.months.length})`;
+  // The stored plan has to be in hand BEFORE the initiatives arrive: syncOrder() appends
+  // anything it has not seen to the end of the rank, so adopting the server copy after
+  // that would leave this browser's guess at the order baked in underneath it.
+  syncPlan().then(()=>{ loadInitiatives(false); })
+            .catch(()=>{ loadInitiatives(false); });
+  window.addEventListener('focus', refreshPlan);
+  document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) refreshPlan(); });
+  loadHandover(false);              // slow: runs the program team's readiness CLI
+  loadCaps();
+  fetch('/api/pods').then(r=>r.json()).then(d=>{ PODS = d.pods || []; prunePods(); })
+                    .catch(()=>{ PODS = []; });
+  // which columns are backed by a Jira field at all; per-issue permissions resolve on click
+  fetch('/api/planner-fields').then(r=>r.json())
+    .then(d=>{ EDITABLE = d.fields || {}; renderBoard(); })
+    .catch(()=>{ EDITABLE = {}; });
+}
+boot();
+</script>
+</body>
+</html>

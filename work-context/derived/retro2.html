@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sprint Retro — delivery, productivity &amp; why</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+  :root{
+    --bg:#f3f6fa; --surface:#ffffff; --surface2:#eef2f8; --border:#e4e9f2;
+    --text:#15202e; --muted:#5b6675; --hint:#9aa6b4;
+    --accent:#3a55d9; --accent-2:#2c41b8; --accent-soft:rgba(58,85,217,.07);
+    --ok:#3b6b3f; --ok-bg:#e9f1e8; --warn:#866113; --warn-bg:#f6efdd;
+    --danger:#b23a4a; --danger-bg:#f8edef;
+    --shadow:0 1px 2px rgba(20,32,46,.04),0 2px 6px rgba(20,32,46,.05); --radius:14px;
+  }
+  @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+    --bg:#11161d; --surface:#171e27; --surface2:#1d2630; --border:#283341;
+    --text:#e6ecf3; --muted:#9bb; --hint:#6b7a8c; --accent-soft:rgba(58,85,217,.16);
+    --ok-bg:#1b2a1d; --warn-bg:#2b2416; --danger-bg:#2c1b1f; } }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:'Hanken Grotesk',-apple-system,system-ui,sans-serif;font-size:14px;line-height:1.45;}
+  .wrap{max-width:1280px;margin:0 auto;padding:26px 24px 70px;}
+  .top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px;flex-wrap:wrap;}
+  h1{font-size:20px;font-weight:700;margin:0;letter-spacing:-.01em;}
+  .sub{color:var(--muted);font-size:12.5px;margin:2px 0 0;}
+  .filters{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;}
+  .dd{position:relative;}
+  .dd>button,.btn{font-family:inherit;font-size:12.5px;color:var(--text);background:var(--surface);
+    border:1px solid var(--border);border-radius:10px;padding:8px 12px;cursor:pointer;}
+  .dd>button{min-width:170px;text-align:left;}
+  .dd>button:hover,.btn:hover{border-color:var(--accent);}
+  .dd .menu{display:none;position:absolute;z-index:20;right:0;margin-top:4px;background:var(--surface);
+    border:1px solid var(--border);border-radius:11px;box-shadow:var(--shadow);padding:8px;
+    min-width:270px;max-height:340px;overflow:auto;}
+  .dd.open .menu{display:block;}
+  .dd .menu label{display:flex;gap:8px;align-items:center;padding:5px 7px;border-radius:7px;
+    font-size:12.5px;cursor:pointer;white-space:nowrap;}
+  .dd .menu label:hover{background:var(--surface2);}
+  .dd .menu .sm{color:var(--hint);font-size:11px;margin-left:auto;}
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+    box-shadow:var(--shadow);margin-bottom:16px;overflow:hidden;}
+  .ph{display:flex;align-items:baseline;gap:10px;padding:13px 16px 10px;}
+  .ph h2{font-size:13px;font-weight:650;margin:0;letter-spacing:.01em;}
+  .ph .n{font-size:11.5px;color:var(--hint);}
+  .state{padding:22px 16px;color:var(--muted);font-size:13px;}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1px;background:var(--border);}
+  .card{background:var(--surface);padding:13px 16px;}
+  .card .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--hint);}
+  .card .v{font-size:22px;font-weight:700;font-family:'IBM Plex Mono',monospace;margin-top:3px;}
+  .card .d{font-size:11.5px;color:var(--muted);margin-top:2px;}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  th{text-align:left;font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
+    color:var(--hint);padding:7px 10px;border-bottom:1px solid var(--border);white-space:nowrap;}
+  td{padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top;}
+  td.n,th.n{text-align:right;font-family:'IBM Plex Mono',monospace;white-space:nowrap;}
+  tr.init>td{background:var(--surface2);font-weight:600;}
+  tr.epic>td:first-child{padding-left:26px;}
+  tr.off>td{opacity:.72;}
+  a{color:var(--accent-2);}
+  .pos{color:var(--ok);} .neg{color:var(--danger);} .zero{color:var(--hint);}
+  .tag{font-size:10px;font-weight:600;border-radius:6px;padding:1px 6px;margin-left:5px;
+       white-space:nowrap;vertical-align:middle;}
+  .tag.warn{color:var(--warn);background:var(--warn-bg);}
+  .tag.bad{color:var(--danger);background:var(--danger-bg);}
+  .tag.ok{color:var(--ok);background:var(--ok-bg);}
+  .bar{height:7px;border-radius:4px;background:var(--surface2);overflow:hidden;min-width:70px;}
+  .bar i{display:block;height:100%;background:var(--accent);}
+  .bar i.over{background:var(--ok);} .bar i.low{background:var(--danger);}
+  .note{padding:10px 16px;font-size:11.5px;color:var(--hint);border-top:1px solid var(--border);}
+  .note b{color:var(--muted);font-weight:600;}
+  .wmark{font-size:11.5px;color:var(--warn);background:var(--warn-bg);padding:9px 16px;}
+  .wmark a{color:inherit;}
+  details.why summary{cursor:pointer;font-size:11.5px;color:var(--accent-2);padding:2px 0;}
+  .sig{font-size:11.5px;color:var(--muted);padding:4px 0 2px;}
+  .sig b{font-family:'IBM Plex Mono',monospace;color:var(--text);font-weight:500;}
+  @media (max-width:760px){ .wrap{padding:18px 16px 60px;} .filters{width:100%;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div>
+      <h1>Sprint Retro</h1>
+      <div class="sub" id="sub">Pick sprints and projects. Delivery is attributed to the sprint a ticket was <em>finished</em> in.</div>
+    </div>
+    <div class="filters">
+      <div class="dd" id="ddSprints"><button type="button">Sprints</button><div class="menu"></div></div>
+      <div class="dd" id="ddProjects"><button type="button">Projects</button><div class="menu"></div></div>
+      <button class="btn" id="reload">↻ Reload</button>
+      <a class="btn" href="/retro-classic" style="text-decoration:none"
+         title="The previous retro page — highs/lows notes and planned-vs-actual by month">Highs &amp; lows</a>
+    </div>
+  </div>
+
+  <div class="panel" id="sum"><div class="state">Pick at least one sprint.</div></div>
+  <div class="panel" id="tree"><div class="state">—</div></div>
+  <div class="panel" id="ppl"><div class="state">—</div></div>
+</div>
+
+<script>
+'use strict';
+const LSKEY = 'sprintRetro_v1';
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const n1 = v => (v==null||isNaN(v)) ? '—' : (Math.round(v*10)/10).toString();
+let ST = (()=>{ try{ return JSON.parse(localStorage.getItem(LSKEY))||{}; }catch(e){ return {}; } })();
+ST.sprints = ST.sprints || []; ST.projects = ST.projects || [];
+const save = ()=> localStorage.setItem(LSKEY, JSON.stringify(ST));
+let SPRINTS = [], PROJECTS = [], D = null, BUSY = false;
+
+function cls(v){ return v>0.05?'pos':v<-0.05?'neg':'zero'; }
+function sgn(v){ return (v>0?'+':'') + n1(v); }
+
+// ---- filters -------------------------------------------------------------
+function wireDD(id, onOpen){
+  const dd = document.getElementById(id);
+  dd.querySelector('button').addEventListener('click', e=>{
+    e.stopPropagation();
+    document.querySelectorAll('.dd').forEach(d=>{ if(d!==dd) d.classList.remove('open'); });
+    const open = !dd.classList.contains('open');
+    if(open) onOpen();
+    dd.classList.toggle('open', open);
+  });
+}
+document.addEventListener('click', e=>{ if(!e.target.closest('.dd'))
+  document.querySelectorAll('.dd').forEach(d=>d.classList.remove('open')); });
+
+function renderSprintMenu(){
+  const dd = document.getElementById('ddSprints');
+  dd.querySelector('.menu').innerHTML = SPRINTS.map(s=>
+    `<label><input type="checkbox" value="${s.id}" ${ST.sprints.includes(s.id)?'checked':''}>
+      ${esc(s.name)}<span class="sm">${esc(s.start)} → ${esc(s.end)}${s.state==='active'?' · active':''}</span></label>`
+  ).join('') || '<div class="state">no sprints</div>';
+  dd.querySelectorAll('input').forEach(cb=>cb.addEventListener('change', ()=>{
+    ST.sprints = [...dd.querySelectorAll('input:checked')].map(x=>+x.value);
+    save(); syncBtns(); load();
+  }));
+}
+function renderProjectMenu(){
+  const dd = document.getElementById('ddProjects');
+  dd.querySelector('.menu').innerHTML = PROJECTS.map(p=>
+    `<label><input type="checkbox" value="${esc(p.key)}" ${ST.projects.includes(p.key)?'checked':''}>
+      ${esc(p.key)}<span class="sm">${esc(p.name)}</span></label>`
+  ).join('') || '<div class="state">no projects</div>';
+  dd.querySelectorAll('input').forEach(cb=>cb.addEventListener('change', ()=>{
+    ST.projects = [...dd.querySelectorAll('input:checked')].map(x=>x.value);
+    save(); syncBtns(); load();
+  }));
+}
+function syncBtns(){
+  const sb = document.getElementById('ddSprints').querySelector('button');
+  const picked = SPRINTS.filter(s=>ST.sprints.includes(s.id));
+  sb.textContent = picked.length===1 ? picked[0].name
+    : picked.length ? `${picked.length} sprints` : 'Sprints';
+  sb.title = picked.map(s=>`${s.name}  ${s.start} → ${s.end}`).join('\n') || 'none selected';
+  const pb = document.getElementById('ddProjects').querySelector('button');
+  pb.textContent = ST.projects.length===1 ? ST.projects[0]
+    : ST.projects.length ? `${ST.projects.length} projects` : 'Projects';
+  pb.title = ST.projects.join(', ') || 'configured default';
+}
+
+// ---- render --------------------------------------------------------------
+function renderSummary(){
+  const t = D.totals, w = D.window, host = document.getElementById('sum');
+  const eff = t.efficiency;
+  const mon = (D.months||[]).map(m=>`${m.name} ${m.days}d${m.primary?' (primary)':''}`).join(' · ');
+  host.innerHTML = `
+  <div class="ph"><h2>${esc(D.sprints.map(s=>s.name).join(' + '))}</h2>
+    <span class="n">${esc(w.start)} → ${esc(w.end)} · ${esc(mon)} · ${esc(D.projects.join(', '))}</span></div>
+  <div class="cards">
+    <div class="card"><div class="k">Capacity</div><div class="v">${n1(t.capacitySP)}</div>
+      <div class="d">after leave, holidays &amp; on-call days</div></div>
+    <div class="card"><div class="k">Delivered</div><div class="v">${n1(t.deliveredSP)}</div>
+      <div class="d">${t.doneTickets} tickets, on-call excluded</div></div>
+    <div class="card"><div class="k">Efficiency</div>
+      <div class="v ${eff==null?'':(eff>=90?'pos':eff<70?'neg':'')}">${eff==null?'—':eff+'%'}</div>
+      <div class="d">delivered ÷ capacity</div></div>
+    <div class="card"><div class="k">On-call</div><div class="v">${n1(t.oncallSP)}</div>
+      <div class="d">real work, never planned</div></div>
+    <div class="card"><div class="k">Carried out</div><div class="v">${n1(t.carriedSP)}</div>
+      <div class="d">${t.carriedTickets} tickets finished elsewhere</div></div>
+    <div class="card"><div class="k">Cancelled</div><div class="v">${n1(t.cancelledSP)}</div>
+      <div class="d">started, then binned</div></div>
+  </div>
+  <div class="note"><b>Attribution.</b> Each ticket counts once, in the last sprint of its history —
+    the one it was finished in. Tickets that sat in these sprints but closed later are
+    <b>carried out</b> and are not delivery here.
+    ${(D.unestimated||[]).length ? `<br><b>${D.unestimated.length} done ticket(s) carry no estimate</b>
+      (${D.unestimated.slice(0,6).map(esc).join(', ')}) — real delivery that scores zero.` : ''}
+  </div>`;
+}
+
+function renderTree(){
+  const host = document.getElementById('tree');
+  const months = D.months||[];
+  const prim = months.filter(m=>m.primary).map(m=>m.name).join('/');
+  const rows = [];
+  (D.tree||[]).forEach(g=>{
+    rows.push(`<tr class="init"><td>${g.initiative
+        ? `<a href="#" data-k="${esc(g.initiative)}">${esc(g.initiative)}</a> ${esc(g.summary)}`
+        : '<span class="zero">No initiative linked</span>'}</td>
+      <td class="n">${n1(g.planned)}</td><td class="n">${n1(g.delivered)}</td>
+      <td class="n">${n1(g.oncall)}</td><td class="n">${n1(g.carried)}</td>
+      <td class="n">${n1(g.cancelled)}</td>
+      <td class="n ${cls(g.delta)}">${sgn(g.delta)}</td></tr>`);
+    g.epics.forEach(e=>{
+      const flag = e.plannedTotal && !e.delivered ? '<span class="tag bad">nothing delivered</span>'
+                 : !e.plannedTotal && e.delivered ? '<span class="tag warn">no budget</span>' : '';
+      rows.push(`<tr class="epic"><td>${esc(e.key)} ${esc(e.summary)}${flag}
+          ${e.status==='Cancelled'?'<span class="tag bad">cancelled epic</span>':''}</td>
+        <td class="n">${n1(e.plannedTotal)}</td><td class="n">${n1(e.delivered)}</td>
+        <td class="n">${n1(e.oncall)}</td><td class="n">${n1(e.carried)}</td>
+        <td class="n">${n1(e.cancelled)}</td>
+        <td class="n ${cls(e.delta)}">${sgn(e.delta)}</td></tr>`);
+    });
+  });
+  host.innerHTML = `<div class="ph"><h2>Initiative → epic</h2>
+      <span class="n">planned = ${esc(prim||'—')} budget · ${(D.tree||[]).length} initiatives</span></div>
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>Initiative / epic</th><th class="n">Planned</th><th class="n">Delivered</th>
+        <th class="n">On-call</th><th class="n">Carried</th><th class="n">Cancelled</th>
+        <th class="n">Δ</th></tr></thead>
+      <tbody>${rows.join('')||`<tr><td colspan="7" class="state">nothing in these sprints</td></tr>`}</tbody>
+    </table></div>
+    <div class="note"><b>Planned</b> is the <b>${esc(prim||'primary')}</b> monthly budget only.
+      The window spans ${months.map(m=>`${esc(m.name)} ${m.days}d`).join(' + ')}, and charging a
+      4-week window with every month it touches would double-count the plan.</div>`;
+}
+
+function renderPeople(){
+  const host = document.getElementById('ppl');
+  const ins = D.insights || {};
+  const rows = (D.people||[]).map(p=>{
+    const b = p.bridge||{}, s = p.signals||{};
+    const eff = p.efficiency;
+    const pct = Math.max(0, Math.min(140, eff==null?0:eff));
+    const bcls = eff==null?'':(eff>=100?'over':eff<70?'low':'');
+    const b2 = p.band;
+    const lvl = !p.vsLevel ? '' :
+      `<span class="tag ${p.vsLevel==='below'?'bad':p.vsLevel==='above'?'ok':'warn'}">${p.vsLevel} level</span>`;
+    const bits = [];
+    if(b.carried)    bits.push(`<b>${n1(b.carried)}</b> SP carried out of the sprint`);
+    if(b.oncall)     bits.push(`<b>${n1(b.oncall)}</b> SP on-call tickets`);
+    if(b.cancelled)  bits.push(`<b>${n1(b.cancelled)}</b> SP cancelled`);
+    if(p.leave)      bits.push(`<b>${p.leave}</b> leave day(s) <span class="zero">(already out of capacity)</span>`);
+    if(p.oncallDays) bits.push(`<b>${p.oncallDays}</b> on-call day(s) <span class="zero">(already out of capacity)</span>`);
+    if(p.unestimated)bits.push(`<b>${p.unestimated}</b> done ticket(s) with no estimate — scores zero`);
+    if(s.reviewsGiven || s.reviewCommentsGiven)
+      bits.push(`<b>${s.reviewsGiven||0}</b> reviews and <b>${s.reviewCommentsGiven||0}</b> review comments on other people's PRs`);
+    if(s.prsOpened!=null) bits.push(`<b>${s.prsOpened}</b> PRs opened, <b>${s.prsMerged}</b> merged`);
+    if(s.slackMessages!=null) bits.push(`<b>${s.slackMessages}</b> Slack messages`);
+    if(s.githubUnmapped) bits.push(`<span class="zero">no GitHub handle in people.yaml — review burden unknown</span>`);
+    if(s.githubAliasMatchedNothing) bits.push(`<span class="zero">configured GitHub handle matched nothing — review burden unknown</span>`);
+    if(b.unexplained!=null && Math.abs(b.unexplained)>0.5)
+      bits.push(`<b>${sgn(b.unexplained)}</b> SP that nothing in Jira accounts for`);
+    return `<tr${p.offRoster?' class="off"':''}>
+      <td>${esc(p.name)}${p.offRoster?'<span class="tag warn">off roster</span>':''}
+        <div class="sig">${esc(p.role||'')}</div></td>
+      <td class="n">${p.capacitySP?n1(p.capacitySP):'—'}</td>
+      <td class="n">${n1(p.delivered)}</td>
+      <td class="n">${n1(p.oncallSP)}</td>
+      <td class="n">${n1(p.carried)}</td>
+      <td style="min-width:150px">${eff==null?'<span class="zero">no capacity row</span>':
+        `<div class="bar"><i class="${bcls}" style="width:${pct/1.4}%"></i></div>
+         <div class="sig">${eff}% ${lvl}</div>
+         ${b2 ? `<div class="sig zero">${esc(p.role)} expects ${n1(b2.low)}–${n1(b2.high)} SP
+           · ${p.netDays}d × ${b2.perDayLow}–${b2.perDayHigh}/day</div>` : ''}`}</td>
+      <td style="max-width:430px"><details class="why"><summary>why</summary>
+        <div class="sig">${bits.length?bits.join('<br>'):'nothing outstanding'}</div></details></td>
+    </tr>`;
+  });
+  const warn = (ins.unmapped||[]).length
+    ? `<div class="wmark"><b>${ins.unmapped.length} developer(s)</b> have no usable GitHub handle, so their
+        review burden reads blank rather than zero. Suggested handles (confirm before adding to
+        <code>people.yaml</code> — a wrong one credits someone else's work):<br>
+        ${ins.unmapped.map(u=>`${esc(u.name)} → ${u.candidates.length?u.candidates.map(esc).join(', '):'<i>no candidate</i>'}`).join('<br>')}
+      </div>` : '';
+  host.innerHTML = `<div class="ph"><h2>Productivity</h2>
+      <span class="n">delivery against the days each person actually had</span></div>
+    ${warn}
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>Developer</th><th class="n">Capacity</th><th class="n">Delivered</th>
+        <th class="n">On-call</th><th class="n">Carried</th><th>Efficiency</th>
+        <th>Why it deviated</th></tr></thead>
+      <tbody>${rows.join('')||`<tr><td colspan="7" class="state">no people</td></tr>`}</tbody>
+    </table></div>
+    <div class="note"><b>·</b> Capacity is net days × the SP-per-day band for that level,
+      so efficiency is already relative to the level. The bands are deliberately LOWER for
+      senior tiers — an SDE3 is expected to spend about half their time on design, review
+      and unblocking, so direct ticket throughput is meant to be low. Comparing a raw
+      percentage across levels without the band is a misread.<br>
+      ${(ins.notes||[]).map(x=>`<b>·</b> ${esc(x)}`).join('<br>')}</div>`;
+}
+
+// ---- load ----------------------------------------------------------------
+async function load(fresh){
+  if(!ST.sprints.length){
+    document.getElementById('sum').innerHTML = '<div class="state">Pick at least one sprint.</div>';
+    ['tree','ppl'].forEach(i=>document.getElementById(i).innerHTML='<div class="state">—</div>');
+    return;
+  }
+  if(BUSY) return;
+  BUSY = true;
+  document.getElementById('sum').innerHTML = '<div class="state">Loading…</div>';
+  const qs = [`sprints=${ST.sprints.join(',')}`];
+  if(ST.projects.length) qs.push(`projects=${encodeURIComponent(ST.projects.join(','))}`);
+  if(fresh) qs.push('fresh=1');
+  try{
+    const r = await fetch('/api/retro2?' + qs.join('&'));
+    D = await r.json();
+  }catch(e){ D = {__error__: e.message}; }
+  BUSY = false;
+  const err = D && (D.__error__ || D.error);
+  if(err){
+    document.getElementById('sum').innerHTML = `<div class="state">Failed: ${esc(err)}</div>`;
+    return;
+  }
+  try{ renderSummary(); renderTree(); renderPeople(); }
+  catch(e){ document.getElementById('sum').innerHTML =
+    `<div class="state">render error: ${esc(e.message)}</div>`; console.error(e); }
+}
+
+async function boot(){
+  wireDD('ddSprints', renderSprintMenu);
+  wireDD('ddProjects', renderProjectMenu);
+  document.getElementById('reload').addEventListener('click', ()=>load(true));
+  const [s, p] = await Promise.all([
+    fetch('/api/sprints').then(r=>r.json()).catch(()=>({sprints:[]})),
+    fetch('/api/projects').then(r=>r.json()).catch(()=>({projects:[]}))]);
+  SPRINTS = s.sprints || []; PROJECTS = p.projects || [];
+  // Default to the two most recent CLOSED sprints — an active sprint has partial delivery
+  // and would read as a collapse next to a finished one.
+  if(!ST.sprints.length){
+    ST.sprints = SPRINTS.filter(x=>x.state==='closed').slice(0,2).map(x=>x.id); save();
+  }
+  syncBtns();
+  load();
+}
+boot();
+</script>
+</body>
+</html>

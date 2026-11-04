@@ -1,0 +1,1691 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sprint Board — who does what, when</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+  /* Same tokens as the v2 planner's capacity grid — one visual language for "the team's
+     days", so a person reading both pages is not learning two colour schemes. */
+  :root{
+    --bg:#f3f6fa; --surface:#ffffff; --surface2:#eef2f8; --border:#e4e9f2;
+    --text:#15202e; --muted:#5b6675; --hint:#9aa6b4;
+    --accent:#3a55d9; --accent-2:#2c41b8; --accent-soft:rgba(58,85,217,.07);
+    --avail:#e9f1e8; --leave:#f6e9ec; --leave-t:#a23b4e; --wfh:#f6efdd; --wfh-t:#866113;
+    --onc:#e7eefa; --onc-t:#2b57a8; --hol:#eceaf9; --hol-t:#4742ab; --we:#eef1f5;
+    --info:#2b57a8; --danger:#b23a4a; --danger-bg:#f8edef; --warn:#866113; --ok:#3b6b3f;
+    --sp-bg:#e4eede;
+    /* Task tints. Same pastel family as the capacity cells, so a bar sits ON the calendar
+       instead of shouting over it. Each task keeps its own hue, stable across repaints. */
+    --t1:#d6e3f7; --t1-t:#24497f;  --t2:#d7e7d2; --t2-t:#345e38;
+    --t3:#f0e2bf; --t3-t:#75540f;  --t4:#ded9f3; --t4-t:#3e3a96;
+    --t5:#f4d8de; --t5-t:#8e3344;  --t6:#cbe5e3; --t6-t:#1a5553;
+    --shadow:0 1px 2px rgba(20,32,46,.04),0 2px 6px rgba(20,32,46,.05); --radius:14px;
+  }
+  @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+    --bg:#10151c; --surface:#171f2a; --surface2:#1e2835; --border:#2a3543;
+    --text:#e6ecf3; --muted:#97a3b2; --hint:#697483;
+    --accent:#7e8df2; --accent-2:#6f7eea; --accent-soft:rgba(126,141,242,.15);
+    --avail:#1b2a17; --leave:#3a1e24; --leave-t:#f0a3b0; --wfh:#352a13; --wfh-t:#e8c074;
+    --onc:#162840; --onc-t:#8fb4ea; --hol:#221f4a; --hol-t:#b3adf2; --we:#1e2835;
+    --danger:#f0a3b0; --danger-bg:#3a1e24; --warn:#e8c074; --ok:#9fce7e; --sp-bg:#23311a;
+    --t1:#24405f; --t1-t:#b6d0f7;  --t2:#28412a; --t2-t:#add88c;
+    --t3:#4a3b1b; --t3-t:#f0cd85;  --t4:#322d63; --t4-t:#c6c0f9;
+    --t5:#542c35; --t5-t:#f5b2bd;  --t6:#1d423f; --t6-t:#9bdcd7;
+    --shadow:0 1px 2px rgba(0,0,0,.32); } }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:'Hanken Grotesk',-apple-system,system-ui,sans-serif;font-size:14px;line-height:1.45;}
+  .wrap{max-width:1500px;margin:0 auto;padding:24px 20px 70px;}
+  .top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:14px;flex-wrap:wrap;}
+  h1{font-size:20px;font-weight:700;margin:0;}
+  .sub{color:var(--muted);font-size:12.5px;margin:2px 0 0;max-width:640px;}
+  .filters{display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;}
+  .dd{position:relative;}
+  .dd>button,.btn{font-family:inherit;font-size:12.5px;color:var(--text);background:var(--surface);
+    border:1px solid var(--border);border-radius:10px;padding:8px 12px;cursor:pointer;}
+  .dd>button{min-width:160px;text-align:left;}
+  .dd>button:hover,.btn:hover{border-color:var(--accent);}
+  .btn.warn{border-color:var(--leave-t);color:var(--leave-t);background:var(--leave)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .dd .menu{display:none;position:absolute;z-index:40;right:0;margin-top:4px;background:var(--surface);
+    border:1px solid var(--border);border-radius:11px;box-shadow:var(--shadow);padding:8px;
+    min-width:280px;max-height:340px;overflow:auto;}
+  .dd.open .menu{display:block;}
+  .dd .menu label{display:flex;gap:8px;align-items:center;padding:5px 7px;border-radius:7px;
+    font-size:12.5px;cursor:pointer;white-space:nowrap;}
+  .dd .menu label:hover{background:var(--surface2);}
+  .dd .menu .sm{color:var(--hint);font-size:11px;margin-left:auto;}
+  .dlab{font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:6px;
+    border:1px solid var(--border);border-radius:10px;padding:5px 10px;background:var(--surface);}
+  .dlab input{font:inherit;font-size:12px;border:0;background:none;color:var(--text);outline:none;}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:14px;}
+  .metric{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:14px 18px;}
+  .metric .l{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--hint);}
+  .metric .v{font:700 26px/1.15 'IBM Plex Mono',monospace;margin-top:5px;}
+  .metric .v.over{color:var(--danger);}
+
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:14px;margin-bottom:14px;}
+  .gwrap{overflow-x:auto;}
+  table.g{width:100%;table-layout:fixed;border-collapse:collapse;}
+  .g td,.g th{border:1px solid var(--border);text-align:center;padding:0;}
+  .g .nm{text-align:left;padding:9px 13px;white-space:nowrap;font-size:13px;font-weight:500;
+    width:21%;min-width:180px;background:var(--surface);position:sticky;left:0;z-index:3;}
+  .g .cell{height:40px;font-size:12px;font-weight:600;position:relative;}
+  .g thead th{background:var(--surface2);}
+  .g .dh{font:500 11px/1.2 'IBM Plex Mono',monospace;color:var(--text);padding:5px 2px;min-width:34px;}
+  .g .dh small{display:block;font-size:9px;color:var(--muted);font-weight:400;}
+  .g .dh.hol{color:var(--hol-t);}
+  .g .net{width:62px;min-width:56px;padding:0 5px;font:600 12px/1 'IBM Plex Mono',monospace;
+    background:var(--avail);}
+  /* The numbers are mono so they line up; the headings are not, because "Capacity" in
+     12px mono is wider than the column it names and ran into the one beside it. */
+  .g thead th.net{font:600 11px/1.2 'Hanken Grotesk',sans-serif;padding:6px 5px;
+    white-space:nowrap;color:var(--muted);letter-spacing:.01em;}
+  .g .net.cap{color:var(--muted);}
+  .g .net.sp{background:var(--sp-bg);}
+  .g .net.load.over{background:var(--danger-bg);color:var(--danger);}
+  .c-avail{background:var(--avail);} .c-L{background:var(--leave);color:var(--leave-t);}
+  .c-W{background:var(--wfh);color:var(--wfh-t);} .c-O{background:var(--onc);color:var(--onc-t);}
+  .c-H{background:var(--hol);color:var(--hol-t);} .c-WE{background:var(--we);}
+  /* A day you can plan on. The hover affordance is what tells you the grid is editable. */
+  .g .cell.open{cursor:text;}
+  .g .cell.open:hover{outline:2px solid var(--accent);outline-offset:-2px;}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:11px;font-size:11px;color:var(--muted);}
+  .legend span{display:flex;align-items:center;gap:6px;}
+  .sw{width:11px;height:11px;border-radius:3px;display:inline-block;border:1px solid rgba(20,32,46,.06);}
+
+  .bar{position:absolute;top:4px;bottom:4px;border-radius:6px;
+    background:var(--t1);color:var(--t1-t);border:1px solid color-mix(in srgb,var(--t1-t) 28%,transparent);
+    border-left:3px solid var(--t1-t);
+    font:600 10px/1.15 'Hanken Grotesk',sans-serif;display:flex;align-items:stretch;
+    gap:4px;padding:0 6px 0 5px;cursor:grab;overflow:hidden;white-space:nowrap;z-index:2;
+    touch-action:none;}
+  .bar.c2{background:var(--t2);color:var(--t2-t);border-color:color-mix(in srgb,var(--t2-t) 28%,transparent);border-left-color:var(--t2-t);}
+  .bar.c3{background:var(--t3);color:var(--t3-t);border-color:color-mix(in srgb,var(--t3-t) 28%,transparent);border-left-color:var(--t3-t);}
+  .bar.c4{background:var(--t4);color:var(--t4-t);border-color:color-mix(in srgb,var(--t4-t) 28%,transparent);border-left-color:var(--t4-t);}
+  .bar.c5{background:var(--t5);color:var(--t5-t);border-color:color-mix(in srgb,var(--t5-t) 28%,transparent);border-left-color:var(--t5-t);}
+  .bar.c6{background:var(--t6);color:var(--t6-t);border-color:color-mix(in srgb,var(--t6-t) 28%,transparent);border-left-color:var(--t6-t);}
+  /* Short enough to feel like the tile snapped rather than slid, long enough that the
+     eye follows it to the next cell. */
+  .bar{transition:left .085s cubic-bezier(.2,.8,.3,1), width .085s cubic-bezier(.2,.8,.3,1);}
+  /* Not while it is held. An animated width lags the hand by its own duration, which is
+     what reads as flicker when you are dragging the edge itself. */
+  .bar.drag{transition:none;}
+  @media (prefers-reduced-motion: reduce){ .bar{transition:none;} }
+  .bar:hover{filter:brightness(.985);}
+  /* Selected tiles have to read as a set at a glance, on any of the six tints. */
+  .bar.sel{box-shadow:0 0 0 2px var(--accent), 0 2px 8px rgba(20,32,46,.18);}
+  .bar.sel::after{content:'';position:absolute;inset:0;border-radius:5px;
+    background:var(--accent);opacity:.10;pointer-events:none;}
+  .bar.drag{cursor:grabbing;box-shadow:0 3px 12px rgba(20,32,46,.22);z-index:6;}
+  /* Work that does not fit before the window ends is the one thing worth shouting about. */
+  .bar.spill{background:var(--danger-bg);color:var(--danger);
+    border-color:color-mix(in srgb,var(--danger) 40%,transparent);
+    border-left-color:var(--danger);border-style:dashed;border-left-style:solid;}
+  .bar .lblw{flex:1 1 auto;overflow:hidden;min-width:0;align-self:stretch;display:flex;
+    align-items:center;}
+  /* On a one-day bar the ✕ was taking half the width, which is what forced "Chequ / e".
+     It appears on hover, over the text, so the name gets the whole cell. */
+  .bar .x{position:absolute;right:2px;top:1px;bottom:1px;display:none;align-items:center;
+    padding:0 3px 0 7px;background:inherit;border-radius:4px;cursor:pointer;font-weight:400;
+    opacity:.85;}
+  .bar:hover .x{display:flex;}
+  .bar .lbl{display:block;white-space:normal;overflow-wrap:anywhere;line-height:1.15;
+    max-height:100%;}
+  .bar .eff{flex:0 0 auto;font:700 10px/1 'IBM Plex Mono',monospace;opacity:.75;
+    padding:1px 3px;border-radius:4px;cursor:text;}
+  .bar .eff:hover{background:rgba(255,255,255,.55);opacity:1;}
+  .effin{width:34px;border:1px solid var(--accent);border-radius:4px;background:var(--surface);
+    color:var(--text);outline:none;padding:0 3px;text-align:right;
+    font:700 10px/1.4 'IBM Plex Mono',monospace;}
+  .bar .grip{position:absolute;right:0;top:0;bottom:0;width:8px;cursor:ew-resize;}
+  .bar .x:hover{opacity:1;}
+  .backlog{min-height:46px;border:1px dashed var(--border);border-radius:10px;padding:8px;}
+  .backlog.hot{border-color:var(--accent);background:var(--accent-soft);}
+  .cat + .cat{margin-top:10px;border-top:1px solid var(--border);padding-top:8px;}
+  .cat{border-radius:8px;padding:4px 6px;}
+  .cat.into{background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent);}
+  .cath{font:700 11px/1 'Hanken Grotesk',sans-serif;letter-spacing:.04em;
+    text-transform:uppercase;color:var(--muted);margin:0 0 6px;display:flex;gap:6px;
+    align-items:center;}
+  .cath .n{font-weight:500;color:var(--hint);text-transform:none;letter-spacing:0;}
+  .catx{margin-left:auto;border:0;background:none;color:var(--hint);cursor:pointer;
+    font-size:11px;padding:0 2px;}
+  .catx:hover{color:var(--danger);}
+  .rows{display:flex;flex-direction:column;gap:2px;}
+  .row.note{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:7px;
+    background:var(--surface2);border:1px solid transparent;cursor:grab;font-size:13px;}
+  .row.note:hover{border-color:var(--border);}
+  .row.note .grab{color:var(--hint);font-size:11px;letter-spacing:-2px;}
+  .row.note .rt{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;padding:1px 3px;border-radius:4px;}
+  .row.note .sp{color:var(--muted);font:600 11px 'IBM Plex Mono',monospace;cursor:text;
+    padding:1px 3px;border-radius:4px;min-width:30px;text-align:right;}
+  .row.note .rt{cursor:text;}
+  .row.note .rt:hover,.row.note .sp:hover{background:var(--surface);
+    box-shadow:inset 0 0 0 1px var(--border);}
+  .rowin{border:1px solid var(--accent);border-radius:5px;background:var(--surface);
+    color:var(--text);outline:none;padding:1px 5px;width:100%;
+    font:500 13px 'Hanken Grotesk',sans-serif;}
+  .rowin.days{width:52px;text-align:right;font:600 11px 'IBM Plex Mono',monospace;}
+  .row.note .x{color:var(--hint);cursor:pointer;font-size:11px;opacity:0;}
+  .row.note:hover .x{opacity:1;}
+  .row.note .x:hover{color:var(--danger);}
+  .addrow input,.addcat input{width:100%;border:0;border-bottom:1px dashed var(--border);
+    background:none;color:var(--text);outline:none;padding:5px 8px;
+    font:500 13px 'Hanken Grotesk',sans-serif;}
+  .addrow input::placeholder,.addcat input::placeholder{color:var(--hint);}
+  .addrow input:focus,.addcat input:focus{border-bottom-color:var(--accent);}
+  .addrow{margin-top:3px;}
+  .addcat{margin-top:12px;border-top:1px solid var(--border);padding-top:8px;}
+  .addcat input{font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.04em;}
+  .cellin{position:absolute;inset:3px;z-index:7;border:1px solid var(--accent);border-radius:5px;
+    font:600 11px/1 'Hanken Grotesk',sans-serif;padding:0 5px;background:var(--surface);
+    color:var(--text);outline:none;width:calc(100% - 6px);}
+
+  .tray{display:flex;flex-wrap:wrap;gap:6px;max-height:140px;overflow:auto;}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;border:1px solid var(--border);
+    background:var(--surface2);border-radius:8px;padding:4px 8px;cursor:grab;user-select:none;}
+  .chip:hover{border-color:var(--accent);}
+  .chip b{font:500 11px/1.4 'IBM Plex Mono',monospace;}
+  .chip .sp{color:var(--hint);}
+  .chip.done{opacity:.5;text-decoration:line-through;}
+  .ph{display:flex;align-items:baseline;gap:10px;margin-bottom:9px;flex-wrap:wrap;}
+  .ph h2{font-size:13px;font-weight:650;margin:0;}
+  .ph .n{font-size:11.5px;color:var(--hint);}
+  .state{padding:18px 4px;color:var(--muted);font-size:13px;}
+  @media (max-width:760px){ .wrap{padding:16px 12px 60px;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div>
+      <h1>Sprint Board</h1>
+      <div class="sub">Click any available day to create a task and type its name. Drag a bar
+        to move it, its right edge to lengthen it, onto another row to reassign. Scratch only
+        — nothing here is written to Jira.</div>
+    </div>
+    <div class="filters">
+      <div class="dd" id="ddSprints"><button type="button">Sprint</button><div class="menu"></div></div>
+      <div class="dd" id="ddProjects"><button type="button">Projects</button><div class="menu"></div></div>
+      <label class="dlab">From <input type="date" id="fromD"></label>
+      <label class="dlab">To <input type="date" id="toD"></label>
+      <button class="btn" id="clearWin" title="Back to planning a real sprint">Use sprint</button>
+      <button class="btn primary" id="saveBtn">Save</button>
+      <button class="btn" id="pushBtn"
+        title="Preview this board as a Jira sprint. Writes nothing until you publish there."
+        >→ Push to Jira</button>
+      <button class="btn" id="effBtn" title="Plan in story points instead of calendar days"
+        >Plan in: days</button>
+      <button class="btn" id="leaveBtn"
+        title="Mark leave the team never posted. While this is on, clicking a day cycles leave → WFH → present → clear instead of adding a task."
+        >🌴 Mark leave</button>
+      <button class="btn" id="reload">↻ Reload</button>
+    </div>
+  </div>
+
+  <div id="cards"></div>
+  <div class="card" id="boardP"><div class="state">Pick a sprint.</div></div>
+  <div class="card" id="backP"><div class="state">—</div></div>
+  <div class="card" id="trayP"><div class="state">—</div></div>
+</div>
+
+<script src="/leave-editor.js"></script>
+<script src="/drag-scroll.js"></script>
+<script>
+'use strict';
+const LSKEY = 'sprintBoard_v1';
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const n1 = v => (v==null||isNaN(v)) ? '—' : (Math.round(v*10)/10).toString();
+
+// A day splits into four. Everything the planner stores - a start, a length, a total -
+// is a whole number of quarters, so the arithmetic is done on quarters and converted back
+// rather than left to floating point, where 0.1+0.2 days would drift a bar off the grid.
+const STEP = 0.25;
+const EPS = 1e-6;
+const snapQ = v => Math.round((+v || 0) / STEP) * STEP;
+// 0.25 → "0.25", 1 → "1", 1.5 → "1.5". n1() would round a quarter day to 0.3.
+const nq = v => (v==null||isNaN(v)) ? '—'
+  : (Math.round(v*100)/100).toFixed(2).replace(/\.?0+$/,'') || '0';
+let ST = (()=>{ try{ return JSON.parse(localStorage.getItem(LSKEY))||{}; }catch(e){ return {}; } })();
+ST.sprints = ST.sprints || []; ST.projects = ST.projects || [];
+ST.from = ST.from || ''; ST.to = ST.to || '';
+const save = ()=> localStorage.setItem(LSKEY, JSON.stringify(ST));
+let SPRINTS=[], PROJECTS=[], D=null, TASKS=[], DIRTY=false;
+let SAVING=false, SAVE_ERR='', SAVED_AT='';
+const AUTOSAVE_MS = 5000;   // the board saves itself; the button says what happened
+
+const uid = () => 't' + Math.random().toString(36).slice(2, 9);
+// A person cannot work a weekend, a public holiday, their leave, or an on-call day.
+// WFH ('W') is a working day and deliberately stays plannable.
+const offFor = (p,i) => ['WE','H','L','O'].includes((p.statuses||[])[i]);
+// Marking leave is a MODE on this page, not the default gesture: a plain click already
+// adds a task here, and one click cannot mean two things.
+let LEAVE = false;
+const clsOf = s => s==="WE"?"c-WE":s==="L"?"c-L":s==="W"?"c-W":s==="O"?"c-O":s==="H"?"c-H":"c-avail";
+
+function wireDD(id,onOpen){
+  const dd=document.getElementById(id);
+  dd.querySelector('button').addEventListener('click',e=>{
+    e.stopPropagation();
+    document.querySelectorAll('.dd').forEach(d=>{ if(d!==dd) d.classList.remove('open'); });
+    const open=!dd.classList.contains('open'); if(open) onOpen();
+    dd.classList.toggle('open',open);
+  });
+}
+document.addEventListener('click',e=>{ if(!e.target.closest('.dd'))
+  document.querySelectorAll('.dd').forEach(d=>d.classList.remove('open')); });
+
+function renderSprintMenu(){
+  const dd=document.getElementById('ddSprints');
+  dd.querySelector('.menu').innerHTML = SPRINTS.map(s=>
+    `<label><input type="radio" name="sp" value="${s.id}" ${ST.sprints.includes(s.id)?'checked':''}>
+      ${esc(s.name)}<span class="sm">${esc(s.start)} → ${esc(s.end)}${s.state==='active'?' · active':''}</span></label>`
+  ).join('')||'<div class="state">no sprints</div>';
+  dd.querySelectorAll('input').forEach(cb=>cb.addEventListener('change',()=>{
+    switchTo(()=>{ ST.sprints=[+cb.value]; save(); });
+  }));
+}
+function renderProjectMenu(){
+  const dd=document.getElementById('ddProjects');
+  dd.querySelector('.menu').innerHTML = PROJECTS.map(p=>
+    `<label><input type="checkbox" value="${esc(p.key)}" ${ST.projects.includes(p.key)?'checked':''}>
+      ${esc(p.key)}<span class="sm">${esc(p.name)}</span></label>`).join('')||'<div class="state">none</div>';
+  dd.querySelectorAll('input').forEach(cb=>cb.addEventListener('change',()=>{
+    ST.projects=[...dd.querySelectorAll('input:checked')].map(x=>x.value); save(); syncBtns(); load();
+  }));
+}
+function syncBtns(){
+  const picked=SPRINTS.filter(s=>ST.sprints.includes(s.id));
+  const win = ST.from && ST.to;
+  document.getElementById('ddSprints').querySelector('button').textContent =
+    win ? 'date range' : (picked.length?picked[0].name:'Sprint');
+  document.getElementById('clearWin').style.display = win ? '' : 'none';
+  document.getElementById('ddProjects').querySelector('button').textContent =
+    ST.projects.length===1?ST.projects[0]:(ST.projects.length?ST.projects.length+' projects':'Projects');
+  const sb=document.getElementById('saveBtn');
+  sb.textContent = saveLabel();
+  sb.classList.toggle('primary', DIRTY && !SAVING);
+  sb.classList.toggle('warn', !!SAVE_ERR);
+  sb.title = SAVE_ERR ? 'Last autosave failed: ' + SAVE_ERR + ' - click to retry'
+                      : 'Saves by itself every 5 seconds';
+}
+
+// The button is the only place autosave is visible, so it has to say which of the four
+// states you are in - otherwise a failing save looks exactly like a saved one.
+function saveLabel(){
+  if(SAVING) return 'Saving…';
+  if(SAVE_ERR) return 'Save failed ·';
+  if(DIRTY) return 'Save ·';
+  return SAVED_AT ? 'Saved ' + SAVED_AT : 'Saved';
+}
+function markDirty(){ DIRTY=true; syncBtns(); }
+
+// ---- layout ---------------------------------------------------------------
+// A bar occupies `days` WORKING days for its owner, so it steps over that person's leave,
+// on-call and holidays. Five days of work across two days of leave really is seven days on
+// the calendar, and a planner that hides that is a spreadsheet with colours.
+// Spans are in FRACTIONAL day-index space: {from: 2.5, to: 3.75} is half past day two to
+// three-quarters through day three. A span never crosses a day the owner is not working,
+// which is what keeps "five days of work over two days of leave is seven days on the
+// calendar" true at quarter-day resolution too.
+function layout(task){
+  const p = (D.people||[]).find(x=>x.canonical===task.who);
+  const n = (D.days||[]).length;
+  if(!p) return null;
+  const at = posOf(task);
+  if(at === null) return null;          // scheduled, but not in the window on screen
+  let i = Math.floor(at);
+  let frac = snapQ(at - i);
+  if(i >= n) return null;
+  // A task dropped on a day off starts at the next day its owner actually works.
+  while(i < n && offFor(p, i)){ i++; frac = 0; }
+  const spans = [];
+  let left = Math.max(STEP, snapQ(task.days));
+  let cur = null;
+  while(i < n && left > EPS){
+    if(offFor(p, i)){ if(cur){ spans.push(cur); cur = null; } i++; frac = 0; continue; }
+    const room = 1 - frac;
+    const take = Math.min(room, left);
+    if(!cur) cur = {from: i + frac, to: i + frac + take};
+    else cur.to += take;
+    left -= take;
+    if(take >= room - EPS){ i++; frac = 0; } else { frac += take; }
+  }
+  if(cur) spans.push(cur);
+  return {spans, unplaced: left < EPS ? 0 : snapQ(left),
+          end: spans.length ? spans[spans.length-1].to : at};
+}
+
+// Working-day length between two fractional positions, used when a resize asks "how long
+// is this bar now?" - days off in the middle do not add to the estimate.
+function workLen(p, from, to){
+  if(to <= from) return 0;
+  let n = 0;
+  for(let i = Math.floor(from); i < Math.ceil(to); i++){
+    if(offFor(p, i)) continue;
+    const a = Math.max(from, i), b = Math.min(to, i + 1);
+    if(b > a) n += b - a;
+  }
+  return n;
+}
+const loadOf = c => TASKS.filter(t=>t.who===c).reduce((a,t)=>a+(+t.sp||0),0);
+// Backlog work is OUT of the sprint: it holds no days, draws no bar and moves no number.
+// It is kept with the plan so it can come back, not so it can quietly count.
+// A scheduled task carries the DAY it happens on, not an index into whatever window is
+// on screen. That is what lets two overlapping windows show the same planned work, and
+// what stops a plan looking empty because a different sprint is selected.
+const dayIdx = date => (D && D.days ? D.days.findIndex(d=>d.date === date) : -1);
+const dateAt = i => ((D && D.days && D.days[i]) ? D.days[i].date : '');
+
+// Where this task sits in the CURRENT window, or null when it falls outside it.
+function posOf(t){
+  if(!t || !t.who || !t.date) return null;
+  const i = dayIdx(t.date);
+  if(i < 0) return null;
+  return i + (snapQ(t.off) || 0);
+}
+
+const onBoard = () => TASKS.filter(t=>t.who && t.date);
+// Only what is actually in view counts against the capacity shown beside it.
+const inWindow = () => onBoard().filter(t=>posOf(t) !== null);
+// What a person can actually absorb, in days of task work. NOT their calendar days: a
+// senior at 0.55 has seven working days and four days of delivery in them, because the
+// rest goes on review, design and other people. Planning seven days into that is how a
+// sprint is overcommitted while every number on screen looks fine.
+// Planning in EFFORT instead of in calendar days.
+//
+// Two points of work for someone at 0.5 efficiency occupies FOUR days on the board and
+// still costs two against their capacity. Planning in days conflates those two numbers,
+// which is how a senior's sprint looks full at four days of work and is actually empty.
+let EFFORT = false;
+
+const effOf = p => { const e = +((p||{}).eff); return e > 0 ? e : 1; };
+
+// What a tile costs. An older tile carries no effort of its own, so its length is read as
+// a span and converted - its size on the board does not change, and the number it
+// contributes stops being a calendar day pretending to be work.
+function effortOf(t, p){
+  const sp = +t.sp;
+  if(sp > 0) return sp;
+  return snapQ((+t.days || 0) * effOf(p));
+}
+
+// How long that effort takes on the calendar.
+function spanOf(sp, p){
+  return Math.max(STEP, snapQ((+sp || 0) / effOf(p)));
+}
+
+// Typing an effort sets the tile's length from it, rather than the other way round.
+function setEffort(id, value, people){
+  const t = TASKS.find(x => x.id === id);
+  if(!t) return null;
+  const raw = parseFloat(String(value).replace(/[^0-9.]/g, ''));
+  if(!isFinite(raw)) return null;
+  const p = (people || []).find(x => x.canonical === t.who);
+  const sp = Math.max(STEP, Math.min(60, snapQ(raw)));
+  const days = spanOf(sp, p);
+  if(Math.abs(sp - (+t.sp || 0)) < EPS && Math.abs(days - t.days) < EPS) return null;
+  t.sp = sp;
+  t.days = days;
+  markDirty();
+  return t;
+}
+
+const capOf = p => {
+  const net = +p.net || 0;
+  const eff = +p.eff;
+  return (p.sp !== undefined && p.sp !== null) ? +p.sp
+       : (eff > 0 ? Math.round(net * eff * 100) / 100 : net);
+};
+
+// What this person has been given. In effort mode that is the work; otherwise it is the
+// days the tiles occupy, which is what the board has always counted.
+function daysOf(c){
+  const p = (D.people||[]).find(x=>x.canonical===c);
+  return snapQ(inWindow().filter(t=>t.who===c)
+    .reduce((a,t)=>a + (EFFORT ? effortOf(t, p) : (+t.days||0)), 0));
+}
+
+// A tile is in the backlog exactly when nobody owns it. There is no separate "parked"
+// state: taking work out of the sprint is the same move as never having scheduled it -
+// one concept instead of two, and one place to look for anything not in flight.
+const CAT_NONE = 'Unsorted';
+let CATS = [];
+
+const backlog = () => TASKS.filter(t=>!t.who);
+
+// Group the backlog the way it gets written down: headings, each with its tasks under it.
+// Every heading that exists is listed, even an empty one - that is the point of making a
+// heading before there is anything to put in it.
+function byCategory(tasks, cats){
+  const out = [];
+  const find = name => {
+    let g = out.find(x => x.cat.toLowerCase() === name.toLowerCase());
+    if(!g){ g = {cat: name, tasks: []}; out.push(g); }
+    return g;
+  };
+  (cats || []).forEach(c => find(String(c || '').trim() || CAT_NONE));
+  (tasks || []).forEach(t => find((t.cat || '').trim() || CAT_NONE).tasks.push(t));
+  return out;
+}
+
+// A heading is made once and kept, with or without anything under it, so a list can be
+// set up before there is any work to put in it.
+function addCategory(name){
+  const n = String(name || '').trim().slice(0, 60);
+  if(!n) return null;
+  if(CATS.some(c => c.toLowerCase() === n.toLowerCase())) return null;
+  CATS.push(n);
+  markDirty();
+  return n;
+}
+
+// Only when it is empty: a heading with work under it is deleted by moving the work first,
+// which is a deliberate act rather than an accident of clicking the wrong ✕.
+function removeCategory(name){
+  const i = CATS.findIndex(c => c.toLowerCase() === String(name || '').toLowerCase());
+  if(i < 0) return false;
+  if(TASKS.some(t => (t.cat || '').toLowerCase() === String(name).toLowerCase())) return false;
+  CATS.splice(i, 1);
+  markDirty();
+  return true;
+}
+
+// Drop a task on another heading and it moves there. Dropping a SCHEDULED task on a
+// heading takes it off the board as well: dragging it into a list is saying it is not in
+// the sprint any more, and leaving it both scheduled and filed away would be neither.
+// Effort in days. Typed rather than dragged, because "1.5" is quicker to say than it is
+// to mime with a mouse, and a backlog row has no bar to drag yet.
+function setDays(id, value){
+  const t = TASKS.find(x => x.id === id);
+  if(!t) return null;
+  const raw = parseFloat(String(value).replace(/[^0-9.]/g, ''));
+  if(!isFinite(raw)) return null;
+  const d = Math.max(STEP, Math.min(60, snapQ(raw)));
+  if(Math.abs(d - t.days) < EPS) return null;
+  t.days = d;
+  markDirty();
+  return t;
+}
+
+function recategorise(id, cat){
+  const t = TASKS.find(x => x.id === id);
+  const c = String(cat || '').trim();
+  if(!t || !c) return null;
+  if((t.cat || '') === c && !t.who) return null;
+  t.cat = c;
+  t.who = '';
+  t.date = '';
+  t.off = 0;
+  addCategory(c);
+  markDirty();
+  return t;
+}
+
+function addNote(title, cat){
+  const t = String(title || '').trim();
+  if(!t) return null;
+  const c = String(cat || '').trim() || CAT_NONE;
+  addCategory(c);
+  const note = {id:uid(), key:'', title:t, cat:c, who:'', date:'', off:0, days:1, sp:0,
+                adhoc:true, tint:nextTint(TASKS)};
+  TASKS.push(note);
+  markDirty();
+  return note;
+}
+
+// Take a task off the board. It keeps its name, length and category, so putting it back
+// is one drag - and while it is off, it costs nobody any days.
+function shelveTask(id){
+  const t = TASKS.find(x=>x.id === id);
+  if(!t || !t.who) return null;
+  t.who = '';
+  t.date = '';
+  t.off = 0;
+  markDirty();
+  return t;
+}
+
+function placeTask(id, who, dayIndex){
+  const t = TASKS.find(x=>x.id === id);
+  if(!t) return null;
+  const at = Math.max(0, snapQ(dayIndex) || 0);
+  const date = dateAt(Math.floor(at));
+  if(!date) return null;               // no such day in this window: nothing to pin it to
+  if(who) t.who = who;
+  t.date = date;
+  t.off = snapQ(at - Math.floor(at));
+  markDirty();
+  return t;
+}
+
+function renderCards(){
+  const ppl = D.people||[];
+  const netDays = ppl.reduce((a,p)=>a+(+p.net||0),0);
+  const cap = Math.round(ppl.reduce((a,p)=>a+capOf(p),0)*100)/100;
+  const planned = snapQ(ppl.reduce((a,p)=>a+daysOf(p.canonical),0));
+  const wd = (D.days||[]).filter(d=>!d.weekend && !d.holiday).length;
+  // Against CAPACITY, not calendar days. Dividing by the calendar flatters every senior
+  // on the team and reads under 100% while the sprint is already overcommitted.
+  const util = cap ? Math.round(planned/cap*100) : 0;
+  document.getElementById('cards').innerHTML = `<div class="cards">
+    <div class="metric"><div class="l">Working days</div><div class="v">${wd}</div></div>
+    <div class="metric"><div class="l">Team days</div><div class="v">${netDays}</div></div>
+    <div class="metric" title="team days at each person's efficiency">
+      <div class="l">Capacity</div><div class="v">${nq(cap)}</div></div>
+    <div class="metric"><div class="l">Planned days</div>
+      <div class="v ${planned>cap+EPS?'over':''}">${nq(planned)}</div></div>
+    <div class="metric"><div class="l">Utilisation</div>
+      <div class="v ${util>100?'over':''}">${util}%</div></div>
+  </div>`;
+}
+
+function wireLeave(){
+  if(!LEAVE) return;
+  LeaveEditor.wire(document.getElementById('boardP'), {
+    by: 'board',
+    // The board has no toast of its own, and inventing one for this is more surface than
+    // the message deserves: the button is right there and already says what mode it is in.
+    toast: (msg, kind)=>{
+      const b = document.getElementById('leaveBtn');
+      if(!b) return;
+      b.textContent = (kind === 'bad' ? '⚠ ' : '🌴 ') + msg;
+      clearTimeout(b._t);
+      b._t = setTimeout(()=>{
+        b.textContent = LEAVE ? '🌴 Marking leave — click a day' : '🌴 Mark leave';
+      }, 4000);
+    },
+    // Capacity is computed server side and cached per window, so the only honest way to
+    // show the new numbers is to fetch them again.
+    onChange: ()=> load(),
+  });
+}
+
+function renderBoard(){
+  const days = D.days||[], people = D.people||[];
+  const head = days.map(d=>`<th class="dh ${d.holiday?'hol':''}"
+      title="${esc(d.date)}${d.holiday?' · '+esc(d.holiday.occasion||'holiday'):''}">${
+      esc(d.date.slice(8))}<small>${esc(d.dow.toUpperCase())}</small></th>`).join('');
+  const rows = people.map(p=>{
+    const pd = daysOf(p.canonical), net = +p.net||0, cap = capOf(p);
+    const cells = (p.statuses||[]).map((s,i)=>{
+      const off = offFor(p,i);
+      const date = (days[i]||{}).date||'';
+      const mk = (p.manual||[])[i] || '';
+      // In leave mode the cell belongs to LeaveEditor, which brings its own title and
+      // attributes; the rest of the time it is the board's cell and adds a task.
+      const lv = LEAVE ? LeaveEditor.attrs(p.canonical, date, s, mk, p.name) : '';
+      return `<td class="cell ${clsOf(s)}${off?'':' open'} ${
+        LeaveEditor.cls(s, mk)}" data-w="${esc(p.canonical)}"
+        data-i="${i}"${lv}${lv ? '' : ` title="${esc(p.name)} · ${esc(date)}${
+          off?'':' — click to add a task'}"`}>${(s==='WE'||s==='H')?'':s}</td>`;
+    }).join('');
+    return `<tr data-w="${esc(p.canonical)}">
+      <td class="nm" title="efficiency ${esc(p.eff)}">${esc(p.name)}<br>
+        <span style="color:var(--muted);font-size:10px">${esc(p.role||'')}</span></td>
+      ${cells}<td class="net">${net}d</td>
+      <td class="net cap" title="${esc(net)} working days at ${esc(p.eff)} efficiency">${
+        nq(cap)}d</td>
+      <td class="net load ${pd>cap+EPS?'over':''}">${nq(pd)}d</td></tr>`;
+  }).join('');
+  document.getElementById('boardP').innerHTML = `
+    <div class="ph"><h2>${esc((D.sprints||[]).map(s=>s.name).join(' + '))}</h2>
+      <span class="n">${esc(D.window.start)} → ${esc(D.window.end)} · ${people.length} people
+        · click a tile to pick it, ⌘/shift-click for more, ← → to move them
+        · <b class="selN">${SEL.size ? SEL.size + ' selected' : ''}</b></span></div>
+    <div class="gwrap"><table class="g">
+      <thead><tr><th class="nm">Person</th>${head}
+        <th class="net" title="working days left in this window">Days</th>
+        <th class="net cap" title="what those days deliver at this person's efficiency">Capacity</th>
+        <th class="net load" title="task days planned onto this person">Planned</th></tr></thead>
+      <tbody>${rows||`<tr><td class="state">no people</td></tr>`}</tbody></table></div>
+    <div class="legend">
+      <span><i class="sw c-avail"></i>available</span><span><i class="sw c-W"></i>WFH (counts)</span>
+      <span><i class="sw c-O"></i>on-call</span><span><i class="sw c-L"></i>leave</span>
+      <span><i class="sw c-H"></i>holiday</span><span><i class="sw c-WE"></i>weekend</span>
+      <span style="color:var(--hint)">· click an available day to add a task · drag to move ·
+      right edge to lengthen · ✕ to delete</span></div>`;
+  paintBars(); wireCells(); wireLeave();
+}
+
+// ---- selection ------------------------------------------------------------------
+// Picking up several tiles at once and nudging them along. A day slips and everything
+// after it has to move; doing that one bar at a time is how a plan stops being kept up.
+let SEL = new Set();
+let SEL_ANCHOR = '';
+let DRAGGING = '';       // the tile under the pointer, so a repaint keeps it looking held
+
+// Every quarter-day this person actually works, in order. Moving "one day" means one of
+// their working days, not one square of calendar - the same rule the bars are drawn by.
+function slots(p, n){
+  const out = [];
+  for(let i = 0; i < n; i++){
+    if(offFor(p, i)) continue;
+    for(let q = 0; q < 4; q++) out.push(snapQ(i + q * STEP));
+  }
+  return out;
+}
+
+// A pointer sitting on a quarter boundary used to flip the tile between two cells on
+// every stray pixel - the shiver. A move only counts once the pointer is clearly past
+// the next notch, and the tile then LATCHES there and stays put until the next one.
+const LATCH = 0.62;      // how far into the next quarter the pointer has to get
+function latch(from, want){
+  const d = want - from;
+  if(Math.abs(d) < LATCH) return from;
+  return from + (d > 0 ? Math.floor(d + (1 - LATCH)) : Math.ceil(d - (1 - LATCH)));
+}
+
+// Where the pointer is, in this person's working quarters, as a fraction - so the dead
+// zone can be measured against it rather than against a value already rounded off.
+function slotPos(s, pos){
+  if(!s.length) return 0;
+  if(pos <= s[0]) return 0;
+  for(let i = 0; i < s.length - 1; i++){
+    if(pos >= s[i] && pos < s[i + 1]){
+      const span = s[i + 1] - s[i];
+      return i + (span > 0 ? Math.min(1, (pos - s[i]) / span) : 0);
+    }
+  }
+  return s.length - 1;
+}
+
+function slotIndex(s, pos){
+  for(let i = 0; i < s.length; i++) if(Math.abs(s[i] - pos) < EPS) return i;
+  for(let i = 0; i < s.length; i++) if(s[i] > pos) return i;
+  return s.length - 1;
+}
+
+// How far a whole selection can move together. Clamping each bar on its own would squash
+// them against the edge and lose the spacing the plan is made of, so the one that runs
+// out of room first decides for all of them.
+function shiftBy(tasks, dq, people, n){
+  if(!tasks.length || !dq) return 0;
+  let room = Math.abs(dq);
+  for(const t of tasks){
+    const p = (people || []).find(x => x.canonical === t.who);
+    if(!p) return 0;
+    const s = slots(p, n);
+    const at = slotIndex(s, posOf(t));
+    room = Math.min(room, dq > 0 ? (s.length - 1 - at) : at);
+  }
+  return (dq > 0 ? 1 : -1) * room;
+}
+
+// Person ids are slugs, but don't lean on CSS.escape being there: it is missing in the test
+// DOM, and a selector that throws takes the whole repaint down with it.
+const cssEsc = v => (window.CSS && CSS.escape) ? CSS.escape(String(v))
+                                               : String(v).replace(/["\\]/g, '\\$&');
+
+// One hue per task, derived from its id so it survives a repaint, a reload and a drag.
+// Six tints, because beyond that they stop being distinguishable at 10px.
+const BAR_TINTS = 6;
+
+// Chosen when the task is created and stored with it, so it survives a reload and a drag.
+// Least-used wins, which is what stops seven tasks landing on four colours.
+function nextTint(tasks){
+  const n = new Array(BAR_TINTS + 1).fill(0);
+  (tasks || []).forEach(t => { const c = +t.tint; if(c >= 1 && c <= BAR_TINTS) n[c]++; });
+  let best = 1;
+  for(let i = 2; i <= BAR_TINTS; i++) if(n[i] < n[best]) best = i;
+  return best;
+}
+
+// Older saved plans and ticket-backed bars have no stored tint, so fall back to the id.
+function tintFor(id){
+  const s = String(id || '');
+  let h = 0;
+  for(let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return (h % BAR_TINTS) + 1;
+}
+
+// Splitting a label across the segments of a bar.
+//
+// Two rules, and the second is the one that matters. First, text WRAPS inside a segment,
+// so this cannot be done by shifting pixels: each segment is handed as much text as
+// actually fits and passes the remainder on. Second, a segment takes as FEW lines as it
+// can: filling the narrow first cell with three cramped lines while the wide cell beside
+// it sits empty is worse than one line in each. So the pack is tried at one line per
+// segment, then two, and the first height that holds the whole name wins.
+//
+// `fits` is a predicate per segment, which is what keeps this testable without a browser:
+// the page backs it with a real measurement, the tests with a character count.
+// How much of `rest` this one segment can take.
+function packOne(rest, fit, strict){
+  if(!rest) return {chunk: '', rest: ''};
+  if(fit(rest)) return {chunk: rest, rest: ''};
+  let lo = 0, hi = rest.length;
+  while(lo < hi){
+    const mid = Math.ceil((lo + hi) / 2);
+    if(fit(rest.slice(0, mid))) lo = mid; else hi = mid - 1;
+  }
+  if(lo <= 0) return {chunk: '', rest};   // segment too small for even one character
+  let n = lo;
+  // Break on a word, so a day boundary does not fall mid-word ("instrum" / "ent").
+  // In the strict pass any word boundary will do, even a wasteful one; it is only when no
+  // line count can place the whole name on whole words that a mid-word break is allowed,
+  // and then only if the boundary would not waste over half the segment.
+  const sp = rest.lastIndexOf(' ', n);
+  if(sp > 0 && (strict || sp >= n / 2)) n = sp;
+  return {chunk: rest.slice(0, n), rest: rest.slice(n).replace(/^\s+/, '')};
+}
+
+function packChunks(text, fits, strict){
+  const out = [];
+  let rest = String(text == null ? '' : text);
+  for(let i = 0; i < fits.length; i++){
+    const r = packOne(rest, fits[i], strict);
+    out.push(r.chunk);
+    rest = r.rest;
+  }
+  return {out, rest};
+}
+
+// Ran out of bar before running out of name: say so on the last segment rather than
+// stopping mid-word as though that were the whole title.
+function markCut(out, fits){
+  const last = fits.length - 1;
+  if(last < 0) return out;
+  const fit = fits[last];
+  let t = out[last];
+  while(t.length && !fit(t + '…')) t = t.slice(0, -1);
+  out[last] = t + '…';
+  return out;
+}
+
+// Within a line budget that works, every segment takes the FEWEST lines it can while the
+// remainder still fits in the segments after it. Without this a narrow first cell that
+// happens to hold the whole name keeps it, stacked, with the wide cell beside it empty -
+// which is the thing that looks wrong on the board.
+function spreadChunks(text, fitsFor, budget, strict){
+  const preds = fitsFor(budget);
+  const out = [];
+  let rest = String(text == null ? '' : text);
+  for(let i = 0; i < preds.length; i++){
+    const tail = preds.slice(i + 1);
+    let taken = null;
+    for(let lines = 1; lines <= budget; lines++){
+      const r = packOne(rest, fitsFor(lines)[i], strict);
+      if(!r.rest || !packChunks(r.rest, tail, strict).rest){ taken = r; break; }
+    }
+    if(!taken) taken = packOne(rest, preds[i], strict);
+    out.push(taken.chunk);
+    rest = taken.rest;
+  }
+  return {out, rest};
+}
+
+function flowChunks(text, fitsFor, maxLines){
+  const top = Math.max(1, maxLines || 1);
+  // Pass one: whole words only, fewest lines first. Pass two: the same search, now
+  // allowing a mid-word break, for names no arrangement of whole words can hold.
+  for(const strict of [true, false]){
+    for(let lines = 1; lines <= top; lines++){
+      if(packChunks(text, fitsFor(lines), strict).rest) continue;
+      const spread = spreadChunks(text, fitsFor, lines, strict);
+      if(!spread.rest) return spread.out;
+      return packChunks(text, fitsFor(lines), strict).out;
+    }
+  }
+  return markCut(packChunks(text, fitsFor(top), false).out, fitsFor(top));
+}
+
+// True when the text does not overflow the box it was put in - in BOTH directions, and
+// within the line budget being tried. Height alone is not enough: a word longer than the
+// line can run out of the side while the height still looks fine.
+function labelFits(lbl, box, lines, lineH){
+  const cap = Math.min(box.clientHeight, Math.round(lines * lineH));
+  return lbl.scrollHeight <= cap + 1
+      && lbl.scrollWidth <= box.clientWidth + 1;
+}
+
+function flowLabel(boxes, text){
+  const els = Array.from(boxes || []);
+  if(!els.length) return;
+  const lbls = els.map(b => b.querySelector('.lbl'));
+  const first = lbls.find(Boolean);
+  const lineH = first ? (parseFloat(getComputedStyle(first).lineHeight) || 12) : 12;
+  const maxLines = Math.max(1, Math.floor(els[0].clientHeight / lineH));
+  const fitsFor = lines => els.map((box, i) => str => {
+    const lbl = lbls[i];
+    if(!lbl) return true;
+    lbl.textContent = str;
+    return labelFits(lbl, box, lines, lineH);
+  });
+  const parts = flowChunks(text, fitsFor, maxLines);
+  lbls.forEach((lbl, i) => { if(lbl) lbl.textContent = parts[i] || ''; });
+}
+
+function selectedTasks(){
+  return TASKS.filter(t => SEL.has(t.id) && posOf(t) !== null);
+}
+
+// Move every selected tile by `dq` quarter-days of its owner's working time.
+function shiftSelection(dq){
+  const picked = selectedTasks();
+  const n = (D.days || []).length;
+  const step = shiftBy(picked, dq, D.people || [], n);
+  if(!step) return 0;
+  picked.forEach(t => {
+    const p = (D.people || []).find(x => x.canonical === t.who);
+    const s = slots(p, n);
+    const pos = s[Math.max(0, Math.min(s.length - 1, slotIndex(s, posOf(t)) + step))];
+    t.date = dateAt(Math.floor(pos));
+    t.off = snapQ(pos - Math.floor(pos));
+  });
+  markDirty();
+  return step;
+}
+
+function selectTask(id, mode){
+  if(mode === 'toggle'){
+    if(SEL.has(id)) SEL.delete(id); else SEL.add(id);
+    SEL_ANCHOR = id;
+    return;
+  }
+  if(mode === 'range' && SEL_ANCHOR){
+    // A range means "this run of work", so it is taken along ONE person's row in the
+    // order the bars sit on the calendar, not in whatever order they were created.
+    const a = TASKS.find(t => t.id === SEL_ANCHOR);
+    const b = TASKS.find(t => t.id === id);
+    if(a && b && a.who === b.who){
+      const row = TASKS.filter(t => t.who === a.who && posOf(t) !== null)
+                       .sort((x, y) => posOf(x) - posOf(y));
+      const i = row.findIndex(t => t.id === a.id), j = row.findIndex(t => t.id === b.id);
+      if(i >= 0 && j >= 0){
+        row.slice(Math.min(i, j), Math.max(i, j) + 1).forEach(t => SEL.add(t.id));
+        return;
+      }
+    }
+  }
+  SEL = new Set([id]);
+  SEL_ANCHOR = id;
+}
+
+function clearSel(){ SEL = new Set(); SEL_ANCHOR = ''; }
+
+// Selection changes the ring, not the layout, so it is painted in place. Repainting the
+// whole board for a click replaced the very element a double-click was landing on, which
+// broke rename - the kind of thing that only shows up when a person uses it.
+function paintSel(){
+  document.querySelectorAll('#boardP .bar').forEach(b=>{
+    b.classList.toggle('sel', SEL.has(b.dataset.id));
+  });
+  const n = document.querySelector('#boardP .ph .n .selN');
+  if(n) n.textContent = SEL.size ? SEL.size + ' selected' : '';
+}
+
+// Redraw ONE task. Dragging used to rebuild every bar on the board for every change,
+// which threw away the grip under the cursor several times a second - the flicker you can
+// feel but a synthetic wobble never notices, because it has no cursor to lose.
+function drawTask(t){
+  document.querySelectorAll(`#boardP .bar[data-id="${cssEsc(t.id)}"]`).forEach(b=>b.remove());
+  const who = (D.people||[]).find(x=>x.canonical===t.who);
+  const lay = layout(t);
+  if(lay){
+    lay.spans.forEach((sp,idx)=>{
+      // A span starts inside a cell, not at its edge: the bar hangs off the cell its
+      // quarter falls in, offset by the rest of that quarter.
+      const cell = Math.floor(sp.from + EPS);
+      const off = sp.from - cell;
+      const td = document.querySelector(
+        `#boardP td.cell[data-w="${cssEsc(t.who)}"][data-i="${cell}"]`);
+      if(!td) return;
+      const w = sp.to - sp.from;
+      const el = document.createElement('div');
+      const tint = (+t.tint >= 1 && +t.tint <= BAR_TINTS) ? +t.tint : tintFor(t.id);
+      el.className = 'bar' + (tint > 1 ? ' c' + tint : '') + (lay.unplaced ? ' spill' : '')
+                   + (SEL.has(t.id) ? ' sel' : '')
+                   + (DRAGGING === t.id ? ' drag' : '');
+      // Cells are separated by a 1px border, so a bar covering `w` days of grid has to
+      // span the borders it crosses as well as the cells themselves.
+      const crossed = Math.max(0, Math.ceil(off + w) - 1);
+      el.style.left = off ? `calc(${off} * 100% + 1px)` : '1px';
+      el.style.width = `calc(${w} * 100% + ${crossed}px - 2px)`;
+      el.dataset.id = t.id;
+      el.title = `${t.key?t.key+' · ':''}${t.title}\n${
+        EFFORT ? nq(effortOf(t, who)) + ' effort over ' : ''}${nq(t.days)} working day(s)${
+        t.key?'':' · double-click to rename'}${
+        lay.unplaced?` · ${nq(lay.unplaced)} day(s) do not fit before the sprint ends`:''}`;
+      // Every segment carries the WHOLE label. A weekend splits the bar, not the words:
+      // the continuation segments shift the same text left by however much already showed,
+      // so "Cheque instruction" reads on across the gap instead of turning into an ellipsis.
+      el.innerHTML = `<span class="lblw"><span class="lbl"></span></span>`
+        + (idx===0 && EFFORT
+            ? `<span class="eff" data-e="${t.id}" title="effort · click to change">${
+                 nq(effortOf(t, who))}</span>` : '')
+        + (idx===0 ? `<span class="x" data-x="${t.id}">✕</span>` : '')
+        + (idx===lay.spans.length-1 ? '<span class="grip"></span>' : '');
+      td.appendChild(el);
+    });
+    flowLabel(document.querySelectorAll(`#boardP .bar[data-id="${cssEsc(t.id)}"] .lblw`),
+              t.key ? t.key + ' · ' + t.title : t.title);
+  }
+  wireBar(document.querySelectorAll(`#boardP .bar[data-id="${cssEsc(t.id)}"]`));
+}
+
+function paintBars(){
+  document.querySelectorAll('#boardP .bar').forEach(b=>b.remove());
+  onBoard().forEach(drawTask);
+}
+
+// Move a tile that is ALREADY on screen without rebuilding it: set two style properties
+// and nothing else. Recreating the element meant re-splitting its label on every step,
+// and that measurement forces a layout each time - a dozen of them per frame while the
+// hand is moving, which is what the flicker actually was. Returns false when the shape
+// changed (a weekend split it, or it moved to another person), and the caller redraws.
+function nudgeTask(t){
+  const els = Array.from(document.querySelectorAll(`#boardP .bar[data-id="${cssEsc(t.id)}"]`));
+  const lay = layout(t);
+  if(!lay || !els.length || lay.spans.length !== els.length) return false;
+  const geo = [];
+  for(let i = 0; i < lay.spans.length; i++){
+    const sp = lay.spans[i];
+    const cell = Math.floor(sp.from + EPS);
+    const td = els[i].parentElement;
+    if(!td || +td.dataset.i !== cell || td.dataset.w !== t.who) return false;
+    const off = sp.from - cell, w = sp.to - sp.from;
+    geo.push([off, w, Math.max(0, Math.ceil(off + w) - 1)]);
+  }
+  // Every read is done before any write, so the browser lays out once rather than once
+  // per bar.
+  els.forEach((el, i) => {
+    const [off, w, crossed] = geo[i];
+    el.style.left = off ? `calc(${off} * 100% + 1px)` : '1px';
+    el.style.width = `calc(${w} * 100% + ${crossed}px - 2px)`;
+    el.classList.toggle('spill', !!lay.unplaced);
+  });
+  els[0].title = `${t.key ? t.key + ' · ' : ''}${t.title}\n${nq(t.days)} working day(s)${
+    t.key ? '' : ' · double-click to rename'}${
+    lay.unplaced ? ` · ${nq(lay.unplaced)} day(s) do not fit before the sprint ends` : ''}`;
+  return true;
+}
+
+// During a drag: nudge if the shape allows, redraw only if it does not.
+function liveTask(t){ if(!nudgeTask(t)) drawTask(t); }
+
+function renderBacklog(){
+  const groups = byCategory(backlog(), CATS);
+  const n = backlog().length;
+  // The plan is one list across every sprint and window, so work scheduled on days this
+  // window does not cover still exists. Say how much, rather than letting it look lost.
+  const elsewhere = onBoard().length - inWindow().length;
+  document.getElementById('backP').innerHTML = `
+    <div class="ph"><h2>Backlog</h2>
+      <span class="n">${n ? n + ' waiting' : 'nothing yet'} in ${groups.length}
+        categor${groups.length===1?'y':'ies'}${elsewhere ? ' · ' + elsewhere +
+          ' scheduled outside this window' : ''}
+        · drag a task onto a day to schedule it, drag it back to take it out</span></div>
+    <div id="back" class="backlog">${groups.map((g,gi)=>`
+      <div class="cat" data-cat="${esc(g.cat)}">
+        <div class="cath">${esc(g.cat)}<span class="n">${g.tasks.length}</span>
+          ${g.tasks.length ? '' :
+            `<button class="catx" data-delcat="${esc(g.cat)}" title="remove this empty heading"
+             type="button">✕</button>`}</div>
+        <div class="rows">${g.tasks.map(t=>
+          `<div class="row note" draggable="true" data-id="${esc(t.id)}"
+            title="${esc(t.title)} · ${nq(t.days)} day(s) · drag onto a day to schedule it">
+            <span class="grab">⠿</span>
+            <span class="rt">${t.key?`<b>${esc(t.key)}</b> `:''}${esc(t.title)}</span>
+            <span class="sp">${nq(t.days)}d</span>
+            <span class="x" data-x="${esc(t.id)}" title="delete">✕</span></div>`).join('')}</div>
+        <form class="addrow" data-addto="${esc(g.cat)}">
+          <input placeholder="add to ${esc(g.cat)}…" autocomplete="off" data-ci="${gi}">
+        </form>
+      </div>`).join('')}
+      <form class="addcat" id="addcat">
+        <input id="catIn" placeholder="+ new category" autocomplete="off">
+      </form>
+    </div>`;
+
+  // One input per heading: make the heading once, then keep typing under it. The box keeps
+  // focus after each line, so a list comes out as fast as it would in a text file.
+  document.querySelectorAll('#back .addrow').forEach(f=>f.addEventListener('submit', e=>{
+    e.preventDefault();
+    const box = f.querySelector('input');
+    if(!addNote(box.value, f.dataset.addto)) return;
+    const at = box.dataset.ci;
+    renderBacklog();
+    const again = document.querySelector(`#back .addrow input[data-ci="${at}"]`);
+    if(again) again.focus();
+  }));
+  document.getElementById('addcat').addEventListener('submit', e=>{
+    e.preventDefault();
+    const box = document.getElementById('catIn');
+    if(!addCategory(box.value)) { box.value = ''; return; }
+    renderBacklog();
+    const made = document.querySelectorAll('#back .addrow input');
+    if(made.length) made[made.length-1].focus();
+  });
+  document.querySelectorAll('#back .catx').forEach(b=>b.addEventListener('click', e=>{
+    e.preventDefault();
+    if(removeCategory(b.dataset.delcat)) renderBacklog();
+  }));
+  // A heading accepts a drop. Without preventDefault on BOTH dragover and drop the
+  // browser treats the add box as a text field and pastes the drag payload into it.
+  document.querySelectorAll('#back .cat').forEach(box=>{
+    const over = e=>{
+      e.preventDefault();
+      document.querySelectorAll('#back .cat.into').forEach(x=>x.classList.remove('into'));
+      box.classList.add('into');
+    };
+    box.addEventListener('dragover', over);
+    box.addEventListener('dragenter', over);
+    box.addEventListener('dragleave', ()=>box.classList.remove('into'));
+    box.addEventListener('drop', e=>{
+      e.preventDefault();
+      box.classList.remove('into');
+      let payload; try{ payload = JSON.parse(e.dataTransfer.getData('text/plain')); }catch(_){ return; }
+      if(!payload || payload.from !== 'backlog') return;
+      if(!recategorise(payload.id, box.dataset.cat)) return;
+      renderCards(); renderBacklog(); renderTray(); renderBoard();
+    });
+  });
+  // Click the name to rename, click the days to re-estimate. The row is draggable, so
+  // the editor has to turn that off while it is open or the browser starts a drag the
+  // moment you try to select text.
+  document.querySelectorAll('#back .row.note .rt, #back .row.note .sp').forEach(el=>{
+    el.addEventListener('click', e=>{
+      e.stopPropagation();
+      openRowEditor(el.closest('.row.note'), el.classList.contains('sp') ? 'days' : 'title');
+    });
+  });
+  document.querySelectorAll('#back .row.note').forEach(c=>{
+    c.addEventListener('dragstart', e=>{
+      if(c.querySelector('input.rowin')){ e.preventDefault(); return; }
+      e.dataTransfer.setData('text/plain', JSON.stringify({from:'backlog', id:c.dataset.id}));
+    });
+    c.querySelectorAll('.x').forEach(x=>x.addEventListener('click', e=>{
+      e.stopPropagation();
+      TASKS = TASKS.filter(t=>t.id !== x.dataset.x);
+      markDirty(); renderBacklog(); renderCards();
+    }));
+  });
+}
+
+function renderTray(){
+  const placed = new Set(TASKS.map(t=>t.key).filter(Boolean));
+  const free = (D.tickets||[]).filter(t=>!placed.has(t.key) && !t.cancelled);
+  document.getElementById('trayP').innerHTML = `
+    <div class="ph"><h2>Sprint tickets not yet placed</h2>
+      <span class="n">${free.length} of ${(D.tickets||[]).length} · drag one onto a day</span></div>
+    <div class="tray" id="tray">${free.map(t=>
+      `<span class="chip${t.done?' done':''}" draggable="true" data-k="${esc(t.key)}"
+        title="${esc(t.summary)}${t.assignee?' · '+esc(t.assignee):''}">
+        <b>${esc(t.key)}</b> ${esc(t.summary.slice(0,32))}<span class="sp">${n1(t.sp)}</span></span>`
+      ).join('') || '<span class="state">everything is placed</span>'}</div>`;
+  document.querySelectorAll('#tray .chip').forEach(c=>c.addEventListener('dragstart', e=>{
+    e.dataTransfer.setData('text/plain', JSON.stringify({from:'tray', key:c.dataset.k}));
+  }));
+}
+
+// ---- interaction ----------------------------------------------------------
+// The pointer is over the backlog. Bars are dragged with pointer events, not HTML5
+// drag-and-drop, so the list cannot just listen for a drop - the drag has to ask.
+function overBacklog(x, y){
+  const el = document.elementFromPoint(x, y);
+  return !!(el && el.closest && el.closest('#back'));
+}
+
+// Which heading the pointer is over, if any, so a bar dropped on one is filed there
+// rather than just dropped back wherever it came from.
+function catAt(x, y){
+  const el = document.elementFromPoint(x, y);
+  const cat = el && el.closest ? el.closest('#back .cat') : null;
+  return cat ? cat.dataset.cat : '';
+}
+
+// Where the pointer is, to the nearest quarter day. `i` stays the whole-cell index for
+// anything that only cares which day it is; `pos` is the fractional position used by the
+// drag and the resize.
+// Which quarter of a cell a drop landed in, so a note can be dropped at half past a day.
+function quarterAt(x, td){
+  const r = td.getBoundingClientRect();
+  if(!r.width) return 0;
+  return snapQ(Math.min(0.75, Math.max(0, (x - r.left) / r.width)));
+}
+
+// Which cell a pixel falls in, given the row's first cell and the uniform column width.
+// Pure, because the rule it encodes is the one that was wrong: it must keep counting past
+// the end of a bar rather than saturating at the cell the bar happens to start in.
+function cellIndexAt(x, left, width, count){
+  if(!(width > 0) || !count) return -1;
+  const i = Math.floor((x - left) / width);
+  return Math.max(0, Math.min(count - 1, i));
+}
+
+function cellAt(x,y){
+  const el = document.elementFromPoint(x,y);
+  const tr = el && el.closest ? el.closest('#boardP tr[data-w]') : null;
+  if(!tr) return null;
+  const cells = tr.querySelectorAll('td.cell');
+  if(!cells.length) return null;
+  // The WHICH-CELL question is answered by geometry, not by what the hit test landed on.
+  // A bar is absolutely positioned over every cell it spans, so as soon as it grows under
+  // the pointer, asking the hit element for its cell returns the one the bar STARTS in -
+  // and the offset inside it clamps at the far edge. Dragging right then reads as the
+  // length collapsing, which is why the tile jumped backwards while the hand went
+  // forwards. The row is all the hit test is needed for.
+  const first = cells[0].getBoundingClientRect();
+  if(!first.width) return null;
+  const i = cellIndexAt(x, first.left, first.width, cells.length);
+  if(i < 0) return null;
+  const r = cells[i].getBoundingClientRect();
+  const within = r.width ? Math.min(0.999, Math.max(0, (x - r.left) / r.width)) : 0;
+  // `raw` is the pointer where it actually is. `pos` is it rounded to the grid. A drag
+  // needs the raw one: measuring a dead zone against an already-rounded value means a
+  // two-pixel wobble across a boundary reads as a whole quarter, which IS the shiver.
+  return {who: tr.dataset.w, i, raw: i + within,
+          pos: i + snapQ(within), within: snapQ(within)};
+}
+
+// Click an available day, type a name, Enter. The whole point is that adding a task costs
+// one click and no dialog — a modal here would make the grid feel like a form.
+// The commit path, named so a test can drive the SAME code the Enter key runs. Hiding it
+// inside the keydown closure is how the first version shipped with Enter doing nothing:
+// the editor opened, the input cleared, and no task was created, and nothing could catch it.
+function addTaskAt(who, dayIndex, title, extra){
+  const t = String(title || '').trim();
+  if(!who || !t) return null;
+  const at = Math.max(0, snapQ(dayIndex) || 0);
+  const task = Object.assign({id:uid(), key:'', title:t, who, date:dateAt(Math.floor(at)),
+                              off:snapQ(at - Math.floor(at)), days:1, sp:0,
+                              adhoc:true, tint:nextTint(TASKS)}, extra || {});
+  TASKS.push(task);
+  markDirty();
+  return task;
+}
+
+// Renaming is its own named step for the same reason creating is: the only way to be sure
+// the shipped path works is for a test to call exactly what the keyboard calls.
+const DOUBLE_TAP_MS = 400;
+let LAST_TAP = null;
+function isDoubleTap(id, now){
+  const t = now === undefined ? Date.now() : now;
+  const yes = !!LAST_TAP && LAST_TAP.id === id && (t - LAST_TAP.t) <= DOUBLE_TAP_MS;
+  LAST_TAP = yes ? null : {id, t};   // a third tap starts a fresh pair, not another rename
+  return yes;
+}
+
+// Opens the rename editor over a bar. Returns false for a ticket-backed bar: it is
+// labelled by its Jira key, so renaming it here would change nothing you can see.
+function startRename(bar){
+  const t = TASKS.find(x => x.id === bar.dataset.id);
+  if(!t || t.key) return false;
+  const cell = bar.closest('td.cell');
+  if(!cell) return false;
+  openEditor(cell, t);
+  return true;
+}
+
+function renameTask(id, title){
+  const t = TASKS.find(x=>x.id === id);
+  const v = String(title || '').trim();
+  if(!t || !v || v === t.title) return null;
+  t.title = v;
+  markDirty();
+  return t;
+}
+
+// One editor for both fields. Named and separate from the click handler for the same
+// reason every other commit path here is: a test has to be able to drive what the mouse
+// drives, not a copy of it.
+function openEffort(bar, chip){
+  if(bar.querySelector('input.effin')) return null;
+  const t = TASKS.find(x => x.id === bar.dataset.id);
+  if(!t) return null;
+  const was = chip.textContent;
+  const inp = document.createElement('input');
+  inp.className = 'effin';
+  inp.value = was;
+  chip.textContent = '';
+  chip.appendChild(inp);
+  inp.focus(); inp.select();
+  bar.draggable = false;
+  let closed = false;
+  const close = ok=>{
+    if(closed) return;
+    closed = true;
+    inp.removeEventListener('blur', onBlur);
+    const changed = ok && setEffort(t.id, inp.value, D.people || []);
+    // The person's Planned cell lives in the table, not in the bars, so repainting only
+    // the tiles left the row saying one thing and the card above it another.
+    if(changed){ renderCards(); renderBoard(); }
+    else { chip.textContent = was; }
+  };
+  const onBlur = ()=>close(true);
+  inp.addEventListener('keydown', e=>{
+    e.stopPropagation();
+    if(e.key === 'Escape'){ close(false); return; }
+    if(e.key === 'Enter'){ e.preventDefault(); close(true); }
+  });
+  inp.addEventListener('blur', onBlur);
+  return inp;
+}
+
+function openRowEditor(row, field){
+  if(!row || row.querySelector('input.rowin')) return null;
+  const t = TASKS.find(x => x.id === row.dataset.id);
+  if(!t) return null;
+  const slot = row.querySelector(field === 'days' ? '.sp' : '.rt');
+  if(!slot) return null;
+  const was = slot.innerHTML;
+  const inp = document.createElement('input');
+  inp.className = 'rowin' + (field === 'days' ? ' days' : '');
+  inp.value = field === 'days' ? nq(t.days) : t.title;
+  row.draggable = false;
+  slot.innerHTML = '';
+  slot.appendChild(inp);
+  inp.focus();
+  inp.select();
+  let closed = false;
+  const close = ok=>{
+    if(closed) return;
+    closed = true;
+    inp.removeEventListener('blur', onBlur);
+    const changed = ok && (field === 'days' ? setDays(t.id, inp.value)
+                                            : renameTask(t.id, inp.value));
+    row.draggable = true;
+    if(changed){ renderBacklog(); renderCards(); }
+    else { slot.innerHTML = was; }
+  };
+  const onBlur = ()=>close(true);
+  inp.addEventListener('keydown', e=>{
+    e.stopPropagation();
+    if(e.key === 'Escape'){ close(false); return; }
+    if(e.key === 'Enter'){ e.preventDefault(); close(true); }
+  });
+  inp.addEventListener('blur', onBlur);
+  return inp;
+}
+
+function openEditor(td, task){
+  if(td.querySelector('.cellin')) return;
+  const inp = document.createElement('input');
+  inp.className = 'cellin';
+  inp.placeholder = 'task name…';
+  if(task) inp.value = task.title || '';
+  td.appendChild(inp);
+  inp.focus();
+  if(task) inp.select();   // rename starts with the old name selected, so typing replaces it
+  // Removing a focused input fires blur, which calls close() again from INSIDE the first
+  // remove(), and the second remove() throws NotFoundError - taking the rest of the Enter
+  // handler down with it, so the task was never created. Close once, and only once.
+  let closed = false;
+  const close = ()=>{
+    if(closed) return;
+    closed = true;
+    inp.removeEventListener('blur', close);
+    if(inp.parentNode) inp.remove();
+  };
+  inp.addEventListener('keydown', e=>{
+    e.stopPropagation();
+    if(e.key === 'Escape'){ close(); return; }
+    if(e.key !== 'Enter') return;
+    // Commit first, close second: a throw on the way out must not lose what was typed.
+    const done = task ? renameTask(task.id, inp.value)
+                      : addTaskAt(td.dataset.w, td.dataset.i, inp.value);
+    close();
+    if(done){ renderCards(); renderBoard(); }
+  });
+  inp.addEventListener('blur', close);
+  inp.addEventListener('pointerdown', e=>e.stopPropagation());
+}
+
+function wireCells(){
+  document.querySelectorAll('#boardP td.cell').forEach(td=>{
+    if(td.classList.contains('open')){
+      td.addEventListener('click', e=>{
+        if(e.target.closest('.bar') || e.target.closest('.cellin')) return;
+        openEditor(td);
+      });
+    }
+    td.addEventListener('dragover', e=>e.preventDefault());
+    td.addEventListener('drop', e=>{
+      e.preventDefault();
+      let payload; try{ payload = JSON.parse(e.dataTransfer.getData('text/plain')); }catch(_){ return; }
+      if(payload && payload.from === 'backlog'){
+        const at = +td.dataset.i + (quarterAt(e.clientX, td) || 0);
+        if(!placeTask(payload.id, td.dataset.w, at)) return;
+        renderCards(); renderBacklog(); renderTray(); renderBoard();
+        return;
+      }
+      if(!payload || payload.from !== 'tray') return;
+      const tk = (D.tickets||[]).find(x=>x.key===payload.key);
+      if(!tk) return;
+      // Default length is the SP floored at one day: an unestimated ticket gets a visible,
+      // obviously-wrong bar rather than a zero-width one that cannot be grabbed to fix.
+      TASKS.push({id:uid(), key:tk.key, title:tk.summary, who:td.dataset.w,
+                  date:dateAt(+td.dataset.i), off:quarterAt(e.clientX, td) || 0,
+                  days:Math.max(STEP, snapQ(tk.sp||1)), sp:tk.sp||0, adhoc:false, cat:''});
+      markDirty(); renderCards(); renderBacklog(); renderTray(); renderBoard();
+    });
+  });
+}
+
+function wireBars(){ wireBar(document.querySelectorAll('#boardP .bar')); }
+
+function wireBar(bars){
+  Array.from(bars).forEach(bar=>{
+    // Click the number to type an effort. It sets the tile's LENGTH from that effort,
+    // which is the whole point: you say how much work it is, the board says how long it
+    // takes this person.
+    bar.querySelectorAll('.eff').forEach(c=>{
+      c.addEventListener('pointerdown', e=>e.stopPropagation());
+      c.addEventListener('click', e=>{ e.stopPropagation(); openEffort(bar, c); });
+    });
+    bar.querySelectorAll('.x').forEach(x=>x.addEventListener('pointerdown', e=>{
+      e.stopPropagation();
+      TASKS = TASKS.filter(t=>t.id !== x.dataset.x);
+      markDirty(); renderCards(); renderBacklog(); renderTray(); renderBoard();
+    }));
+    bar.addEventListener('dblclick', e=>{   // keyboard/assistive double-activation
+      if(!e.target.closest('.x')) startRename(bar);
+    });
+    bar.addEventListener('pointerdown', e=>{
+      if(e.target.closest('.x')) return;
+      const t = TASKS.find(x=>x.id===bar.dataset.id);
+      if(!t) return;
+      const resize = !!e.target.closest('.grip');
+      // A real double-click on a bar never reaches a dblclick listener: the drag below
+      // preventDefault()s this pointerdown, which suppresses the compatibility mouse
+      // events. So count the taps here, before the drag starts.
+      if(!resize && isDoubleTap(t.id) && startRename(bar)) return;
+      // Modifier clicks pick tiles rather than dragging them: holding one and dragging
+      // would otherwise both extend the selection and move it, which is neither.
+      if(!resize && (e.metaKey || e.ctrlKey || e.shiftKey)){
+        e.preventDefault();
+        selectTask(t.id, (e.metaKey || e.ctrlKey) ? 'toggle' : 'range');
+        paintSel();
+        return;
+      }
+      if(!resize && !SEL.has(t.id)){ selectTask(t.id, 'one'); paintSel(); }
+      const from = cellAt(e.clientX, e.clientY);
+      if(!from) return;
+      e.preventDefault();
+      const o = {id:t.id, start:posOf(t), grab:from.raw, resize};
+      if(o.start === null) return;
+      DRAGGING = o.id;
+      bar.classList.add('drag');
+      const tab = document.querySelector('#boardP table.g');
+      try{ tab.setPointerCapture(e.pointerId); }catch(_){}
+      // Pointer events arrive far faster than the screen refreshes, and each one used to
+      // rebuild every bar on the board - including the one under the cursor, which is why
+      // the tile being dragged kept being replaced mid-drag. Keep the last event, act once
+      // per frame's worth of time.
+      //
+      // Deliberately a timer rather than requestAnimationFrame: rAF does not fire in a
+      // background tab, and does not fire at all on a machine whose display link is
+      // unavailable - the drag would simply freeze. A 16ms timer is close enough to a
+      // frame and always runs.
+      const FRAME_MS = 16;
+      let pending = null, frame = 0;
+      const apply = ()=>{
+        frame = 0;
+        const ev = pending; pending = null;
+        if(!ev) return;
+        const back = document.getElementById('back');
+        if(back) back.classList.toggle('hot', !o.resize && overBacklog(ev.clientX, ev.clientY));
+        const c = cellAt(ev.clientX, ev.clientY);
+        if(!c) return;
+        const t2 = TASKS.find(x=>x.id===o.id); if(!t2) return;
+        const p = (D.people||[]).find(x=>x.canonical===t2.who);
+        if(o.resize){
+          // Length is counted in the owner's WORKING days, so dragging across their leave
+          // does not quietly inflate the estimate.
+          //
+          // The length is simply where the pointer is, measured from the start. Adding a
+          // quarter first - which is what this used to do, to compensate for a pointer
+          // that had already been rounded down - biased every drag by up to a quarter and
+          // made the bar jump a step ahead of the hand.
+          const end = Math.max(o.start, c.raw);
+          const want = workLen(p, o.start, end) / STEP;
+          const q = Math.max(1, Math.round(latch(t2.days / STEP, want)));
+          const nd = snapQ(q * STEP);
+          if(Math.abs(nd - t2.days) > EPS){
+            t2.days = nd;
+            // Dragging the edge in effort mode is still saying how much work it is: the
+            // length is what changed, so the effort follows from it.
+            if(EFFORT) t2.sp = snapQ(nd * effOf(p));
+            liveTask(t2); markDirty();
+          }
+          return;
+        }
+        const s = slots(p, (D.days||[]).length);
+        const here = slotIndex(s, posOf(t2));
+        const want = slotPos(s, Math.max(0, o.start + (c.raw - o.grab)));
+        const to = Math.max(0, Math.min(s.length - 1, Math.round(latch(here, want))));
+        const moved = c.who !== t2.who;
+        if(to === here && !moved) return;          // inside the dead zone: hold still
+        if(SEL.has(o.id) && SEL.size > 1 && !moved){
+          // Dragging one tile of a selection drags the set, keeping their spacing.
+          if(shiftSelection(to - here)) selectedTasks().forEach(liveTask);
+          return;
+        }
+        const pos = moved ? snapQ(Math.max(0, o.start + (c.raw - o.grab))) : s[to];
+        const nd = dateAt(Math.floor(pos));
+        if(!nd) return;
+        t2.date = nd; t2.off = snapQ(pos - Math.floor(pos)); t2.who = c.who;
+        liveTask(t2); markDirty();
+      };
+      const move = ev=>{
+        pending = ev;
+        if(!frame) frame = setTimeout(apply, FRAME_MS);
+      };
+      const up = ev=>{
+        tab.removeEventListener('pointermove', move);
+        tab.removeEventListener('pointerup', up);
+        tab.removeEventListener('pointercancel', up);
+        try{ tab.releasePointerCapture(ev.pointerId); }catch(_){}
+        DRAGGING = '';
+        if(frame){ clearTimeout(frame); frame = 0; }
+        pending = null;
+        document.querySelectorAll('.bar.drag').forEach(b=>b.classList.remove('drag'));
+        // Let go over the backlog and the task leaves the sprint, keeping its name,
+        // length and category so putting it back is one drag.
+        const back = document.getElementById('back');
+        if(back) back.classList.remove('hot');
+        if(!o.resize && overBacklog(ev.clientX, ev.clientY) && shelveTask(o.id)){
+          const into = catAt(ev.clientX, ev.clientY);
+          if(into) recategorise(o.id, into);
+          renderCards(); renderBacklog(); renderTray(); renderBoard();
+          return;
+        }
+        renderCards(); renderBoard();
+      };
+      tab.addEventListener('pointermove', move);
+      tab.addEventListener('pointerup', up);
+      tab.addEventListener('pointercancel', up);
+    });
+  });
+}
+
+// Autosave decides whether a save should happen at all; doSave just does it. Keeping the
+// decision separate is what makes it testable without waiting five seconds.
+function shouldAutosave(){
+  if(!DIRTY || SAVING) return false;
+  // Mid-drag the numbers are still moving, and the editor may hold a name not yet committed.
+  if(document.querySelector('#boardP .bar.drag')) return false;
+  if(document.querySelector('#boardP .cellin')) return false;
+  // Mid-sentence in any backlog box: saving now would store the half of the list that
+  // exists and leave the line being typed out of it.
+  const typing = document.activeElement;
+  if(typing && typing.closest && typing.closest('#back') && typing.value
+     && typing.value.trim()) return false;
+  return true;
+}
+
+async function doSave(opts){
+  const auto = !!(opts && opts.auto);
+  if(SAVING) return false;
+  // Snapshot what is being sent: edits made DURING the request must stay unsaved, not be
+  // silently marked clean by a response that never carried them.
+  const sent = JSON.stringify([TASKS, CATS]);
+  SAVING = true; syncBtns();
+  let r = null, err = '';
+  try{
+    r = await (await fetch('/api/sprint-board', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({sprints: (ST.from&&ST.to)?[]:ST.sprints, tasks: TASKS,
+                            cats: CATS, effort: EFFORT,
+                            from: ST.from, to: ST.to})})).json();
+  }catch(e){ err = e.message || 'network error'; }
+  SAVING = false;
+  if(r && r.ok){
+    SAVE_ERR = '';
+    SAVED_AT = new Date().toTimeString().slice(0,5);
+    if(JSON.stringify([TASKS, CATS]) === sent) DIRTY = false;
+    syncBtns();
+    return true;
+  }
+  SAVE_ERR = err || (r && (r.__error__ || r.error)) || 'unknown';
+  syncBtns();
+  // A manual click says so out loud; autosave stays quiet and leaves it on the button,
+  // because a popup every five seconds is worse than the failure.
+  if(!auto) alert('Save failed: ' + SAVE_ERR);
+  return false;
+}
+
+// Every sprint selection and every date window has its OWN plan, so switching is a
+// different plan, not a filter over one. Save what is on screen before loading the next,
+// or an edit made in the last few seconds would vanish with no way back.
+async function switchTo(change){
+  // Wait for a save already in flight rather than skipping: an edit made while it was
+  // running is not in it, and loading the next plan over the top would lose that edit.
+  for(let i = 0; i < 100 && SAVING; i++) await new Promise(r=>setTimeout(r, 20));
+  if(DIRTY) await doSave({auto:true});
+  change();
+  syncBtns();
+  load();
+}
+
+async function load(){
+  if(!ST.sprints.length && !(ST.from && ST.to)){
+    document.getElementById('boardP').innerHTML=
+      '<div class="state">Pick a sprint, or set a From and To date to plan a cycle Jira has not created yet.</div>';
+    document.getElementById('trayP').innerHTML='<div class="state">—</div>';
+    document.getElementById('backP').innerHTML='<div class="state">—</div>';
+    document.getElementById('cards').innerHTML='';
+    return;
+  }
+  document.getElementById('boardP').innerHTML='<div class="state">Loading…</div>';
+  const win = ST.from && ST.to;
+  const qs = win ? [`from=${ST.from}`, `to=${ST.to}`] : [`sprints=${ST.sprints.join(',')}`];
+  if(ST.projects.length) qs.push(`projects=${encodeURIComponent(ST.projects.join(','))}`);
+  try{ D = await (await fetch('/api/sprint-board?'+qs.join('&'))).json(); }
+  catch(e){ D={__error__:e.message}; }
+  const err = D && (D.__error__||D.error);
+  if(err){ document.getElementById('boardP').innerHTML=`<div class="state">Failed: ${esc(err)}</div>`; return; }
+  EFFORT = !!((D.plan||{}).effort);
+  // Headings saved on their own, plus any that only exist on a task (an older plan).
+  CATS = ((D.plan||{}).cats||[]).slice();
+  ((D.plan||{}).tasks||[]).forEach(t=>{
+    const c = (t.cat||'').trim();
+    if(c && !CATS.some(x=>x.toLowerCase()===c.toLowerCase())) CATS.push(c);
+  });
+  TASKS = ((D.plan||{}).tasks||[]).map(t=>{
+    const n = Object.assign({}, t);
+    // Plans saved while "parked" was its own state: parked work is simply work nobody
+    // owns yet, so drop the flag and let it land in the backlog.
+    if(n.parked){ n.who = ''; }
+    delete n.parked;
+    return n;
+  });
+  DIRTY = false;
+  try{ renderCards(); renderBoard(); renderTray(); renderBacklog(); syncBtns(); }
+  catch(e){ document.getElementById('boardP').innerHTML=
+    `<div class="state">render error: ${esc(e.message)}</div>`; console.error(e); }
+}
+
+async function boot(){
+  wireDD('ddSprints', renderSprintMenu);
+  wireDD('ddProjects', renderProjectMenu);
+  const effBtn = document.getElementById('effBtn');
+  const syncEff = ()=>{
+    effBtn.textContent = EFFORT ? 'Plan in: effort' : 'Plan in: days';
+    effBtn.classList.toggle('primary', EFFORT);
+    effBtn.title = EFFORT
+      ? 'A tile\'s length is its effort spread over the days that effort really takes'
+      : 'A tile\'s length is days on the calendar';
+  };
+  effBtn.addEventListener('click', ()=>{
+    EFFORT = !EFFORT;
+    markDirty();
+    syncEff(); renderCards(); renderBoard(); renderBacklog();
+  });
+  syncEff();
+  document.getElementById('reload').addEventListener('click', load);
+  // Leave mode. The board is redrawn on toggle because the cells themselves change: in
+  // leave mode they carry LeaveEditor's attributes instead of the board's own title.
+  const lvBtn = document.getElementById('leaveBtn');
+  lvBtn.addEventListener('click', ()=>{
+    LEAVE = !LEAVE;
+    lvBtn.classList.toggle('primary', LEAVE);
+    lvBtn.textContent = LEAVE ? '🌴 Marking leave — click a day' : '🌴 Mark leave';
+    renderBoard();
+  });
+  document.getElementById('saveBtn').addEventListener('click', doSave);
+  // Date mode plans a window Jira has no sprint for, so there are no tickets to place —
+  // only capacity and what you type. The sprint picker stays, so you can switch back.
+  const fd=document.getElementById('fromD'), td2=document.getElementById('toD');
+  fd.value=ST.from; td2.value=ST.to;
+  const onWin=()=>{
+    if(fd.value && td2.value && td2.value < fd.value){
+      alert('To date is before From date.');
+      return;
+    }
+    switchTo(()=>{ ST.from=fd.value; ST.to=td2.value; save(); });
+  };
+  fd.addEventListener('change', onWin); td2.addEventListener('change', onWin);
+  document.getElementById('clearWin').addEventListener('click', ()=>{
+    switchTo(()=>{ ST.from=''; ST.to=''; fd.value=''; td2.value=''; save(); }); });
+  // Arrows nudge whatever is selected. A plain arrow is one WORKING day for that person;
+  // with Shift it is a quarter, because that is the grid the board plans on.
+  document.addEventListener('keydown', e=>{
+    if(!SEL.size) return;
+    const el = document.activeElement;
+    if(el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+    if(e.key === 'Escape'){ clearSel(); paintSel(); return; }
+    if(e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const dq = (e.key === 'ArrowRight' ? 1 : -1) * (e.shiftKey ? 1 : 4);
+    if(shiftSelection(dq)){ renderCards(); paintBars(); }
+  });
+  // Clicking the grid away from a tile drops the selection, the way it does anywhere else.
+  document.addEventListener('pointerdown', e=>{
+    if(!SEL.size) return;
+    if(e.target.closest && (e.target.closest('.bar') || e.target.closest('#back'))) return;
+    clearSel(); paintSel();
+  });
+  // The push page plans the same cycle this board is on, so hand it the same window and
+  // save first: it reads the STORED plan, and an unsaved tile would simply not be there.
+  document.getElementById('pushBtn').addEventListener('click', async ()=>{
+    if(DIRTY) await doSave({});
+    const q = (ST.from && ST.to) ? `?from=${ST.from}&to=${ST.to}`
+            : (ST.sprints||[]).length ? `?sprints=${ST.sprints.join(',')}` : '';
+    location.href = '/jira-push' + q;
+  });
+  window.addEventListener('beforeunload', e=>{ if(DIRTY){ e.preventDefault(); e.returnValue=''; } });
+  setInterval(()=>{ if(shouldAutosave()) doSave({auto:true}); }, AUTOSAVE_MS);
+  const [s,p] = await Promise.all([
+    fetch('/api/sprints').then(r=>r.json()).catch(()=>({sprints:[]})),
+    fetch('/api/projects').then(r=>r.json()).catch(()=>({projects:[]}))]);
+  SPRINTS=s.sprints||[]; PROJECTS=p.projects||[];
+  if(!ST.sprints.length && !(ST.from && ST.to)){
+    const act = SPRINTS.find(x=>x.state==='active')||SPRINTS[0];
+    if(act){ ST.sprints=[act.id]; save(); }
+  }
+  syncBtns(); load();
+}
+boot();
+</script>
+</body>
+</html>
