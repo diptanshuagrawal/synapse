@@ -734,6 +734,26 @@ check('a heading accepts a drop instead of pasting into its add box',
       'no drop handler on the heading');
 check('the heading being dropped on is highlighted', /\.cat\.into\{/.test(html),
       'no target feedback');
+// Stack ranking. The page is the only place these can be checked: jsdom has no layout,
+// so neither the line's position nor the flicker it would show has any meaning there.
+check('a backlog row can be ranked above or below another',
+      /\.row\.note\.dropb\{/.test(html) && /\.row\.note\.dropa\{/.test(html),
+      'no insertion line, so above-from-below is guesswork');
+check('which half of the row decides above or below',
+      /\(e\.clientY - r\.top\) > r\.height \/ 2/.test(html), 'no half-row test');
+// dragleave fires when the pointer crosses onto a child of the row, so clearing the line
+// unconditionally makes it blink while you hold still over the row.
+check('the insertion line survives the pointer crossing the row\'s own children',
+      /dragleave'[\s\S]{0,220}c\.contains\(e\.relatedTarget\)/.test(html),
+      'the line will flicker');
+// A tray chip and a backlog row both travel as text/plain, and dataTransfer cannot be
+// READ during dragover, so the hover has to remember what was lifted.
+check('the hover knows a lifted row from a lifted tray chip',
+      /let LIFT = ''/.test(html) && /if\(!LIFT \|\| LIFT === c\.dataset\.id\)/.test(html),
+      'a chip would be offered a place in the list');
+check('ranking moves the task within the list rather than storing a rank number',
+      /function reorder\(id, targetId, after\)/.test(html) && !/\brank:/.test(html),
+      'a second source of truth for position');
 check('a row\'s name and effort can be edited in place',
       /function openRowEditor\(row, field\)/.test(html)
       && /openRowEditor\(el\.closest\('\.row\.note'\)/.test(html), 'no row editor');

@@ -161,6 +161,12 @@
   .row.note{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:7px;
     background:var(--surface2);border:1px solid transparent;cursor:grab;font-size:13px;}
   .row.note:hover{border-color:var(--border);}
+  /* Where the task will land if you let go now. A line between two rows says that far
+     more plainly than highlighting the row you happen to be over, which only ever says
+     "this one" and leaves above-or-below to guesswork. */
+  .row.note.dropb{box-shadow:inset 0 3px 0 0 var(--accent);}
+  .row.note.dropa{box-shadow:inset 0 -3px 0 0 var(--accent);}
+  .row.note.lifting{opacity:.4;}
   .row.note .grab{color:var(--hint);font-size:11px;letter-spacing:-2px;}
   .row.note .rt{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
     white-space:nowrap;padding:1px 3px;border-radius:4px;}
@@ -530,6 +536,36 @@ function recategorise(id, cat){
   return t;
 }
 
+// Stack ranking: put one backlog task directly above or below another.
+//
+// A category's tasks are a SUBSEQUENCE of TASKS — byCategory only ever filters, it never
+// sorts — so ranking within a list is just moving the task within TASKS. Splice it out,
+// put it back beside the target. Everything else keeps its relative order, including the
+// other categories', which is why there is no rank field here: a stored rank is a second
+// source of truth for position, and the order of the list is already the first.
+//
+// Dropping on a row of ANOTHER list files it there too. The position chosen is a position
+// in that list, so the heading comes with it; saying otherwise would mean dropping a task
+// into the middle of a list and watching it jump back to where it came from.
+function reorder(id, targetId, after){
+  if(!id || !targetId || id === targetId) return null;
+  const from = TASKS.findIndex(t => t.id === id);
+  const target = TASKS.find(t => t.id === targetId);
+  if(from < 0 || !target) return null;
+  const moving = TASKS[from];
+  if(moving.who) return null;              // scheduled work is ranked on the board, not here
+  const cat = (target.cat || '').trim() || CAT_NONE;
+  const was = (moving.cat || '').trim() || CAT_NONE;
+  TASKS.splice(from, 1);
+  let to = TASKS.findIndex(t => t.id === targetId);
+  if(to < 0){ TASKS.splice(from, 0, moving); return null; }   // put it back, change nothing
+  if(after) to += 1;
+  TASKS.splice(to, 0, moving);
+  if(was !== cat){ moving.cat = cat; addCategory(cat); }
+  markDirty();
+  return moving;
+}
+
 function addNote(title, cat){
   const t = String(title || '').trim();
   if(!t) return null;
@@ -662,6 +698,11 @@ function renderBoard(){
 let SEL = new Set();
 let SEL_ANCHOR = '';
 let DRAGGING = '';       // the tile under the pointer, so a repaint keeps it looking held
+// The backlog row being dragged right now. dataTransfer cannot be READ during dragover —
+// only its types are exposed, and a task and a tray chip both travel as text/plain — so
+// the one thing the hover needs to know, whether this drag can be ranked, has to be
+// remembered at dragstart instead of asked for at the moment it matters.
+let LIFT = '';
 
 // Every quarter-day this person actually works, in order. Moving "one day" means one of
 // their working days, not one square of calendar - the same rule the bars are drawn by.
@@ -1098,10 +1139,54 @@ function renderBacklog(){
       openRowEditor(el.closest('.row.note'), el.classList.contains('sp') ? 'days' : 'title');
     });
   });
+  // Stack ranking. A row is both a thing you drag and a place you can drop one, so each
+  // row carries the drop half as well. stopPropagation on both is what keeps the heading
+  // from also claiming the drop and filing the task at the end of the list instead of
+  // where it was aimed.
+  const unmark = ()=>document.querySelectorAll('#back .row.note.dropb, #back .row.note.dropa')
+    .forEach(x=>x.classList.remove('dropb','dropa'));
   document.querySelectorAll('#back .row.note').forEach(c=>{
     c.addEventListener('dragstart', e=>{
       if(c.querySelector('input.rowin')){ e.preventDefault(); return; }
+      LIFT = c.dataset.id;
+      c.classList.add('lifting');
       e.dataTransfer.setData('text/plain', JSON.stringify({from:'backlog', id:c.dataset.id}));
+    });
+    c.addEventListener('dragend', ()=>{ LIFT = ''; c.classList.remove('lifting'); unmark(); });
+
+    // Above or below is decided by which half of the row the pointer is in, so the same
+    // gesture reaches both gaps either side of a row without having to aim at a 2px line.
+    const over = e=>{
+      if(!LIFT || LIFT === c.dataset.id) return;     // a tray chip, or the row itself
+      e.preventDefault();
+      e.stopPropagation();
+      const r = c.getBoundingClientRect();
+      const after = (e.clientY - r.top) > r.height / 2;
+      unmark();
+      document.querySelectorAll('#back .cat.into').forEach(x=>x.classList.remove('into'));
+      c.classList.add(after ? 'dropa' : 'dropb');
+    };
+    c.addEventListener('dragover', over);
+    c.addEventListener('dragenter', over);
+    // dragleave also fires when the pointer crosses onto one of this row's OWN children —
+    // the title, the estimate, the ✕ — and clearing the line there makes it blink while
+    // you are holding still over the row. Only a pointer that has really left takes it.
+    c.addEventListener('dragleave', e=>{
+      if(e.relatedTarget && c.contains(e.relatedTarget)) return;
+      c.classList.remove('dropb','dropa');
+    });
+    c.addEventListener('drop', e=>{
+      if(!LIFT || LIFT === c.dataset.id){ unmark(); return; }
+      e.preventDefault();
+      e.stopPropagation();
+      const after = c.classList.contains('dropa');
+      unmark();
+      // The payload is the truth about what is being dropped; LIFT only decided whether
+      // to offer the gesture at all.
+      let payload; try{ payload = JSON.parse(e.dataTransfer.getData('text/plain')); }catch(_){ return; }
+      if(!payload || payload.from !== 'backlog') return;
+      if(!reorder(payload.id, c.dataset.id, after)) return;
+      renderCards(); renderBacklog(); renderTray(); renderBoard();
     });
     c.querySelectorAll('.x').forEach(x=>x.addEventListener('click', e=>{
       e.stopPropagation();

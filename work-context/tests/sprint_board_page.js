@@ -25,7 +25,12 @@ const board = {
      statuses: ['', '', '', 'WE', 'WE', '', 'L', '', '', '']},
     {name: 'Dev Two', canonical: 'dev-two', role: 'SDE2', eff: 0.75, net: 8, sp: 6.0,
      statuses: ['', '', '', 'WE', 'WE', '', '', '', '', '']}],
-  tickets: [], projects: [], plan: {tasks: []}
+  // One unplaced ticket, so the tray has a chip. A chip is dragged with the same
+  // text/plain payload a backlog row uses, which is the case the rank hover has to
+  // tell apart, and without one that check would quietly test nothing.
+  tickets: [{key: 'TEAM-1', summary: 'Spare ticket', sp: 3, done: false,
+             cancelled: false, assignee: 'Dev One'}],
+  projects: [], plan: {tasks: []}
 };
 
 const saved = [];
@@ -332,6 +337,135 @@ setTimeout(() => {
       check('no add box was filled with JSON',
             ![...doc.querySelectorAll('#back input')].some(i => /"from"/.test(i.value)),
             'payload text landed in an input');
+    }
+  }
+
+  console.log('\n--- stack ranking within a category ---');
+  {
+    doc.getElementById('catIn').value = 'RANK';
+    doc.getElementById('addcat').dispatchEvent(
+      new w.Event('submit', {bubbles: true, cancelable: true}));
+    const add = line => {
+      const f = [...doc.querySelectorAll('#back .addrow')].find(x => x.dataset.addto === 'RANK');
+      if (!f) return;
+      f.querySelector('input').value = line;
+      f.dispatchEvent(new w.Event('submit', {bubbles: true, cancelable: true}));
+    };
+    ['alpha', 'beta', 'gamma'].forEach(add);
+    const names = () => [...doc.querySelectorAll('#back .cat[data-cat="RANK"] .row.note .rt')]
+      .map(e => e.textContent.trim()).join(',');
+    const rowFor = t => [...doc.querySelectorAll('#back .cat[data-cat="RANK"] .row.note')]
+      .find(r => r.textContent.includes(t));
+    check('three tasks to rank', names() === 'alpha,beta,gamma', names());
+
+    // jsdom has no layout, so every rect is zero and "which half of the row" has no
+    // answer. The target row states its own geometry; the page reads nothing else to
+    // decide above-from-below.
+    const place = r => { r.getBoundingClientRect = () => (
+      {top: 100, bottom: 130, height: 30, left: 0, right: 200, width: 200}); };
+    const data = {};
+    const dt = {setData: (k, v) => { data[k] = v; }, getData: k => data[k]};
+    const lift = r => r.dispatchEvent(
+      Object.assign(new w.Event('dragstart', {bubbles: true}), {dataTransfer: dt}));
+    const hover = (r, y) => {
+      const e = Object.assign(new w.Event('dragover', {bubbles: true, cancelable: true}),
+                              {dataTransfer: dt, clientY: y});
+      r.dispatchEvent(e);
+      return e;
+    };
+    const release = (r, y) => {
+      const e = Object.assign(new w.Event('drop', {bubbles: true, cancelable: true}),
+                              {dataTransfer: dt, clientY: y});
+      r.dispatchEvent(e);
+      return e;
+    };
+
+    // Last to first: drop on the TOP half of the first row.
+    let src = rowFor('gamma'), tgt = rowFor('alpha');
+    if (src && tgt) {
+      place(tgt);
+      lift(src);
+      const o = hover(tgt, 105);
+      check('a row accepts another row', o.defaultPrevented, 'drop would never fire');
+      check('and the line shows it landing above', tgt.classList.contains('dropb'),
+            tgt.className);
+      const d = release(tgt, 105);
+      check('the browser is stopped from pasting the payload as text', d.defaultPrevented);
+      check('the task moves above', names() === 'gamma,alpha,beta', names());
+    }
+
+    // First to last: drop on the BOTTOM half of the last row.
+    src = rowFor('gamma'); tgt = rowFor('beta');
+    if (src && tgt) {
+      place(tgt);
+      lift(src);
+      hover(tgt, 125);
+      check('the line shows it landing below', tgt.classList.contains('dropa'), tgt.className);
+      release(tgt, 125);
+      check('the task moves below', names() === 'alpha,beta,gamma', names());
+    }
+
+    // A row is not a rank slot for itself. The drop still bubbles to the heading, which
+    // legitimately accepts it and files it in the same category it is already in, so the
+    // thing to assert is that no line was drawn and nothing moved — NOT that the event
+    // went unclaimed, which would be asserting the heading had stopped working.
+    src = rowFor('beta');
+    if (src) {
+      place(src);
+      lift(src);
+      hover(src, 125);
+      check('a row draws no line on itself',
+            !src.classList.contains('dropa') && !src.classList.contains('dropb'),
+            src.className);
+      release(src, 125);
+      check('ranking a task onto itself changes nothing', names() === 'alpha,beta,gamma',
+            names());
+    }
+
+    // Dropping on a row of another list files it there too, at that position. Anything
+    // else means aiming into the middle of a list and watching it bounce back.
+    //
+    // Every element here is re-queried after the drop: the page re-renders the whole
+    // backlog, so a reference taken before it is a detached node that will happily report
+    // the old text for ever.
+    const casaRows = () => {
+      const c = [...doc.querySelectorAll('#back .cat')].find(x => x.dataset.cat === 'CASA');
+      return c ? [...c.querySelectorAll('.row.note')].map(r => r.textContent) : [];
+    };
+    const landing = (() => {
+      const c = [...doc.querySelectorAll('#back .cat')].find(x => x.dataset.cat === 'CASA');
+      return c && c.querySelector('.row.note');
+    })();
+    src = rowFor('alpha');
+    if (landing && src) {
+      place(landing);
+      lift(src);
+      hover(landing, 105);
+      release(landing, 105);
+      check('it changes list as well as position',
+            casaRows().some(t => /alpha/.test(t)), casaRows().join(' | ').slice(0, 90));
+      check('and lands where it was aimed, not at the end of the list',
+            /alpha/.test(casaRows()[0] || ''), casaRows().join(' | ').slice(0, 90));
+      check('it leaves the list it came from', !/alpha/.test(names()), names());
+    }
+
+    // A tray chip travels as text/plain exactly like a task does, so the hover has to
+    // tell them apart from what it remembered at dragstart, not from the payload. The row
+    // is re-queried, or this would be hovering a node that left the document two drops ago
+    // and passing because nothing can happen to it.
+    const trayChip = doc.querySelector('#tray .chip');
+    const live = rowFor('beta');
+    check('there is a tray chip and a row to test the hover against',
+          !!trayChip && !!live, (trayChip ? 'row' : 'chip') + ' missing');
+    if (trayChip && live) {
+      live.dispatchEvent(new w.Event('dragend', {bubbles: true}));
+      place(live);
+      trayChip.dispatchEvent(
+        Object.assign(new w.Event('dragstart', {bubbles: true}), {dataTransfer: dt}));
+      hover(live, 105);
+      check('a tray chip is not offered a rank slot',
+            !live.classList.contains('dropa') && !live.classList.contains('dropb'),
+            live.className);
     }
   }
 
