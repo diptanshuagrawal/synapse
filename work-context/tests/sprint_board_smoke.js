@@ -746,11 +746,21 @@ check('which half of the row decides above or below',
 check('the insertion line survives the pointer crossing the row\'s own children',
       /dragleave'[\s\S]{0,220}c\.contains\(e\.relatedTarget\)/.test(html),
       'the line will flicker');
-// A tray chip and a backlog row both travel as text/plain, and dataTransfer cannot be
-// READ during dragover, so the hover has to remember what was lifted.
-check('the hover knows a lifted row from a lifted tray chip',
-      /let LIFT = ''/.test(html) && /if\(!LIFT \|\| LIFT === c\.dataset\.id\)/.test(html),
-      'a chip would be offered a place in the list');
+// A tray chip, a backlog row and a whole list all travel as text/plain, and dataTransfer
+// cannot be READ during dragover, so the hover has to remember what was lifted.
+check('the hover knows a lifted row from a lifted list from a lifted tray chip',
+      /let LIFTED = null/.test(html)
+      && /LIFTED\.kind !== 'row'/.test(html) && /LIFTED\.kind !== 'cat'/.test(html),
+      'one kind of drag would be offered another kind of target');
+// ONE variable, set by EVERY dragstart. Two flags let a drag that never fired dragend
+// leave a stale one behind, and a half-finished list-move then swallowed the next task
+// dropped on a heading — silently, because the heading claimed it and found the wrong
+// payload. A test caught exactly that, so the shape is worth pinning down.
+check('every kind of drag says what it is, rather than only clearing itself at the end',
+      (html.match(/LIFTED = \{kind:/g) || []).length >= 3,
+      'a cancelled drag would leave the last kind lingering');
+check('no second flag to go stale alongside it',
+      !/\bLIFTCAT\b/.test(html), 'there is a second drag flag again');
 check('ranking moves the task within the list rather than storing a rank number',
       /function reorder\(id, targetId, after\)/.test(html) && !/\brank:/.test(html),
       'a second source of truth for position');

@@ -150,9 +150,15 @@
   .cat + .cat{margin-top:10px;border-top:1px solid var(--border);padding-top:8px;}
   .cat{border-radius:8px;padding:4px 6px;}
   .cat.into{background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent);}
+  /* A whole list being moved gets its line drawn across the list, not across a row, so
+     the two gestures never look like each other mid-drag. */
+  .cat.catb{box-shadow:inset 0 3px 0 0 var(--accent);}
+  .cat.cata{box-shadow:inset 0 -3px 0 0 var(--accent);}
+  .cat.lifting{opacity:.4;}
   .cath{font:700 11px/1 'Hanken Grotesk',sans-serif;letter-spacing:.04em;
     text-transform:uppercase;color:var(--muted);margin:0 0 6px;display:flex;gap:6px;
-    align-items:center;}
+    align-items:center;cursor:grab;}
+  .cath .grab{color:var(--hint);font-size:11px;letter-spacing:-2px;cursor:grab;}
   .cath .n{font-weight:500;color:var(--hint);text-transform:none;letter-spacing:0;}
   .catx{margin-left:auto;border:0;background:none;color:var(--hint);cursor:pointer;
     font-size:11px;padding:0 2px;}
@@ -566,6 +572,30 @@ function reorder(id, targetId, after){
   return moving;
 }
 
+// Stack ranking the lists themselves. byCategory walks CATS before it walks the tasks, so
+// the order of the headings on screen IS the order of CATS, and moving a list is moving
+// its name in that array. The tasks follow because they were never ordered apart from
+// their heading — they are grouped under it when the page is drawn.
+function moveCategory(name, targetName, after){
+  const key = s => String(s || '').trim().toLowerCase();
+  const a = key(name), b = key(targetName);
+  if(!a || !b || a === b) return null;
+  // A heading can be on screen without being in CATS: a task saved with no category at
+  // all falls under "Unsorted", which byCategory invents rather than reads. Give it a
+  // place in the list before trying to move it, or there is no position to change.
+  if(!CATS.some(c => key(c) === a)) CATS.push(String(name).trim());
+  if(!CATS.some(c => key(c) === b)) CATS.push(String(targetName).trim());
+  const from = CATS.findIndex(c => key(c) === a);
+  const moving = CATS[from];
+  CATS.splice(from, 1);
+  let to = CATS.findIndex(c => key(c) === b);
+  if(to < 0){ CATS.splice(from, 0, moving); return null; }   // put it back, change nothing
+  if(after) to += 1;
+  CATS.splice(to, 0, moving);
+  markDirty();
+  return moving;
+}
+
 function addNote(title, cat){
   const t = String(title || '').trim();
   if(!t) return null;
@@ -698,11 +728,17 @@ function renderBoard(){
 let SEL = new Set();
 let SEL_ANCHOR = '';
 let DRAGGING = '';       // the tile under the pointer, so a repaint keeps it looking held
-// The backlog row being dragged right now. dataTransfer cannot be READ during dragover —
-// only its types are exposed, and a task and a tray chip both travel as text/plain — so
-// the one thing the hover needs to know, whether this drag can be ranked, has to be
-// remembered at dragstart instead of asked for at the moment it matters.
-let LIFT = '';
+// What is being dragged right now, as {kind, id} — a backlog row, a whole list, or a
+// ticket out of the tray. dataTransfer cannot be READ during dragover, only its types,
+// and all three travel as text/plain, so this is the only thing a hover can consult to
+// decide what to offer.
+//
+// ONE variable, not one flag per kind, and set by EVERY dragstart rather than only
+// cleared by dragend. Two flags let a stale one outlive a drag that never fired dragend —
+// a drag cancelled by the window losing focus does exactly that — and then a list-move
+// nobody finished went on to swallow the next task dropped on a heading, silently, because
+// the heading claimed the drop as a list-move and found the wrong payload in it.
+let LIFTED = null;
 
 // Every quarter-day this person actually works, in order. Moving "one day" means one of
 // their working days, not one square of calendar - the same rule the bars are drawn by.
@@ -1067,7 +1103,9 @@ function renderBacklog(){
         · drag a task onto a day to schedule it, drag it back to take it out</span></div>
     <div id="back" class="backlog">${groups.map((g,gi)=>`
       <div class="cat" data-cat="${esc(g.cat)}">
-        <div class="cath">${esc(g.cat)}<span class="n">${g.tasks.length}</span>
+        <div class="cath" draggable="true" data-cat="${esc(g.cat)}"
+          title="${esc(g.cat)} · drag this heading onto another to move the whole list"
+          ><span class="grab">⠿</span>${esc(g.cat)}<span class="n">${g.tasks.length}</span>
           ${g.tasks.length ? '' :
             `<button class="catx" data-delcat="${esc(g.cat)}" title="remove this empty heading"
              type="button">✕</button>`}</div>
@@ -1114,6 +1152,7 @@ function renderBacklog(){
   // browser treats the add box as a text field and pastes the drag payload into it.
   document.querySelectorAll('#back .cat').forEach(box=>{
     const over = e=>{
+      if(LIFTED && LIFTED.kind === 'cat') return;   // a list is moving, not being filed
       e.preventDefault();
       document.querySelectorAll('#back .cat.into').forEach(x=>x.classList.remove('into'));
       box.classList.add('into');
@@ -1128,6 +1167,55 @@ function renderBacklog(){
       if(!payload || payload.from !== 'backlog') return;
       if(!recategorise(payload.id, box.dataset.cat)) return;
       renderCards(); renderBacklog(); renderTray(); renderBoard();
+    });
+  });
+
+  // Moving a whole list. The heading is the handle AND the target: a list can be taller
+  // than the window, so asking someone to aim at the middle of one would mean scrolling
+  // to find out where the halfway point even is. The headings are compact and evenly
+  // spaced, so above-or-below is decided on the heading and drawn on the list.
+  const unmarkCat = ()=>document.querySelectorAll('#back .cat.catb, #back .cat.cata')
+    .forEach(x=>x.classList.remove('catb','cata'));
+  document.querySelectorAll('#back .cath').forEach(h=>{
+    const box = h.closest('.cat');
+    h.addEventListener('dragstart', e=>{
+      LIFTED = {kind:'cat', name:h.dataset.cat || ''};
+      if(box) box.classList.add('lifting');
+      e.stopPropagation();
+      e.dataTransfer.setData('text/plain', JSON.stringify({from:'cat', name: h.dataset.cat}));
+    });
+    h.addEventListener('dragend', ()=>{
+      LIFTED = null;
+      if(box) box.classList.remove('lifting');
+      unmarkCat();
+    });
+
+    const over = e=>{
+      if(!LIFTED || LIFTED.kind !== 'cat' || LIFTED.name === h.dataset.cat || !box) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const r = h.getBoundingClientRect();
+      const after = (e.clientY - r.top) > r.height / 2;
+      unmarkCat();
+      document.querySelectorAll('#back .cat.into').forEach(x=>x.classList.remove('into'));
+      box.classList.add(after ? 'cata' : 'catb');
+    };
+    h.addEventListener('dragover', over);
+    h.addEventListener('dragenter', over);
+    h.addEventListener('dragleave', e=>{
+      if(e.relatedTarget && h.contains(e.relatedTarget)) return;
+      if(box) box.classList.remove('catb','cata');
+    });
+    h.addEventListener('drop', e=>{
+      if(!LIFTED || LIFTED.kind !== 'cat' || LIFTED.name === h.dataset.cat || !box){ unmarkCat(); return; }
+      e.preventDefault();
+      e.stopPropagation();
+      const after = box.classList.contains('cata');
+      unmarkCat();
+      let payload; try{ payload = JSON.parse(e.dataTransfer.getData('text/plain')); }catch(_){ return; }
+      if(!payload || payload.from !== 'cat') return;
+      if(!moveCategory(payload.name, h.dataset.cat, after)) return;
+      renderBacklog();
     });
   });
   // Click the name to rename, click the days to re-estimate. The row is draggable, so
@@ -1148,16 +1236,16 @@ function renderBacklog(){
   document.querySelectorAll('#back .row.note').forEach(c=>{
     c.addEventListener('dragstart', e=>{
       if(c.querySelector('input.rowin')){ e.preventDefault(); return; }
-      LIFT = c.dataset.id;
+      LIFTED = {kind:'row', id:c.dataset.id};
       c.classList.add('lifting');
       e.dataTransfer.setData('text/plain', JSON.stringify({from:'backlog', id:c.dataset.id}));
     });
-    c.addEventListener('dragend', ()=>{ LIFT = ''; c.classList.remove('lifting'); unmark(); });
+    c.addEventListener('dragend', ()=>{ LIFTED = null; c.classList.remove('lifting'); unmark(); });
 
     // Above or below is decided by which half of the row the pointer is in, so the same
     // gesture reaches both gaps either side of a row without having to aim at a 2px line.
     const over = e=>{
-      if(!LIFT || LIFT === c.dataset.id) return;     // a tray chip, or the row itself
+      if(!LIFTED || LIFTED.kind !== 'row' || LIFTED.id === c.dataset.id) return;
       e.preventDefault();
       e.stopPropagation();
       const r = c.getBoundingClientRect();
@@ -1176,12 +1264,12 @@ function renderBacklog(){
       c.classList.remove('dropb','dropa');
     });
     c.addEventListener('drop', e=>{
-      if(!LIFT || LIFT === c.dataset.id){ unmark(); return; }
+      if(!LIFTED || LIFTED.kind !== 'row' || LIFTED.id === c.dataset.id){ unmark(); return; }
       e.preventDefault();
       e.stopPropagation();
       const after = c.classList.contains('dropa');
       unmark();
-      // The payload is the truth about what is being dropped; LIFT only decided whether
+      // The payload is the truth about what is being dropped; LIFTED only decided whether
       // to offer the gesture at all.
       let payload; try{ payload = JSON.parse(e.dataTransfer.getData('text/plain')); }catch(_){ return; }
       if(!payload || payload.from !== 'backlog') return;
@@ -1207,9 +1295,15 @@ function renderTray(){
         title="${esc(t.summary)}${t.assignee?' · '+esc(t.assignee):''}">
         <b>${esc(t.key)}</b> ${esc(t.summary.slice(0,32))}<span class="sp">${n1(t.sp)}</span></span>`
       ).join('') || '<span class="state">everything is placed</span>'}</div>`;
-  document.querySelectorAll('#tray .chip').forEach(c=>c.addEventListener('dragstart', e=>{
-    e.dataTransfer.setData('text/plain', JSON.stringify({from:'tray', key:c.dataset.k}));
-  }));
+  document.querySelectorAll('#tray .chip').forEach(c=>{
+    // A chip is neither a row nor a list, and saying so is not optional: whatever was
+    // lifted last stays lifted until something else claims it.
+    c.addEventListener('dragstart', e=>{
+      LIFTED = {kind:'chip', key:c.dataset.k};
+      e.dataTransfer.setData('text/plain', JSON.stringify({from:'tray', key:c.dataset.k}));
+    });
+    c.addEventListener('dragend', ()=>{ LIFTED = null; });
+  });
 }
 
 // ---- interaction ----------------------------------------------------------

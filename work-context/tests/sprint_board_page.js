@@ -340,6 +340,14 @@ setTimeout(() => {
     }
   }
 
+  // A block gated on a bare `if (a && b)` passes the whole suite when a or b is missing,
+  // because every assertion inside it simply never runs. need() says so out loud.
+  const need = (what, ...els) => {
+    const ok = els.every(Boolean);
+    check('found the ' + what, ok, 'missing one of them');
+    return ok;
+  };
+
   console.log('\n--- stack ranking within a category ---');
   {
     doc.getElementById('catIn').value = 'RANK';
@@ -382,7 +390,7 @@ setTimeout(() => {
 
     // Last to first: drop on the TOP half of the first row.
     let src = rowFor('gamma'), tgt = rowFor('alpha');
-    if (src && tgt) {
+    if (need('two rows to rank against each other', src, tgt)) {
       place(tgt);
       lift(src);
       const o = hover(tgt, 105);
@@ -396,7 +404,7 @@ setTimeout(() => {
 
     // First to last: drop on the BOTTOM half of the last row.
     src = rowFor('gamma'); tgt = rowFor('beta');
-    if (src && tgt) {
+    if (need('a row to drop below', src, tgt)) {
       place(tgt);
       lift(src);
       hover(tgt, 125);
@@ -410,7 +418,7 @@ setTimeout(() => {
     // thing to assert is that no line was drawn and nothing moved — NOT that the event
     // went unclaimed, which would be asserting the heading had stopped working.
     src = rowFor('beta');
-    if (src) {
+    if (need('a row to drop on itself', src)) {
       place(src);
       lift(src);
       hover(src, 125);
@@ -437,7 +445,7 @@ setTimeout(() => {
       return c && c.querySelector('.row.note');
     })();
     src = rowFor('alpha');
-    if (landing && src) {
+    if (need('a row in another list to aim at', landing, src)) {
       place(landing);
       lift(src);
       hover(landing, 105);
@@ -466,6 +474,125 @@ setTimeout(() => {
       check('a tray chip is not offered a rank slot',
             !live.classList.contains('dropa') && !live.classList.contains('dropb'),
             live.className);
+    }
+  }
+
+  console.log('\n--- moving a whole list ---');
+  {
+    const cats = () => [...doc.querySelectorAll('#back .cat')].map(c => c.dataset.cat);
+    const headFor = n => [...doc.querySelectorAll('#back .cath')].find(h => h.dataset.cat === n);
+    const rowsOf = n => [...doc.querySelectorAll(`#back .cat[data-cat="${n}"] .row.note`)]
+      .map(r => r.textContent.replace(/\s+/g, ' ').trim()).join(' | ');
+    // Titles as a LIST, for membership. rowsOf is one joined string, so asking it whether
+    // it "includes" a title is a substring test that a short title, or a task already in
+    // the destination, passes without anything having moved.
+    const titlesOf = n => [...doc.querySelectorAll(`#back .cat[data-cat="${n}"] .row.note .rt`)]
+      .map(e => e.textContent.trim());
+    const place = el => { el.getBoundingClientRect = () => (
+      {top: 100, bottom: 130, height: 30, left: 0, right: 200, width: 200}); };
+    const data = {};
+    const dt = {setData: (k, v) => { data[k] = v; }, getData: k => data[k]};
+    const lift = el => el.dispatchEvent(
+      Object.assign(new w.Event('dragstart', {bubbles: true}), {dataTransfer: dt}));
+    const hover = (el, y) => {
+      const e = Object.assign(new w.Event('dragover', {bubbles: true, cancelable: true}),
+                              {dataTransfer: dt, clientY: y});
+      el.dispatchEvent(e); return e;
+    };
+    const release = (el, y) => el.dispatchEvent(
+      Object.assign(new w.Event('drop', {bubbles: true, cancelable: true}),
+                    {dataTransfer: dt, clientY: y}));
+
+    const before = cats();
+    check('there are several lists to reorder', before.length >= 3, before.join(','));
+    const moving = before[before.length - 1], firstName = before[0];
+    const carried = rowsOf(moving);
+    check('the list being moved has tasks under it, or nothing is proved about them',
+          carried.length > 0, 'the last list is empty');
+
+    // Last list to the top: drop its heading on the top half of the first heading.
+    let src = headFor(moving), tgt = headFor(firstName);
+    if (need('two headings to reorder', src, tgt)) {
+      place(tgt);
+      lift(src);
+      const o = hover(tgt, 105);
+      check('a heading accepts another heading', o.defaultPrevented, 'drop would never fire');
+      check('and the line is drawn across the list, not the heading',
+            tgt.closest('.cat').classList.contains('catb'), tgt.closest('.cat').className);
+      release(tgt, 105);
+      check('the list moves to the top', cats()[0] === moving, cats().join(','));
+      check('its tasks come with it', rowsOf(moving) === carried, rowsOf(moving));
+      check('and the other lists keep their order',
+            cats().slice(1).join(',') === before.slice(0, -1).join(','), cats().join(','));
+    }
+
+    // A list is not a slot for itself.
+    src = headFor(moving);
+    if (need('a heading to drop on itself', src)) {
+      place(src);
+      lift(src);
+      hover(src, 125);
+      check('a heading draws no line on its own list',
+            !src.closest('.cat').classList.contains('cata')
+            && !src.closest('.cat').classList.contains('catb'),
+            src.closest('.cat').className);
+      release(src, 125);
+      check('moving a list onto itself changes nothing', cats()[0] === moving, cats().join(','));
+    }
+
+    // Back to the bottom: the other direction, and it leaves the order as it was found so
+    // the checks after this one still describe the board they were written against.
+    const nowLast = cats()[cats().length - 1];
+    src = headFor(moving); tgt = headFor(nowLast);
+    if (need('a heading to move back down to', src, tgt) && nowLast !== moving) {
+      place(tgt);
+      lift(src);
+      hover(tgt, 125);
+      check('the line shows it landing below', tgt.closest('.cat').classList.contains('cata'),
+            tgt.closest('.cat').className);
+      release(tgt, 125);
+      check('the list moves back down', cats().join(',') === before.join(','), cats().join(','));
+      check('and its tasks are still with it', rowsOf(moving) === carried, rowsOf(moving));
+    }
+
+    // The task gesture must survive the list gesture sharing a target: a row dropped on a
+    // heading still files into it rather than being read as a list being moved.
+    const row = doc.querySelector(`#back .cat[data-cat="${moving}"] .row.note`);
+    const into = headFor(firstName);
+    if (need('a row and a heading to file it into', row, into)) {
+      row.dispatchEvent(new w.Event('dragend', {bubbles: true}));   // clear the list drag
+      const first = row.querySelector('.rt').textContent.trim();
+      lift(row);
+      const o = hover(into, 105);
+      check('a row dragged onto a heading is still a filing, not a list move',
+            o.defaultPrevented && !into.closest('.cat').classList.contains('catb'),
+            into.closest('.cat').className);
+      release(into, 105);
+      check('and it lands in that list', titlesOf(firstName).includes(first),
+            titlesOf(firstName).join(' | ') + '  <- wanted exactly ' + JSON.stringify(first));
+    }
+
+    // The regression this suite actually found. A list drag that never ends — the window
+    // loses focus, so dragend never fires — used to leave its flag set, and the NEXT task
+    // dropped on a heading was claimed by the heading as a list-move, found a task payload
+    // in it, and was dropped on the floor without a word. Every dragstart now says what it
+    // is, so the stale kind cannot outlive the drag that set it.
+    const orphan = headFor(moving);
+    const victim = doc.querySelector(`#back .cat[data-cat="${moving}"] .row.note`);
+    const dest = headFor(before[1]);
+    if (need('a heading to abandon and a task to file after it', orphan, victim, dest)
+        && before[1] !== moving) {
+      lift(orphan);                       // a list drag starts...
+      // ...and is abandoned. No dragend, exactly as a lost window gives you.
+      const wanted = victim.querySelector('.rt').textContent.trim();
+      check('the task is not already in the destination, or this proves nothing',
+            !titlesOf(before[1]).includes(wanted), wanted + ' was already there');
+      lift(victim);
+      hover(dest, 105);
+      release(dest, 105);
+      check('a task still files after a list drag was abandoned mid-air',
+            titlesOf(before[1]).includes(wanted),
+            'wanted exactly ' + JSON.stringify(wanted) + ' in ' + titlesOf(before[1]).join(' | '));
     }
   }
 

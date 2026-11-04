@@ -702,6 +702,17 @@ efficiency (7 net days at 0.55 is 3.85 days of delivery, not 7). The plan is ONE
 scheduled by date (`state/sprint_board.json`), not one per sprint, so changing the window
 re-reads the same plan rather than loading a different one.
 
+The backlog is stack ranked by dragging: a row onto another row to place it above or
+below (onto a row of another heading to file AND place it in one go), a heading onto
+another heading to move the whole list with its tasks. Neither stores a rank — a
+category's tasks are a subsequence of the task list and the headings are the order of
+`cats`, so the stored order IS the order, with nothing second to keep honest. The one
+heading that is not in `cats` is "Unsorted": `byCategory` invents it for tasks saved with
+no category at all and appends it last, so it has no stored position until something
+gives it one, which moving it does. Dragging auto-scrolls the page (`derived/drag-scroll.js`, shared): a native HTML5 drag takes the
+wheel away for its whole duration, so holding near an edge is the only way to reach a day
+or a list that is off-screen.
+
 `/jira-push` turns a window of that board into a real sprint. `derive/jira_push.py` is
 pure — board plan plus a snapshot of Jira in, a list of exactly what WOULD happen out —
 and `apply_push` is a thin adapter that takes the caller as an argument so the payloads
