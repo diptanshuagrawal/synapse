@@ -35,11 +35,15 @@ const routes = {
   '/api/projects': {projects: [{key: 'TEAM', name: 'Team project'}]}
 };
 
-// jsdom does not fetch <script src>, so the shared leave editor is run here the way a
-// browser would run it: before the page's own scripts, on the same window.
+// jsdom does not fetch <script src>, so the page's shared scripts are run here the way a
+// browser would run them: before the page's own scripts, on the same window, in the order
+// the page lists them. A page that gains a <script src> and not a line here is tested
+// against a window that could not have worked in a browser.
+const SHARED = ['leave-editor.js', 'drag-scroll.js'];
 function loadLeaveEditor(w) {
-  const js = fs.readFileSync(path.join(__dirname, '..', 'derived', 'leave-editor.js'), 'utf8');
-  w.eval(js);
+  for (const name of SHARED) {
+    w.eval(fs.readFileSync(path.join(__dirname, '..', 'derived', name), 'utf8'));
+  }
 }
 
 const src = fs.readFileSync(file, 'utf8');

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.private-backup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__REPO__/work-context/bin/run-private-backup.sh</string>
+    </array>
+
+    <!-- Sundays at 20:00 local. Encrypts the gitignored files (the roster, the org
+         config, the denylist, the publish script, the runbooks) and pushes the blob
+         to the private remote. Weekly because that is the rate those actually change;
+         the whole run is seconds, but it pushes, and the pre-push gate gives the
+         full suite. A run missed because the laptop was asleep fires on wake. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key><integer>0</integer>
+        <key>Hour</key><integer>20</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <!-- launchd default PATH is minimal; add homebrew + local bin so git, ssh, gpg
+         and security resolve. gpg in particular is homebrew-only. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.local/bin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__REPO__/work-context/logs/private-backup.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__REPO__/work-context/logs/private-backup.log</string>
+
+    <!-- Not at load: installing the agent should not fire a push there and then. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+</dict>
+</plist>
