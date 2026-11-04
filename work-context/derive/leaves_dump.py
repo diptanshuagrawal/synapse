@@ -13,7 +13,8 @@ for subjects):
   2. Filter messages whose body matches one of the leave-coordination
      regex patterns (OOO, WFH, on leave, vacation, holiday, etc.).
   3. Skip events already in team_leaves_processed (dedup — covers both
-     accepted leaves and rejected false positives).
+     accepted leaves and rejected false positives), UNLESS edited in Slack
+     after they were processed — those are re-emitted with "edited": true.
   4. Write state/pending_leaves.json + state/pending_leaves.rules.md
      for the /leaves chat skill to consume.
 
@@ -147,6 +148,33 @@ def _refresh_leave_plan_threads(roots: set[tuple[str, str]]) -> None:
     finally:
         dconn.close()
     print(f"[leave-plan] drained {len(roots)} root(s) · +{inserted} reply(ies)")
+
+
+def _candidate_rows(conn, since_iso: str, slack_ids: list[str]) -> list[tuple]:
+    """Team slack events in window that still need classifying.
+
+    That is: never processed, OR edited in Slack after they were processed —
+    a reply edited to add a new leave range must be re-classified, else the
+    added dates never reach team_leaves. Both stamps are UTC ISO; compare the
+    first 19 chars since edited_ts ends in 'Z' and processed_at in '+00:00'.
+    Last column is 1 for the edited-after-processed case.
+    """
+    placeholders = ",".join(["?"] * len(slack_ids))
+    q = f"""
+        SELECT e.id, e.actor, e.ts, e.body, e.channel_id, e.url, e.thread_ts,
+               (p.event_id IS NOT NULL) AS edited
+        FROM events e
+        LEFT JOIN team_leaves_processed p ON p.event_id = e.id
+        WHERE e.source = 'slack'
+          AND e.ts >= ?
+          AND e.actor IN ({placeholders})
+          AND (e.deleted_ts IS NULL)
+          AND (p.event_id IS NULL
+               OR (e.edited_ts IS NOT NULL
+                   AND substr(e.edited_ts, 1, 19) > substr(p.processed_at, 1, 19)))
+        ORDER BY e.ts ASC
+    """
+    return [tuple(r) for r in conn.execute(q, [since_iso, *slack_ids])]
 
 
 def _thread_root_ts(event_id: str, thread_ts: str | None) -> str:
@@ -366,6 +394,10 @@ For each entry in `pending_leaves.json`, emit one verdict in
    unless stated otherwise. Resolve the year/month from `mentioned_at`.
    A pure ack ("noted", "done") in such a thread → `is_leave: false`.
 
+7. **Edited messages** (`"edited": true`) were classified before and then
+   edited in Slack. apply_leaves REPLACES that event's earlier rows, so emit
+   EVERY leave in the current body, not just the newly added part.
+
 ## Team set (canonical handles)
 
 See `pending_leaves.json::team_canonical` — only these names belong in
@@ -455,25 +487,15 @@ def main() -> int:
     # Slack events.actor stores raw U-ids — filter on slack_id, resolve to
     # canonical at emit time.
     slack_ids = sorted(team_slack_map.keys())
-    placeholders = ",".join(["?"] * len(slack_ids))
-    q = f"""
-        SELECT e.id, e.actor, e.ts, e.body, e.channel_id, e.url, e.thread_ts
-        FROM events e
-        WHERE e.source = 'slack'
-          AND e.ts >= ?
-          AND e.actor IN ({placeholders})
-          AND (e.deleted_ts IS NULL)
-          AND e.id NOT IN (SELECT event_id FROM team_leaves_processed)
-        ORDER BY e.ts ASC
-    """
-    params = [since_iso, *slack_ids]
-    rows = conn.execute(q, params).fetchall()
-    print(f"[scan] {len(rows)} candidate events from team in window")
+    rows =_candidate_rows(conn, since_iso, slack_ids)
+    n_edited = sum(1 for r in rows if r[7])
+    print(f"[scan] {len(rows)} candidate events from team in window "
+          f"({n_edited} edited since classified, before the leave regex)")
 
     pending: list[dict] = []
     n_plan_reply = 0
     for r in rows:
-        ev_id, actor_slack_id, ts, body, cid, url, thread_ts = r
+        ev_id, actor_slack_id, ts, body, cid, url, thread_ts, edited = r
         if not body:
             continue
         in_leave_plan_thread = (
@@ -497,6 +519,7 @@ def main() -> int:
             "channel_name": channel_names.get(cid, cid or ""),
             "body_excerpt": excerpt,
             "url": url,
+            "edited": bool(edited),
         })
 
     print(f"[regex] {len(pending)} events matched "

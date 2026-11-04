@@ -134,6 +134,24 @@ def test_supersede_drops_overlapping_older_plan_in_same_thread():
                     ("bob", "2026-10-20"), ("alice", "2026-10-19")}
 
 
+def test_reclassified_older_reply_does_not_resurrect_superseded_dates():
+    # Sep reply said 21 Nov–20 Dec; Nov reply updated it to 21 Nov–25 Dec and
+    # was applied. The Sep reply is then edited and re-classified.
+    conn = _leaves_db()
+    _row(conn, "slack:C1:100.1:400.1", "alice", "2026-11-03T00:00:00Z", "2026-11-21", "2026-12-25")
+    _row(conn, "slack:C1:100.1:400.1", "alice", "2026-11-03T00:00:00Z", "2026-11-05")
+    old = "slack:C1:100.1:200.1"
+    at = "2026-09-23T00:00:00Z"
+    covered = {"actor": "alice", "date_start": "2026-11-21", "date_end": "2026-12-20"}
+    outside = {"actor": "alice", "date_start": "2026-10-01", "date_end": None}
+    other = {"actor": "bob", "date_start": "2026-11-21", "date_end": None}
+    assert al._superseded_by_newer_plan(conn, old, at, covered) is True
+    assert al._superseded_by_newer_plan(conn, old, at, outside) is False
+    assert al._superseded_by_newer_plan(conn, old, at, other) is False
+    # Top-level events have no thread → never superseded.
+    assert al._superseded_by_newer_plan(conn, "slack:C1:200.1", at, covered) is False
+
+
 def test_supersede_ignores_top_level_events():
     conn = _leaves_db()
     _row(conn, "slack:C1:100.1", "alice", "2026-09-08T00:00:00Z", "2026-10-19")

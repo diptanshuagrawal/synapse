@@ -134,6 +134,31 @@ def _supersede_older_plans(conn, ev_id: str, mentioned_at: str,
     return dropped
 
 
+def _superseded_by_newer_plan(conn, ev_id: str, mentioned_at: str,
+                              lv: dict) -> bool:
+    """True when a NEWER reply by the same actor in the same leave-plan thread
+    already covers lv's dates — the mirror of _supersede_older_plans.
+
+    Needed once an edited reply is re-classified (leaves_dump re-emits edits):
+    the old reply comes back AFTER the newer "updated plan:" reply was applied,
+    and without this its stale ranges would be re-inserted over the update.
+    The newer reply's span is min..max of its rows, as _supersede_older_plans
+    uses for the reply being applied.
+    """
+    root = _thread_root(ev_id)
+    if root is None or not lv["date_start"]:
+        return False
+    lo, hi = lv["date_start"], lv["date_end"] or lv["date_start"]
+    row = conn.execute(
+        "SELECT 1 FROM team_leaves WHERE actor = ? AND event_id LIKE ? "
+        "AND event_id != ? AND mentioned_at > ? AND date_start IS NOT NULL "
+        "GROUP BY event_id "
+        "HAVING MIN(date_start) <= ? AND MAX(COALESCE(date_end, date_start)) >= ? "
+        "LIMIT 1",
+        (lv["actor"], root + ":%", ev_id, mentioned_at, hi, lo)).fetchone()
+    return row is not None
+
+
 def _valid_date(s: str | None) -> bool:
     if s is None:
         return True
@@ -295,6 +320,11 @@ def main() -> int:
             touched_months |= _months_spanned(old_ds, old_de)
         conn.execute("DELETE FROM team_leaves WHERE event_id = ?", (ev_id,))
         for lv in v["leaves"]:
+            if _superseded_by_newer_plan(conn, ev_id, p["mentioned_at"], lv):
+                print(f"[supersede] {lv['actor']} {lv['date_start']}.."
+                      f"{lv['date_end'] or lv['date_start']} from {ev_id} "
+                      f"skipped — a newer plan reply covers it")
+                continue
             conn.execute(
                 """INSERT INTO team_leaves
                    (event_id, actor, mentioned_at, date_start, date_end,

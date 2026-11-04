@@ -102,6 +102,37 @@ def test_thread_root_ts_root_without_thread_col_is_own_ts():
     assert ld._thread_root_ts("slack:C0X:1700000000.0001", None) == "1700000000.0001"
 
 
+# ── _candidate_rows (dedup vs edited-after-processed) ────────────────────────
+
+def _candidate_db():
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE events (id TEXT, source TEXT, ts TEXT, actor TEXT, "
+                 "body TEXT, channel_id TEXT, url TEXT, thread_ts TEXT, "
+                 "edited_ts TEXT, deleted_ts TEXT)")
+    conn.execute("CREATE TABLE team_leaves_processed (event_id TEXT, "
+                 "processed_at TEXT, is_leave INT, confidence REAL)")
+    ev = "INSERT INTO events VALUES (?, 'slack', '2026-09-08T08:17:36Z', 'U1', " \
+         "'Leave: 12th Oct', 'C1', NULL, NULL, ?, NULL)"
+    conn.execute(ev, ("new", None))
+    conn.execute(ev, ("done", None))
+    conn.execute(ev, ("edited-later", "2026-09-24T00:42:55Z"))
+    conn.execute(ev, ("edited-before", "2026-09-08T09:00:00Z"))
+    proc = "INSERT INTO team_leaves_processed VALUES (?, " \
+           "'2026-09-09T07:36:19.977541+00:00', 1, 0.9)"
+    for eid in ("done", "edited-later", "edited-before"):
+        conn.execute(proc, (eid,))
+    return conn
+
+
+def test_candidate_rows_reemits_only_edits_after_processing():
+    rows = ld._candidate_rows(_candidate_db(), "2026-09-01T00:00:00Z", ["U1"])
+    got = {r[0]: r[7] for r in rows}
+    # never processed → in, not flagged; edited after processing → in, flagged;
+    # processed and unedited, or edited before processing → out.
+    assert got == {"new": 0, "edited-later": 1}
+
+
 # ── LEAVE_PLAN_PROMPT (leave-plan thread detector) ───────────────────────────
 
 @pytest.mark.parametrize("text", [
